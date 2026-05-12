@@ -40,11 +40,11 @@ pub fn save(path: &Path, map: &Map<String, Value>) -> Result<()> {
 }
 
 /// Get the enabledPlugins map (creates if absent).
-pub fn enabled_plugins<'a>(m: &'a Map<String, Value>) -> Option<&'a Map<String, Value>> {
+pub fn enabled_plugins(m: &Map<String, Value>) -> Option<&Map<String, Value>> {
     m.get("enabledPlugins").and_then(|v| v.as_object())
 }
 
-pub fn enabled_plugins_mut<'a>(m: &'a mut Map<String, Value>) -> &'a mut Map<String, Value> {
+pub fn enabled_plugins_mut(m: &mut Map<String, Value>) -> &mut Map<String, Value> {
     m.entry("enabledPlugins")
         .or_insert_with(|| Value::Object(Map::new()))
         .as_object_mut()
@@ -52,7 +52,7 @@ pub fn enabled_plugins_mut<'a>(m: &'a mut Map<String, Value>) -> &'a mut Map<Str
 }
 
 /// Get the extraKnownMarketplaces map (creates if absent).
-pub fn extra_marketplaces_mut<'a>(m: &'a mut Map<String, Value>) -> &'a mut Map<String, Value> {
+pub fn extra_marketplaces_mut(m: &mut Map<String, Value>) -> &mut Map<String, Value> {
     m.entry("extraKnownMarketplaces")
         .or_insert_with(|| Value::Object(Map::new()))
         .as_object_mut()

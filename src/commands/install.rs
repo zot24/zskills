@@ -15,7 +15,8 @@ pub fn run(specs: Vec<String>) -> Result<()> {
     if known.is_empty() {
         println!(
             "{}",
-            "No marketplaces registered. Run `zskills marketplace add <owner/repo>` first.".yellow()
+            "No marketplaces registered. Run `zskills marketplace add <owner/repo>` first."
+                .yellow()
         );
         return Ok(());
     }

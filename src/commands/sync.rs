@@ -7,9 +7,9 @@ use std::collections::BTreeSet;
 use std::path::PathBuf;
 
 pub fn run(file: Option<PathBuf>, dry_run: bool) -> Result<()> {
-    let path = file
-        .or_else(crate::manifest::discover)
-        .ok_or_else(|| anyhow::anyhow!("no skills.toml found (looked in ./ and ~/.config/zskills/)"))?;
+    let path = file.or_else(crate::manifest::discover).ok_or_else(|| {
+        anyhow::anyhow!("no skills.toml found (looked in ./ and ~/.config/zskills/)")
+    })?;
     println!("Manifest: {}", path.display().to_string().dimmed());
 
     let manifest = crate::manifest::load(&path)?;

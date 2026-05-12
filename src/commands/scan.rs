@@ -36,8 +36,12 @@ pub fn scan_path(root: &Path, max_depth: usize) -> Result<Vec<ProjectScan>> {
             continue;
         }
 
-        let Ok(bytes) = std::fs::read(entry.path()) else { continue };
-        let Ok(v) = serde_json::from_slice::<serde_json::Value>(&bytes) else { continue };
+        let Ok(bytes) = std::fs::read(entry.path()) else {
+            continue;
+        };
+        let Ok(v) = serde_json::from_slice::<serde_json::Value>(&bytes) else {
+            continue;
+        };
 
         let mut enabled = Vec::new();
         if let Some(ep) = v.get("enabledPlugins").and_then(|x| x.as_object()) {

@@ -1,6 +1,7 @@
 use thiserror::Error;
 
 #[derive(Debug, Error)]
+#[allow(dead_code)]
 pub enum Error {
     #[error("Claude Code config directory not found at {0}")]
     ClaudeDirMissing(std::path::PathBuf),

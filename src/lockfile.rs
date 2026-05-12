@@ -1,6 +1,7 @@
 //! skills.lock — pinned versions/commits resolved from a Manifest.
 //!
 //! Minimal stub for v1 — fleshed out when update/install commit-pin lands.
+#![allow(dead_code)]
 
 use serde::{Deserialize, Serialize};
 use std::path::Path;

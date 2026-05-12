@@ -13,8 +13,8 @@ pub fn run(specs: Vec<String>, purge_bytes: bool) -> Result<()> {
     let mut inventory = crate::inventory::load(&inventory_path)?;
 
     for spec in &specs {
-        let qualified = crate::marketplace::resolve_spec(spec, &known)
-            .unwrap_or_else(|_| spec.to_string());
+        let qualified =
+            crate::marketplace::resolve_spec(spec, &known).unwrap_or_else(|_| spec.to_string());
 
         // Remove from enabledPlugins
         let ep = crate::settings::enabled_plugins_mut(&mut settings);

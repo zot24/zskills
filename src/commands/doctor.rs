@@ -30,7 +30,10 @@ pub fn run(fix: bool) -> Result<()> {
     }
 
     if issues == 0 {
-        println!("{} All good — disk, inventory, and settings are in sync.", "✓".green());
+        println!(
+            "{} All good — disk, inventory, and settings are in sync.",
+            "✓".green()
+        );
         return Ok(());
     }
 
@@ -43,12 +46,13 @@ pub fn run(fix: bool) -> Result<()> {
             println!("  removed {} from enabledPlugins", k);
         }
         crate::settings::save(&settings_path, &settings)?;
-        println!("{} Fixed {} issue(s).", "✓".green(), report.enabled_orphan.len());
-    } else {
         println!(
-            "\nRun {} to clean up.",
-            "zskills doctor --fix".bold()
+            "{} Fixed {} issue(s).",
+            "✓".green(),
+            report.enabled_orphan.len()
         );
+    } else {
+        println!("\nRun {} to clean up.", "zskills doctor --fix".bold());
     }
 
     Ok(())

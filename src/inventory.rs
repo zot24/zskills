@@ -34,11 +34,11 @@ pub fn save(path: &Path, map: &Map<String, Value>) -> Result<()> {
     crate::settings::save(path, map)
 }
 
-pub fn plugins<'a>(m: &'a Map<String, Value>) -> Option<&'a Map<String, Value>> {
+pub fn plugins(m: &Map<String, Value>) -> Option<&Map<String, Value>> {
     m.get("plugins").and_then(|v| v.as_object())
 }
 
-pub fn plugins_mut<'a>(m: &'a mut Map<String, Value>) -> &'a mut Map<String, Value> {
+pub fn plugins_mut(m: &mut Map<String, Value>) -> &mut Map<String, Value> {
     m.entry("plugins")
         .or_insert_with(|| Value::Object(Map::new()))
         .as_object_mut()
@@ -46,7 +46,8 @@ pub fn plugins_mut<'a>(m: &'a mut Map<String, Value>) -> &'a mut Map<String, Val
 }
 
 /// Iterate over (qualified_name, scope) tuples across installations.
-pub fn installed_entries<'a>(m: &'a Map<String, Value>) -> Vec<(&'a str, &'a str)> {
+#[allow(dead_code)]
+pub fn installed_entries(m: &Map<String, Value>) -> Vec<(&str, &str)> {
     let mut out = Vec::new();
     if let Some(p) = plugins(m) {
         for (k, v) in p.iter() {

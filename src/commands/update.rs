@@ -14,8 +14,6 @@ pub fn run(_skills: Vec<String>) -> Result<()> {
             }
         }
     }
-    println!(
-        "\nMarketplaces refreshed. Restart Claude Code to pull latest skill bytes."
-    );
+    println!("\nMarketplaces refreshed. Restart Claude Code to pull latest skill bytes.");
     Ok(())
 }

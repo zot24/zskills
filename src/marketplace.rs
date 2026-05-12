@@ -16,6 +16,7 @@ use serde_json::{Map, Value};
 use std::path::Path;
 
 #[derive(Debug, Deserialize)]
+#[allow(dead_code)]
 pub struct MarketplaceManifest {
     pub name: String,
     #[serde(default)]
@@ -25,6 +26,7 @@ pub struct MarketplaceManifest {
 }
 
 #[derive(Debug, Deserialize)]
+#[allow(dead_code)]
 pub struct PluginEntry {
     pub name: String,
     #[serde(default)]

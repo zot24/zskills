@@ -23,7 +23,11 @@ fn add(source: String) -> Result<()> {
         if let Some(parent) = install_location.parent() {
             std::fs::create_dir_all(parent).ok();
         }
-        println!("Cloning {} into {} ...", repo_url, install_location.display());
+        println!(
+            "Cloning {} into {} ...",
+            repo_url,
+            install_location.display()
+        );
         crate::git::clone(&repo_url, &install_location)?;
     }
 
@@ -78,7 +82,10 @@ fn parse_source(source: &str) -> Result<(String, String)> {
         let url = format!("https://github.com/{}.git", source);
         Ok((name, url))
     } else {
-        anyhow::bail!("unrecognized marketplace source: {} (expected owner/repo or git URL)", source)
+        anyhow::bail!(
+            "unrecognized marketplace source: {} (expected owner/repo or git URL)",
+            source
+        )
     }
 }
 
@@ -123,7 +130,11 @@ fn list(as_json: bool) -> Result<()> {
             "  {}  {} plugin(s){}",
             name.bold(),
             count,
-            if auto { "  [autoUpdate]".dimmed().to_string() } else { String::new() }
+            if auto {
+                "  [autoUpdate]".dimmed().to_string()
+            } else {
+                String::new()
+            }
         );
     }
     Ok(())

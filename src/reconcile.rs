@@ -70,6 +70,7 @@ pub fn run() -> Result<Report> {
 }
 
 /// Helper: given an inventory map and a qualified key, return its entries array (mut).
+#[allow(dead_code)]
 pub fn entry_array_mut<'a>(
     inv: &'a mut Map<String, Value>,
     qualified: &str,

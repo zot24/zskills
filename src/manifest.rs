@@ -54,6 +54,7 @@ pub fn discover() -> Option<PathBuf> {
 pub fn load(path: &Path) -> Result<Manifest> {
     let raw = std::fs::read_to_string(path)
         .with_context(|| format!("reading manifest {}", path.display()))?;
-    let m: Manifest = toml::from_str(&raw).with_context(|| format!("parsing {}", path.display()))?;
+    let m: Manifest =
+        toml::from_str(&raw).with_context(|| format!("parsing {}", path.display()))?;
     Ok(m)
 }

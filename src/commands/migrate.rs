@@ -36,7 +36,10 @@ pub fn run(project: PathBuf, remove_from_project: bool, dry_run: bool) -> Result
         .unwrap_or_default();
 
     if project_enabled.is_empty() && project_marketplaces.is_empty() {
-        println!("Nothing to migrate from {}.", project_settings_path.display());
+        println!(
+            "Nothing to migrate from {}.",
+            project_settings_path.display()
+        );
         return Ok(());
     }
 
@@ -66,9 +69,7 @@ pub fn run(project: PathBuf, remove_from_project: bool, dry_run: bool) -> Result
     }
 
     if promote_skills.is_empty() && promote_markets.is_empty() {
-        println!(
-            "  (everything in the project is already present at user scope — nothing to do)"
-        );
+        println!("  (everything in the project is already present at user scope — nothing to do)");
     } else {
         for k in &promote_markets {
             println!("  {} promote marketplace {}", "+".green(), k);
