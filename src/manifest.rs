@@ -44,9 +44,21 @@ pub fn discover() -> Option<PathBuf> {
     if cwd.exists() {
         return Some(cwd);
     }
-    let home_cfg = dirs::config_dir()?.join("zskills").join("skills.toml");
+    // XDG-style first: $XDG_CONFIG_HOME/zskills/skills.toml, then ~/.config/zskills/skills.toml.
+    // Most CLI tools (cargo, starship, atuin) use ~/.config on macOS too rather than
+    // dirs::config_dir()'s ~/Library/Application Support default.
+    let xdg = std::env::var_os("XDG_CONFIG_HOME").map(PathBuf::from);
+    let home_cfg = xdg
+        .or_else(|| dirs::home_dir().map(|h| h.join(".config")))?
+        .join("zskills")
+        .join("skills.toml");
     if home_cfg.exists() {
         return Some(home_cfg);
+    }
+    // Fall back to the platform default if a user has actively chosen that location.
+    let platform_cfg = dirs::config_dir()?.join("zskills").join("skills.toml");
+    if platform_cfg.exists() {
+        return Some(platform_cfg);
     }
     None
 }
