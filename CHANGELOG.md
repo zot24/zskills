@@ -2,6 +2,25 @@
 
 All notable changes to this project are documented here. The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html). Releases from this point forward are managed by [release-please](https://github.com/googleapis/release-please) based on [Conventional Commits](https://www.conventionalcommits.org/).
 
+## [0.4.0](https://github.com/zot24/zskills/compare/v0.3.0...v0.4.0) (2026-05-12)
+
+
+### Features
+
+* initial v0.1 — package manager for Claude Code skills ([c03fcea](https://github.com/zot24/zskills/commit/c03fceaac89c10dc4fd8c7ca2b2c1eb50f5190b2))
+* v0.2 — Agent Skills support (~/.claude/skills/) ([fcd7773](https://github.com/zot24/zskills/commit/fcd7773901de7ddeea4006f07ac56ad41ecc3b3b))
+* v0.3 — migrate-skill, migrate-all, optional source ([d4144d9](https://github.com/zot24/zskills/commit/d4144d9b7931f955b1586be43a685a62c77abae5))
+
+
+### Bug Fixes
+
+* **manifest:** use XDG ~/.config across platforms, not platform default ([25e9b10](https://github.com/zot24/zskills/commit/25e9b10b94389e3fa0b14d5c5304f6197e2f1621))
+
+
+### Documentation
+
+* release-please + CHANGELOG + docs/ folder ([bdb002c](https://github.com/zot24/zskills/commit/bdb002c500dc9c1e04dc60b9cc1d5ba2e40fba33))
+
 ## [0.3.0] - 2026-05-12
 
 ### Features
