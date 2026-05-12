@@ -10,3 +10,4 @@ pub mod remove;
 pub mod scan;
 pub mod sync;
 pub mod update;
+pub mod upgrade;

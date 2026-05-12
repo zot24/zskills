@@ -168,6 +168,29 @@ pub fn run(file: Option<PathBuf>, dry_run: bool) -> Result<()> {
     crate::settings::save(&settings_path, &settings)?;
 
     for entry in &manifest.agent_skills {
+        if let Some(pkg) = entry.npm.as_deref() {
+            match crate::agent_skill::install_npm(pkg, entry.install_cmd.as_deref()) {
+                Ok(names) => {
+                    if names.is_empty() {
+                        println!(
+                            "  {} {} {}",
+                            "·".dimmed(),
+                            format!("npm:{}", pkg).bold(),
+                            "(no new skills discovered)".dimmed()
+                        );
+                    } else {
+                        println!(
+                            "  installed via npm:{}  ({} new skill{})",
+                            pkg.bold(),
+                            names.len(),
+                            if names.len() == 1 { "" } else { "s" }
+                        );
+                    }
+                }
+                Err(e) => eprintln!("{} npm:{}: {}", "✗".red(), pkg, e),
+            }
+            continue;
+        }
         match (entry.source.as_deref(), entry.name.as_deref()) {
             (Some(src), name) => match crate::agent_skill::install(src, name) {
                 Ok(names) => {

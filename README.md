@@ -31,14 +31,15 @@ Existing options are JavaScript shims that pay Node cold-start per skill (`bunx 
 ## Commands
 
 ```
-zskills list                            # what's installed; with status
+zskills list [-v]                       # what's installed; agent skills grouped by source
 zskills install <name>                  # add to enabledPlugins
 zskills remove  <name>                  # disable + drop inventory entry (keep bytes — apt style)
 zskills purge   <name>                  # also delete bytes
 zskills enable  <name>                  # flip on without (un)installing
 zskills disable <name>
 zskills sync [--file f.toml]            # apply declarative manifest (headline command)
-zskills update [<name>...]              # refresh marketplace caches
+zskills update [<name>...]              # refresh marketplace caches (plugins only)
+zskills upgrade [<name>...]             # ONE command: refresh marketplaces + reinstall all agent skills
 zskills doctor [--fix]                  # reconcile disk ↔ inventory ↔ settings
 zskills scan [path]                     # find project-scope skills across a tree
 zskills migrate <project>               # promote one project's skills to user scope
@@ -73,6 +74,15 @@ source = "jakubkrehel/make-interfaces-feel-better"
 [[agent_skills]]
 source = "owner/multi-skill-repo"
 name = "specific-skill"
+
+# npm-distributed agent skills (npm install -g <pkg> + post-install)
+[[agent_skills]]
+npm = "get-shit-done-cc"
+
+# Packages that need a custom installer command:
+[[agent_skills]]
+npm = "some-tool"
+install_cmd = "npx some-tool setup"
 ```
 
 ```bash

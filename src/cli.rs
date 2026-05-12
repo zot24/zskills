@@ -21,6 +21,10 @@ pub enum Command {
         /// Output as JSON for scripting
         #[arg(long)]
         json: bool,
+
+        /// Expand grouped agent skills (show every skill name in each source group)
+        #[arg(long, short = 'v')]
+        verbose: bool,
     },
 
     /// Install + enable one or more skills (format: name or name@marketplace)
@@ -58,6 +62,12 @@ pub enum Command {
     Update {
         /// Specific skills to update; empty = all
         skills: Vec<String>,
+    },
+
+    /// Upgrade everything zskills manages: marketplaces, git agent skills, npm agent skills.
+    Upgrade {
+        /// Specific names to upgrade; empty = upgrade everything
+        names: Vec<String>,
     },
 
     /// Apply a declarative skills.toml manifest to the current scope
@@ -173,13 +183,14 @@ pub enum MarketplaceCmd {
 impl Cli {
     pub fn run(self) -> anyhow::Result<()> {
         match self.command {
-            Command::List { json } => crate::commands::list::run(json),
+            Command::List { json, verbose } => crate::commands::list::run(json, verbose),
             Command::Install { skills } => crate::commands::install::run(skills),
             Command::Remove { skills } => crate::commands::remove::run(skills, false),
             Command::Purge { skills } => crate::commands::remove::run(skills, true),
             Command::Enable { skills } => crate::commands::enable::run(skills, true),
             Command::Disable { skills } => crate::commands::enable::run(skills, false),
             Command::Update { skills } => crate::commands::update::run(skills),
+            Command::Upgrade { names } => crate::commands::upgrade::run(names),
             Command::Sync { file, dry_run } => crate::commands::sync::run(file, dry_run),
             Command::Doctor { fix } => crate::commands::doctor::run(fix),
             Command::Scan { path, depth, json } => crate::commands::scan::run(path, depth, json),

@@ -46,15 +46,25 @@ impl SkillEntry {
 
 /// An Agent Skill declaration.
 ///
-/// - `source` (optional): `owner/repo` (GitHub) or a full git URL. If present,
-///   `sync` will (re)install from upstream. If absent, the skill is treated as
-///   local-only: tracked in inventory but never refreshed from a remote.
-/// - `name` (optional): pick a specific skill out of a multi-skill repo.
-///   For local-only entries (no `source`), `name` is required.
-#[derive(Debug, Deserialize, Serialize, Clone)]
+/// Exactly one of `source`, `npm`, or (for local-only entries) `name` should be set.
+///
+/// - `source`: `owner/repo` (GitHub) or a git URL. `sync` clones/pulls and copies
+///   skills under `skills/<name>/` into `~/.claude/skills/<name>/`.
+/// - `npm`: npm package name. `sync` runs `npm install -g <pkg>` and trusts the
+///   package's post-install to place files under `~/.claude/skills/`. After install,
+///   zskills diffs the directory and tags every new skill with `source: "npm:<pkg>"`.
+/// - `install_cmd`: optional override for npm packages with custom setup (e.g.,
+///   `"npx some-tool install"`).
+/// - `name` (optional): pick a single skill out of a multi-skill repo. For
+///   local-only entries (no `source`/`npm`), `name` is required.
+#[derive(Debug, Deserialize, Serialize, Clone, Default)]
 pub struct AgentSkillEntry {
     #[serde(default)]
     pub source: Option<String>,
+    #[serde(default)]
+    pub npm: Option<String>,
+    #[serde(default)]
+    pub install_cmd: Option<String>,
     #[serde(default)]
     pub name: Option<String>,
 }

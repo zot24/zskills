@@ -423,6 +423,68 @@ fn append_agent_skill_preserves_existing_content() {
 }
 
 #[test]
+fn list_groups_agent_skills_by_source() {
+    let home = fake_home();
+    let user_skills = home.path().join("skills");
+
+    // Pre-populate three skills with the same source, plus one with a different source.
+    for n in &["skill-a", "skill-b", "skill-c"] {
+        fs::create_dir_all(user_skills.join(n)).unwrap();
+        fs::write(user_skills.join(n).join("SKILL.md"), "# s\n").unwrap();
+    }
+    fs::create_dir_all(user_skills.join("solo")).unwrap();
+    fs::write(user_skills.join("solo").join("SKILL.md"), "# solo\n").unwrap();
+
+    let inv = json!({
+        "version": 1,
+        "agent_skills": {
+            "skill-a": {"source": "npm:foo", "installed_at": "@0", "head_sha": "1.0"},
+            "skill-b": {"source": "npm:foo", "installed_at": "@0", "head_sha": "1.0"},
+            "skill-c": {"source": "npm:foo", "installed_at": "@0", "head_sha": "1.0"},
+            "solo":    {"source": "owner/solo-repo", "installed_at": "@0", "head_sha": "abc"}
+        }
+    });
+    fs::write(
+        user_skills.join(".zskills.json"),
+        serde_json::to_string_pretty(&inv).unwrap(),
+    )
+    .unwrap();
+
+    let out = zskills(&home)
+        .args(["list", "--json"])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let v: serde_json::Value = serde_json::from_slice(&out).unwrap();
+    let groups = v["agent_skills"]["managed"].as_array().unwrap();
+    assert_eq!(groups.len(), 2);
+    let npm_group = groups
+        .iter()
+        .find(|g| g["source"] == "npm:foo")
+        .expect("npm:foo group");
+    assert_eq!(npm_group["count"], 3);
+    assert!(npm_group["skills"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|s| s == "skill-a"));
+}
+
+#[test]
+fn upgrade_runs_without_marketplaces_or_manifest() {
+    // Smoke test: upgrade against an empty fake home should succeed and print the
+    // "Upgrade complete" line.
+    let home = fake_home();
+    zskills(&home)
+        .args(["upgrade"])
+        .assert()
+        .success()
+        .stdout(predicates::str::contains("Upgrade complete"));
+}
+
+#[test]
 fn doctor_detects_orphan_and_fixes_it() {
     let home = fake_home();
     // Add an orphan: in enabledPlugins but not in inventory.

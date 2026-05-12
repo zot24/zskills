@@ -157,6 +157,109 @@ pub fn remove_from_user_dir(skill_name: &str) -> Result<()> {
     Ok(())
 }
 
+/// Install an npm-based agent skill. Runs `npm install -g <pkg>` (or `install_cmd`),
+/// then diffs `~/.claude/skills/` before/after to discover which skills the package
+/// placed there. Each discovered skill is recorded in inventory with
+/// `source: "npm:<pkg>"`. Returns the list of newly-discovered skill names.
+pub fn install_npm(package: &str, install_cmd: Option<&str>) -> Result<Vec<String>> {
+    if which::which("npm").is_err() && install_cmd.is_none() {
+        anyhow::bail!("npm not found on PATH. Install Node.js, or set install_cmd for this entry.");
+    }
+
+    let before: std::collections::BTreeSet<String> = installed_on_disk()
+        .unwrap_or_default()
+        .into_iter()
+        .collect();
+
+    run_install_command(package, install_cmd)?;
+
+    let after: std::collections::BTreeSet<String> = installed_on_disk()
+        .unwrap_or_default()
+        .into_iter()
+        .collect();
+    let new_skills: Vec<String> = after.difference(&before).cloned().collect();
+
+    let now = format!(
+        "@{}",
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0)
+    );
+    let pkg_version = npm_installed_version(package).unwrap_or_else(|_| "unknown".to_string());
+    let source_tag = format!("npm:{}", package);
+
+    let mut inv = load_inventory()?;
+    // Mark every skill currently present-and-tagged-as-this-npm-pkg, plus the new ones.
+    // We re-claim *all* matching skills so re-runs detect renames/removals.
+    let mut owned_now: Vec<String> = new_skills.clone();
+    for n in &after {
+        if let Some(existing) = inv.agent_skills.get(n) {
+            if existing.source == source_tag {
+                owned_now.push(n.clone());
+            }
+        }
+    }
+    owned_now.sort();
+    owned_now.dedup();
+    for n in &owned_now {
+        inv.agent_skills.insert(
+            n.clone(),
+            Entry {
+                source: source_tag.clone(),
+                installed_at: now.clone(),
+                head_sha: pkg_version.clone(),
+            },
+        );
+    }
+    save_inventory(&inv)?;
+    Ok(new_skills)
+}
+
+/// Re-run the install command to upgrade an npm-based skill in place.
+pub fn upgrade_npm(package: &str, install_cmd: Option<&str>) -> Result<Vec<String>> {
+    // For most packages, running `npm install -g <pkg>@latest` upgrades to the
+    // newest matching version. We rely on the same diff-discovery as install.
+    install_npm(package, install_cmd)
+}
+
+fn run_install_command(package: &str, install_cmd: Option<&str>) -> Result<()> {
+    if let Some(cmd_line) = install_cmd {
+        let mut parts = cmd_line.split_whitespace();
+        let bin = parts
+            .next()
+            .ok_or_else(|| anyhow::anyhow!("empty install_cmd"))?;
+        let args: Vec<&str> = parts.collect();
+        let status = std::process::Command::new(bin)
+            .args(&args)
+            .status()
+            .with_context(|| format!("running custom install_cmd: {}", cmd_line))?;
+        anyhow::ensure!(status.success(), "install_cmd failed: {}", cmd_line);
+        return Ok(());
+    }
+
+    let status = std::process::Command::new("npm")
+        .args(["install", "-g", package])
+        .status()
+        .with_context(|| format!("running npm install -g {}", package))?;
+    anyhow::ensure!(status.success(), "npm install -g {} failed", package);
+    Ok(())
+}
+
+fn npm_installed_version(package: &str) -> Result<String> {
+    let out = std::process::Command::new("npm")
+        .args(["list", "-g", "--depth=0", "--json", package])
+        .output()
+        .context("running npm list")?;
+    let v: serde_json::Value = serde_json::from_slice(&out.stdout)?;
+    let ver = v
+        .pointer(&format!("/dependencies/{}/version", package))
+        .and_then(|x| x.as_str())
+        .map(str::to_string)
+        .ok_or_else(|| anyhow::anyhow!("npm list did not report a version for {}", package))?;
+    Ok(ver)
+}
+
 /// What's currently present in ~/.claude/skills/ (directories with SKILL.md).
 pub fn installed_on_disk() -> Result<Vec<String>> {
     let dir = crate::paths::user_skills_dir()?;

@@ -1,20 +1,46 @@
 use anyhow::Result;
 use owo_colors::OwoColorize;
 use serde_json::json;
+use std::collections::BTreeMap;
 
-pub fn run(json_out: bool) -> Result<()> {
+pub fn run(json_out: bool, verbose: bool) -> Result<()> {
     let report = crate::reconcile::run()?;
     let inv = crate::agent_skill::load_inventory()?;
     let on_disk = crate::agent_skill::installed_on_disk().unwrap_or_default();
 
-    let managed: Vec<&String> = inv.agent_skills.keys().collect();
+    let managed_names: Vec<&String> = inv.agent_skills.keys().collect();
     let untracked: Vec<String> = on_disk
         .iter()
         .filter(|n| !inv.agent_skills.contains_key(n.as_str()))
         .cloned()
         .collect();
 
+    // Group managed agent skills by their `source` field.
+    let mut by_source: BTreeMap<String, Vec<String>> = BTreeMap::new();
+    for name in &managed_names {
+        let src = inv
+            .agent_skills
+            .get(name.as_str())
+            .map(|e| e.source.as_str())
+            .unwrap_or("?")
+            .to_string();
+        by_source.entry(src).or_default().push((*name).clone());
+    }
+    for v in by_source.values_mut() {
+        v.sort();
+    }
+
     if json_out {
+        let groups: Vec<_> = by_source
+            .iter()
+            .map(|(src, names)| {
+                json!({
+                    "source": src,
+                    "skills": names,
+                    "count": names.len(),
+                })
+            })
+            .collect();
         let out = json!({
             "plugins": {
                 "active": report.active,
@@ -23,7 +49,7 @@ pub fn run(json_out: bool) -> Result<()> {
                 "installed_orphan": report.installed_orphan,
             },
             "agent_skills": {
-                "managed": managed,
+                "managed": groups,
                 "untracked": untracked,
             }
         });
@@ -73,15 +99,11 @@ pub fn run(json_out: bool) -> Result<()> {
     }
 
     println!("\n{}", "Agent Skills — managed by zskills".bold().green());
-    if managed.is_empty() {
+    if by_source.is_empty() {
         println!("  (none)");
     } else {
-        for k in &managed {
-            let src = inv.agent_skills.get(k.as_str()).map(|e| e.source.as_str());
-            match src {
-                Some(s) => println!("  ✓ {}  {}", k, format!("← {}", s).dimmed()),
-                None => println!("  ✓ {}", k),
-            }
+        for (src, names) in &by_source {
+            print_group(src, names, verbose);
         }
     }
 
@@ -92,6 +114,17 @@ pub fn run(json_out: bool) -> Result<()> {
                 .bold()
                 .yellow()
         );
+        // Hint when many untracked skills share a common prefix — likely one package.
+        if let Some((prefix, count)) = common_prefix_summary(&untracked) {
+            if count >= 5 {
+                println!(
+                    "  {} {} skill(s) share the prefix '{}' — likely from a single package.",
+                    "ℹ".cyan(),
+                    count,
+                    prefix
+                );
+            }
+        }
         for k in &untracked {
             println!("  • {}", k);
         }
@@ -102,4 +135,44 @@ pub fn run(json_out: bool) -> Result<()> {
     }
 
     Ok(())
+}
+
+fn print_group(source: &str, names: &[String], verbose: bool) {
+    let count = names.len();
+    if count == 1 {
+        println!("  ✓ {}  {}", names[0], format!("← {}", source).dimmed());
+        return;
+    }
+    println!(
+        "  ✓ {}  {}",
+        source.bold(),
+        format!("({} skills)", count).dimmed()
+    );
+    if verbose || count <= 5 {
+        for n in names {
+            println!("      • {}", n);
+        }
+    } else {
+        let preview: Vec<&str> = names.iter().take(5).map(|s| s.as_str()).collect();
+        println!(
+            "      {} {}",
+            preview.join(", ").dimmed(),
+            format!("… [-v to list all {}]", count).dimmed()
+        );
+    }
+}
+
+/// Find the longest prefix shared by ≥3 entries; report how many share it.
+/// Heuristic for the "this looks like one package" hint in the untracked section.
+fn common_prefix_summary(names: &[String]) -> Option<(String, usize)> {
+    let mut counts: BTreeMap<String, usize> = BTreeMap::new();
+    for n in names {
+        if let Some((prefix, _)) = n.split_once('-') {
+            *counts.entry(format!("{}-", prefix)).or_insert(0) += 1;
+        }
+    }
+    counts
+        .into_iter()
+        .max_by_key(|(_, c)| *c)
+        .filter(|(_, c)| *c >= 3)
 }

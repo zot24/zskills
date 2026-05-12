@@ -166,6 +166,7 @@ pub fn run(
     let entry = crate::manifest::AgentSkillEntry {
         source: source.clone(),
         name: Some(name.clone()),
+        ..Default::default()
     };
     match crate::manifest::append_agent_skill(&manifest_path, &entry) {
         Ok(true) => println!("  wrote entry to {}", manifest_path.display()),
