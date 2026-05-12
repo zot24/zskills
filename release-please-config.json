@@ -1,0 +1,23 @@
+{
+  "$schema": "https://raw.githubusercontent.com/googleapis/release-please/main/schemas/config.json",
+  "release-type": "rust",
+  "include-component-in-tag": false,
+  "include-v-in-tag": true,
+  "bootstrap-sha": "d4144d9b00000000000000000000000000000000",
+  "changelog-sections": [
+    {"type": "feat", "section": "Features"},
+    {"type": "fix", "section": "Bug Fixes"},
+    {"type": "perf", "section": "Performance"},
+    {"type": "docs", "section": "Documentation"},
+    {"type": "refactor", "section": "Refactoring", "hidden": false},
+    {"type": "chore", "section": "Maintenance", "hidden": true},
+    {"type": "ci", "section": "CI", "hidden": true},
+    {"type": "test", "section": "Tests", "hidden": true}
+  ],
+  "packages": {
+    ".": {
+      "package-name": "zskills",
+      "extra-files": []
+    }
+  }
+}

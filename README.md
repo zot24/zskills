@@ -1,8 +1,20 @@
 # zskills
 
+[![CI](https://github.com/zot24/zskills/actions/workflows/ci.yml/badge.svg)](https://github.com/zot24/zskills/actions/workflows/ci.yml)
+[![Release Please](https://github.com/zot24/zskills/actions/workflows/release-please.yml/badge.svg)](https://github.com/zot24/zskills/actions/workflows/release-please.yml)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+
 A package manager for Claude Code skills. Declarative install, multi-marketplace, written in Rust. Manages both **Claude Code plugins** (via marketplaces, `settings.json` → `enabledPlugins`) and **Agent Skills** (the older raw-`SKILL.md` format under `~/.claude/skills/`) from a single manifest.
 
 Think `brew bundle` for Claude Code: a `skills.toml` declares intent, your `~/.claude/settings.json` and `installed_plugins.json` get reconciled atomically. Works with any marketplace tap (`zot24-skills`, `claude-plugins-official`, `cloudflare`, custom) and any GitHub repo that exposes an Agent Skill under `skills/<name>/SKILL.md`.
+
+## Documentation
+
+- **[Commands reference](docs/commands.md)** — every subcommand, every flag, with defaults and notes
+- **[Use cases](docs/use-cases.md)** — 10 common workflows (bootstrap a machine, centralize duplicates, etc.)
+- **[Architecture](docs/architecture.md)** — the three-state model (intent / inventory / activation) and how reconciliation works
+- **[Troubleshooting](docs/troubleshooting.md)** — diagnostic recipes for common errors
+- **[Changelog](CHANGELOG.md)**
 
 ## Install
 
