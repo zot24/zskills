@@ -26,7 +26,6 @@ pub fn pull(repo: &Path) -> Result<()> {
     Ok(())
 }
 
-#[allow(dead_code)]
 pub fn head_sha(repo: &Path) -> Result<String> {
     let out = Command::new("git")
         .arg("-C")

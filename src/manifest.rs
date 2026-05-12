@@ -18,8 +18,13 @@ use std::path::{Path, PathBuf};
 
 #[derive(Debug, Deserialize, Serialize, Default)]
 pub struct Manifest {
+    /// Claude Code plugins (managed via marketplaces, written to settings.json -> enabledPlugins).
     #[serde(default)]
     pub skills: Vec<SkillEntry>,
+
+    /// Agent Skills (the older raw-SKILL.md format, installed into ~/.claude/skills/).
+    #[serde(default)]
+    pub agent_skills: Vec<AgentSkillEntry>,
 }
 
 #[derive(Debug, Deserialize, Serialize, Clone)]
@@ -37,6 +42,18 @@ impl SkillEntry {
             .as_ref()
             .map(|m| format!("{}@{}", self.name, m))
     }
+}
+
+/// An Agent Skill declaration.
+///
+/// `source` is an `owner/repo` (GitHub) or a full git URL. The repo can contain
+/// multiple skills under `skills/<name>/SKILL.md`. If `name` is omitted, every
+/// skill found under `skills/` in the source repo gets installed.
+#[derive(Debug, Deserialize, Serialize, Clone)]
+pub struct AgentSkillEntry {
+    pub source: String,
+    #[serde(default)]
+    pub name: Option<String>,
 }
 
 pub fn discover() -> Option<PathBuf> {

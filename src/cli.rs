@@ -83,8 +83,8 @@ pub enum Command {
         /// Root directory to walk (default: current directory)
         path: Option<PathBuf>,
 
-        /// Maximum directory depth
-        #[arg(long, default_value_t = 4)]
+        /// Maximum directory depth (needs ≥5 to find .claude/skills/<name>/SKILL.md inside a project)
+        #[arg(long, default_value_t = 6)]
         depth: usize,
 
         /// Output as JSON

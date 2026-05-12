@@ -13,9 +13,11 @@ pub fn run(file: Option<PathBuf>, dry_run: bool) -> Result<()> {
     println!("Manifest: {}", path.display().to_string().dimmed());
 
     let manifest = crate::manifest::load(&path)?;
+
+    // -------- 1) Plugin reconciliation --------
     let known = crate::marketplace::load_known(&crate::paths::known_marketplaces_json()?)?;
 
-    let mut desired: BTreeSet<String> = BTreeSet::new();
+    let mut desired_plugins: BTreeSet<String> = BTreeSet::new();
     for entry in &manifest.skills {
         let qualified = match entry.qualified() {
             Some(q) => q,
@@ -27,12 +29,12 @@ pub fn run(file: Option<PathBuf>, dry_run: bool) -> Result<()> {
                 }
             },
         };
-        desired.insert(qualified);
+        desired_plugins.insert(qualified);
     }
 
     let settings_path = crate::paths::settings_json()?;
     let mut settings = crate::settings::load(&settings_path)?;
-    let current: BTreeSet<String> = crate::settings::enabled_plugins(&settings)
+    let current_plugins: BTreeSet<String> = crate::settings::enabled_plugins(&settings)
         .map(|m| {
             m.iter()
                 .filter_map(|(k, v)| {
@@ -46,23 +48,104 @@ pub fn run(file: Option<PathBuf>, dry_run: bool) -> Result<()> {
         })
         .unwrap_or_default();
 
-    let to_add: Vec<_> = desired.difference(&current).collect();
-    let to_disable: Vec<_> = current.difference(&desired).collect();
+    let plugins_to_enable: Vec<_> = desired_plugins.difference(&current_plugins).collect();
+    let plugins_to_disable: Vec<_> = current_plugins.difference(&desired_plugins).collect();
 
+    // -------- 2) Agent Skills reconciliation --------
+    // The manifest carries (source, optional name). We need to compare against the inventory,
+    // which carries (skill_name -> source). Build a desired-names set, but we also need to
+    // remember the source for each so we can install.
+    let mut desired_named: BTreeSet<String> = BTreeSet::new();
+    let mut deferred_sources: Vec<&crate::manifest::AgentSkillEntry> = Vec::new();
+    for entry in &manifest.agent_skills {
+        match &entry.name {
+            Some(n) => {
+                desired_named.insert(n.clone());
+            }
+            None => {
+                // Source without an explicit name — every skill in `skills/` of that repo.
+                // We'll resolve once during apply by reading the cache. For planning,
+                // we mark these as "deferred" and report them by source.
+                deferred_sources.push(entry);
+            }
+        }
+    }
+
+    let inv = crate::agent_skill::load_inventory()?;
+    let current_managed: BTreeSet<String> = inv.agent_skills.keys().cloned().collect();
+    let on_disk: BTreeSet<String> = crate::agent_skill::installed_on_disk()
+        .unwrap_or_default()
+        .into_iter()
+        .collect();
+
+    let agent_to_install_named: Vec<_> = desired_named
+        .iter()
+        .filter(|n| !on_disk.contains(*n))
+        .cloned()
+        .collect();
+    let agent_to_refresh_named: Vec<_> = desired_named
+        .iter()
+        .filter(|n| on_disk.contains(*n))
+        .cloned()
+        .collect();
+    let agent_to_remove: Vec<_> = current_managed
+        .iter()
+        .filter(|n| !desired_named.contains(*n))
+        // Don't remove a skill that's in inventory but came from a source-only entry.
+        // We'll re-resolve those when applying; planning here is conservative.
+        .filter(|n| {
+            let src = inv.agent_skills.get(*n).map(|e| e.source.clone());
+            !deferred_sources
+                .iter()
+                .any(|e| Some(&e.source) == src.as_ref())
+        })
+        .cloned()
+        .collect();
+
+    // -------- 3) Print plan --------
     println!("\n{}", "Plan".bold());
-    if to_add.is_empty() && to_disable.is_empty() {
+    let nothing = plugins_to_enable.is_empty()
+        && plugins_to_disable.is_empty()
+        && agent_to_install_named.is_empty()
+        && agent_to_remove.is_empty()
+        && deferred_sources.is_empty()
+        && agent_to_refresh_named.is_empty();
+    if nothing {
         println!("  (no changes — manifest matches current state)");
         return Ok(());
     }
-    for k in &to_add {
-        println!("  {} enable  {}", "+".green(), k);
+
+    for k in &plugins_to_enable {
+        println!("  {} enable  plugin  {}", "+".green(), k);
     }
-    for k in &to_disable {
+    for k in &plugins_to_disable {
         println!(
-            "  {} disable {} {}",
+            "  {} disable plugin  {} {}",
             "-".yellow(),
             k,
             "(in settings but not in manifest)".dimmed()
+        );
+    }
+    for n in &agent_to_install_named {
+        println!("  {} install agent   {}", "+".green(), n);
+    }
+    for entry in &deferred_sources {
+        println!(
+            "  {} install agent   {} {}",
+            "+".green(),
+            entry.source,
+            "(all skills in repo)".dimmed()
+        );
+    }
+    for n in &agent_to_refresh_named {
+        println!("  {} refresh agent   {}", "~".cyan(), n);
+    }
+    for n in &agent_to_remove {
+        println!(
+            "  {} remove  agent   {} {}",
+            "-".yellow(),
+            n,
+            "(installed but not in manifest)".dimmed()
         );
     }
 
@@ -71,14 +154,36 @@ pub fn run(file: Option<PathBuf>, dry_run: bool) -> Result<()> {
         return Ok(());
     }
 
+    // -------- 4) Apply --------
     let ep = crate::settings::enabled_plugins_mut(&mut settings);
-    for k in &to_add {
+    for k in &plugins_to_enable {
         ep.insert((*k).clone(), Value::Bool(true));
     }
-    for k in &to_disable {
+    for k in &plugins_to_disable {
         ep.insert((*k).clone(), Value::Bool(false));
     }
     crate::settings::save(&settings_path, &settings)?;
+
+    for entry in &manifest.agent_skills {
+        match crate::agent_skill::install(&entry.source, entry.name.as_deref()) {
+            Ok(names) => {
+                for n in &names {
+                    println!("  installed agent skill {}", n.bold());
+                }
+            }
+            Err(e) => {
+                eprintln!("{} {}: {}", "✗".red(), entry.source, e);
+            }
+        }
+    }
+
+    for n in &agent_to_remove {
+        match crate::agent_skill::remove(n) {
+            Ok(_) => println!("  removed agent skill {}", n.bold()),
+            Err(e) => eprintln!("{} {}: {}", "✗".red(), n, e),
+        }
+    }
+
     println!("\n{} applied.", "✓".green());
     Ok(())
 }

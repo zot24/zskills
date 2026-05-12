@@ -97,9 +97,14 @@ fn list_json_reports_active_and_orphan() {
         .stdout
         .clone();
     let v: serde_json::Value = serde_json::from_slice(&out).unwrap();
-    assert_eq!(v["active"][0], "foo@test-mp");
+    assert_eq!(v["plugins"]["active"][0], "foo@test-mp");
     // `bar@test-mp` is in enabledPlugins but value=false AND not installed → not active, not orphan
-    assert!(v["enabled_orphan"].as_array().unwrap().is_empty());
+    assert!(v["plugins"]["enabled_orphan"]
+        .as_array()
+        .unwrap()
+        .is_empty());
+    // Agent skills section exists (empty in fake home)
+    assert!(v["agent_skills"]["managed"].is_array());
 }
 
 #[test]
@@ -222,6 +227,80 @@ fn migrate_promotes_and_optionally_clears_project() {
     let p: serde_json::Value =
         serde_json::from_slice(&fs::read(&proj_settings_path).unwrap()).unwrap();
     assert!(p["enabledPlugins"].as_object().unwrap().is_empty());
+}
+
+#[test]
+fn scan_detects_project_agent_skills() {
+    let scan_root = tempfile::tempdir().unwrap();
+    let proj = scan_root.path().join("proj-with-agent");
+    let skill_dir = proj.join(".claude").join("skills").join("polish");
+    fs::create_dir_all(&skill_dir).unwrap();
+    fs::write(skill_dir.join("SKILL.md"), "# polish\n").unwrap();
+
+    let home = fake_home();
+    let out = zskills(&home)
+        .args(["scan", scan_root.path().to_str().unwrap(), "--json"])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let v: serde_json::Value = serde_json::from_slice(&out).unwrap();
+    let arr = v.as_array().unwrap();
+    assert_eq!(arr.len(), 1);
+    assert_eq!(arr[0]["agent_skills"][0], "polish");
+    assert!(arr[0]["enabled"].as_array().unwrap().is_empty());
+}
+
+#[test]
+fn migrate_promotes_agent_skill_to_user_scope() {
+    let scan_root = tempfile::tempdir().unwrap();
+    let proj = scan_root.path().join("proj");
+    let skill_dir = proj.join(".claude").join("skills").join("mover");
+    fs::create_dir_all(&skill_dir).unwrap();
+    fs::write(skill_dir.join("SKILL.md"), "# mover\n").unwrap();
+    fs::write(skill_dir.join("notes.md"), "extra doc\n").unwrap();
+
+    let home = fake_home();
+    let user_skills = home.path().join("skills");
+    assert!(!user_skills.join("mover").exists());
+
+    zskills(&home)
+        .args(["migrate", proj.to_str().unwrap()])
+        .assert()
+        .success();
+
+    assert!(user_skills.join("mover").join("SKILL.md").exists());
+    assert!(user_skills.join("mover").join("notes.md").exists());
+
+    // Inventory written
+    let inv_path = user_skills.join(".zskills.json");
+    assert!(inv_path.exists());
+    let inv: serde_json::Value = serde_json::from_slice(&fs::read(&inv_path).unwrap()).unwrap();
+    assert!(inv["agent_skills"]["mover"].is_object());
+}
+
+#[test]
+fn list_reports_agent_skills_section() {
+    let home = fake_home();
+    let user_skills = home.path().join("skills");
+    fs::create_dir_all(user_skills.join("untracked-skill")).unwrap();
+    fs::write(
+        user_skills.join("untracked-skill").join("SKILL.md"),
+        "# untracked\n",
+    )
+    .unwrap();
+
+    let out = zskills(&home)
+        .args(["list", "--json"])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let v: serde_json::Value = serde_json::from_slice(&out).unwrap();
+    let untracked = v["agent_skills"]["untracked"].as_array().unwrap();
+    assert!(untracked.iter().any(|x| x == "untracked-skill"));
 }
 
 #[test]

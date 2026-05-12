@@ -1,3 +1,4 @@
+mod agent_skill;
 mod cli;
 mod commands;
 mod error;

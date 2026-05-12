@@ -35,3 +35,25 @@ pub fn marketplace_manifest(name: &str) -> Result<PathBuf> {
         .join(".claude-plugin")
         .join("marketplace.json"))
 }
+
+/// ~/.claude/skills/ — where Agent Skills (the older format, raw SKILL.md trees) live.
+pub fn user_skills_dir() -> Result<PathBuf> {
+    Ok(claude_home()?.join("skills"))
+}
+
+/// ~/.claude/skills/.zskills.json — our inventory of which Agent Skills we manage and where they came from.
+pub fn agent_skills_inventory() -> Result<PathBuf> {
+    Ok(user_skills_dir()?.join(".zskills.json"))
+}
+
+/// Cache for cloned agent-skill source repos.
+pub fn agent_skills_cache_dir() -> Result<PathBuf> {
+    let base = if let Ok(p) = std::env::var("XDG_CACHE_HOME") {
+        PathBuf::from(p)
+    } else {
+        dirs::home_dir()
+            .context("could not determine home directory")?
+            .join(".cache")
+    };
+    Ok(base.join("zskills").join("agent-skills"))
+}

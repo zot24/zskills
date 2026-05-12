@@ -13,10 +13,13 @@ pub struct ProjectScan {
     pub path: PathBuf,
     pub enabled: Vec<String>,
     pub marketplaces: Vec<String>,
+    /// Names of Agent Skills installed at `.claude/skills/<name>/`
+    pub agent_skills: Vec<String>,
 }
 
 pub fn scan_path(root: &Path, max_depth: usize) -> Result<Vec<ProjectScan>> {
-    let mut out = Vec::new();
+    use std::collections::BTreeMap;
+    let mut by_project: BTreeMap<PathBuf, ProjectScan> = BTreeMap::new();
 
     for entry in WalkDir::new(root)
         .max_depth(max_depth)
@@ -25,52 +28,102 @@ pub fn scan_path(root: &Path, max_depth: usize) -> Result<Vec<ProjectScan>> {
         .filter_entry(|e| !is_noise(e.file_name().to_string_lossy().as_ref()))
     {
         let Ok(entry) = entry else { continue };
-        if !entry.file_type().is_file() {
-            continue;
-        }
-        let name = entry.file_name().to_string_lossy();
-        let parent = entry.path().parent().unwrap_or(Path::new(""));
-        let is_settings = (name == "settings.json" || name == "settings.local.json")
-            && parent.file_name().and_then(|s| s.to_str()) == Some(".claude");
-        if !is_settings {
-            continue;
-        }
+        let path = entry.path();
+        let parent = path.parent().unwrap_or(Path::new(""));
 
-        let Ok(bytes) = std::fs::read(entry.path()) else {
-            continue;
-        };
-        let Ok(v) = serde_json::from_slice::<serde_json::Value>(&bytes) else {
-            continue;
-        };
+        // Match 1: .claude/settings*.json files
+        if entry.file_type().is_file() {
+            let name = entry.file_name().to_string_lossy();
+            let is_settings = (name == "settings.json" || name == "settings.local.json")
+                && parent.file_name().and_then(|s| s.to_str()) == Some(".claude");
+            if is_settings {
+                let Ok(bytes) = std::fs::read(path) else {
+                    continue;
+                };
+                let Ok(v) = serde_json::from_slice::<serde_json::Value>(&bytes) else {
+                    continue;
+                };
 
-        let mut enabled = Vec::new();
-        if let Some(ep) = v.get("enabledPlugins").and_then(|x| x.as_object()) {
-            for (k, val) in ep {
-                if val.as_bool().unwrap_or(false) {
-                    enabled.push(k.clone());
+                let mut enabled = Vec::new();
+                if let Some(ep) = v.get("enabledPlugins").and_then(|x| x.as_object()) {
+                    for (k, val) in ep {
+                        if val.as_bool().unwrap_or(false) {
+                            enabled.push(k.clone());
+                        }
+                    }
                 }
+
+                let mut marketplaces = Vec::new();
+                if let Some(ekm) = v.get("extraKnownMarketplaces").and_then(|x| x.as_object()) {
+                    for k in ekm.keys() {
+                        marketplaces.push(k.clone());
+                    }
+                }
+
+                if !enabled.is_empty() || !marketplaces.is_empty() {
+                    let project = parent.parent().unwrap_or(parent).to_path_buf();
+                    let entry = by_project.entry(project.clone()).or_insert(ProjectScan {
+                        path: project,
+                        enabled: vec![],
+                        marketplaces: vec![],
+                        agent_skills: vec![],
+                    });
+                    entry.enabled.extend(enabled);
+                    for mp in marketplaces {
+                        if !entry.marketplaces.contains(&mp) {
+                            entry.marketplaces.push(mp);
+                        }
+                    }
+                }
+                continue;
             }
         }
 
-        let mut marketplaces = Vec::new();
-        if let Some(ekm) = v.get("extraKnownMarketplaces").and_then(|x| x.as_object()) {
-            for k in ekm.keys() {
-                marketplaces.push(k.clone());
+        // Match 2: .claude/skills/<name>/SKILL.md  → agent skill at project scope
+        if entry.file_type().is_file() && entry.file_name() == "SKILL.md" {
+            // path: <project>/.claude/skills/<name>/SKILL.md
+            // parent = <project>/.claude/skills/<name>
+            let skill_name = match parent.file_name().and_then(|n| n.to_str()) {
+                Some(n) => n.to_string(),
+                None => continue,
+            };
+            let grandparent = parent.parent();
+            let greatgrand = grandparent.and_then(|p| p.parent());
+            let is_dotclaude_skills = grandparent
+                .and_then(|p| p.file_name())
+                .and_then(|s| s.to_str())
+                == Some("skills")
+                && greatgrand
+                    .and_then(|p| p.file_name())
+                    .and_then(|s| s.to_str())
+                    == Some(".claude");
+            if !is_dotclaude_skills {
+                continue;
+            }
+            let project = greatgrand
+                .and_then(|p| p.parent())
+                .unwrap_or(Path::new(""))
+                .to_path_buf();
+            let entry = by_project.entry(project.clone()).or_insert(ProjectScan {
+                path: project,
+                enabled: vec![],
+                marketplaces: vec![],
+                agent_skills: vec![],
+            });
+            if !entry.agent_skills.contains(&skill_name) {
+                entry.agent_skills.push(skill_name);
             }
         }
-
-        if enabled.is_empty() && marketplaces.is_empty() {
-            continue;
-        }
-
-        let project = parent.parent().unwrap_or(parent).to_path_buf();
-        out.push(ProjectScan {
-            path: project,
-            enabled,
-            marketplaces,
-        });
     }
 
+    let mut out: Vec<_> = by_project.into_values().collect();
+    for p in &mut out {
+        p.enabled.sort();
+        p.enabled.dedup();
+        p.marketplaces.sort();
+        p.marketplaces.dedup();
+        p.agent_skills.sort();
+    }
     Ok(out)
 }
 
@@ -102,6 +155,7 @@ pub fn run(path: Option<PathBuf>, depth: usize, json_out: bool) -> Result<()> {
                     "path": p.path,
                     "enabled": p.enabled,
                     "marketplaces": p.marketplaces,
+                    "agent_skills": p.agent_skills,
                 })
             })
             .collect();
@@ -130,6 +184,12 @@ pub fn run(path: Option<PathBuf>, depth: usize, json_out: bool) -> Result<()> {
         for s in &p.enabled {
             by_skill.entry(s.clone()).or_default().push(p.path.clone());
         }
+        for s in &p.agent_skills {
+            by_skill
+                .entry(format!("{} (agent skill)", s))
+                .or_default()
+                .push(p.path.clone());
+        }
     }
 
     for p in &projects {
@@ -139,6 +199,9 @@ pub fn run(path: Option<PathBuf>, depth: usize, json_out: bool) -> Result<()> {
         }
         for s in &p.enabled {
             println!("  • {}", s);
+        }
+        for s in &p.agent_skills {
+            println!("  ◦ {}  {}", s, "(agent skill)".dimmed());
         }
     }
 
