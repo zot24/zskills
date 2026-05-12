@@ -106,6 +106,44 @@ pub enum Command {
         dry_run: bool,
     },
 
+    /// Promote ONE agent skill across every project that has it.
+    MigrateSkill {
+        /// Skill name (matches the directory under .claude/skills/<name>/)
+        name: String,
+
+        /// Tree to search; default: current directory
+        #[arg(long)]
+        root: Option<PathBuf>,
+
+        /// Upstream source for the manifest entry (owner/repo or git URL). Omit for local-only.
+        #[arg(long)]
+        source: Option<String>,
+
+        /// Remove the skill from every project's .claude/skills/ after promotion
+        #[arg(long)]
+        remove_from_all: bool,
+
+        #[arg(long)]
+        dry_run: bool,
+    },
+
+    /// Interactive sweep: walk a tree and prompt to promote each duplicated agent skill.
+    MigrateAll {
+        /// Tree to walk
+        dir: PathBuf,
+
+        /// Only consider skills appearing in at least this many projects
+        #[arg(long, default_value_t = 2)]
+        threshold: usize,
+
+        /// Skip prompts and accept defaults (no source, no project removal)
+        #[arg(long, short = 'y')]
+        yes: bool,
+
+        #[arg(long)]
+        dry_run: bool,
+    },
+
     /// Marketplace (tap) management
     #[command(subcommand)]
     Marketplace(MarketplaceCmd),
@@ -150,6 +188,19 @@ impl Cli {
                 remove_from_project,
                 dry_run,
             } => crate::commands::migrate::run(path, remove_from_project, dry_run),
+            Command::MigrateSkill {
+                name,
+                root,
+                source,
+                remove_from_all,
+                dry_run,
+            } => crate::commands::migrate_skill::run(name, root, source, remove_from_all, dry_run),
+            Command::MigrateAll {
+                dir,
+                threshold,
+                yes,
+                dry_run,
+            } => crate::commands::migrate_all::run(dir, threshold, yes, dry_run),
             Command::Marketplace(cmd) => crate::commands::marketplace::run(cmd),
         }
     }

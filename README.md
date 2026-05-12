@@ -19,17 +19,19 @@ Existing options are JavaScript shims that pay Node cold-start per skill (`bunx 
 ## Commands
 
 ```
-zskills list                  # what's installed; with status
-zskills install <name>        # add to enabledPlugins
-zskills remove  <name>        # disable + drop inventory entry (keep bytes — apt style)
-zskills purge   <name>        # also delete bytes
-zskills enable  <name>        # flip on without (un)installing
+zskills list                            # what's installed; with status
+zskills install <name>                  # add to enabledPlugins
+zskills remove  <name>                  # disable + drop inventory entry (keep bytes — apt style)
+zskills purge   <name>                  # also delete bytes
+zskills enable  <name>                  # flip on without (un)installing
 zskills disable <name>
-zskills sync [--file f.toml]  # apply declarative manifest (headline command)
-zskills update [<name>...]    # refresh marketplace caches
-zskills doctor [--fix]        # reconcile disk ↔ inventory ↔ settings
-zskills scan [path]           # find project-scope skills across a tree
-zskills migrate <project>     # promote project-scope to user scope
+zskills sync [--file f.toml]            # apply declarative manifest (headline command)
+zskills update [<name>...]              # refresh marketplace caches
+zskills doctor [--fix]                  # reconcile disk ↔ inventory ↔ settings
+zskills scan [path]                     # find project-scope skills across a tree
+zskills migrate <project>               # promote one project's skills to user scope
+zskills migrate-skill <name>            # promote ONE skill across every project in a tree
+zskills migrate-all <dir>               # interactive: walk a tree, prompt per skill
 zskills marketplace add|remove|list|update
 ```
 
@@ -86,6 +88,23 @@ zskills migrate ~/Desktop/code/some-project --dry-run
 
 Both plugin enables (`enabledPlugins`) and Agent Skill directories under `.claude/skills/` get promoted.
 
+## Promoting duplicated skills across a tree
+
+If the same skill exists in many projects (common with authored-in-place agent skills), `migrate-skill` and `migrate-all` move it to user scope and optionally clean every project.
+
+```bash
+# Promote one skill found in many projects
+zskills migrate-skill performance-tracking-skill --root ~/Desktop/code --dry-run
+zskills migrate-skill performance-tracking-skill --root ~/Desktop/code --remove-from-all
+zskills migrate-skill performance-tracking-skill --root ~/Desktop/code --source owner/repo
+
+# Interactive sweep: walk the whole tree and prompt per duplicated skill
+zskills migrate-all ~/Desktop/code --threshold 3       # only skills in ≥3 projects
+zskills migrate-all ~/Desktop/code --threshold 2 -y    # non-interactive (no source, keep project copies)
+```
+
+`migrate-skill` hashes each project's copy of the named skill and warns if content has diverged before picking the first as canonical. Both commands append `[[agent_skills]]` entries to your `skills.toml` so the migration is reproducible — and accept `--source owner/repo` (or prompt for it interactively) so skills with an upstream repo get tracked and refreshed by future `sync` runs. Skills without a known upstream get a `name`-only manifest entry; they're tracked in inventory but `sync` won't fetch them.
+
 ## Design
 
 - **`~/.claude/settings.json` is authoritative for what runs.** `installed_plugins.json` is the inventory. Three states matter: on-disk-and-enabled, on-disk-and-disabled, on-disk-and-orphaned. `doctor` reconciles them.
@@ -96,7 +115,11 @@ Both plugin enables (`enabledPlugins`) and Agent Skill directories under `.claud
 
 ## Status
 
-v0.2 — declarative `sync` for both plugins and Agent Skills, scan/migrate over both, atomic settings.json round-trip, doctor reconciliation across all three states (settings, inventory, disk). Lockfile semantics, `info`/`search`, and full version pinning still to come.
+v0.3 — adds `migrate-skill` (promote ONE skill across all projects in a tree) and `migrate-all` (interactive sweep with per-skill prompts for source + cleanup). Agent skill entries now support optional `source` (local-only entries are valid). Manifest writes preserve existing comments via `toml_edit`.
+
+v0.2 — declarative `sync` for both plugins and Agent Skills, scan/migrate over both, atomic settings.json round-trip, doctor reconciliation across all three states (settings, inventory, disk).
+
+Lockfile semantics, `info`/`search`, and full version pinning still to come.
 
 ## Sister project
 

@@ -58,15 +58,16 @@ pub fn run(file: Option<PathBuf>, dry_run: bool) -> Result<()> {
     let mut desired_named: BTreeSet<String> = BTreeSet::new();
     let mut deferred_sources: Vec<&crate::manifest::AgentSkillEntry> = Vec::new();
     for entry in &manifest.agent_skills {
-        match &entry.name {
-            Some(n) => {
+        match (&entry.name, &entry.source) {
+            (Some(n), _) => {
                 desired_named.insert(n.clone());
             }
-            None => {
+            (None, Some(_)) => {
                 // Source without an explicit name — every skill in `skills/` of that repo.
-                // We'll resolve once during apply by reading the cache. For planning,
-                // we mark these as "deferred" and report them by source.
                 deferred_sources.push(entry);
+            }
+            (None, None) => {
+                // Invalid: report below at apply time
             }
         }
     }
@@ -97,7 +98,7 @@ pub fn run(file: Option<PathBuf>, dry_run: bool) -> Result<()> {
             let src = inv.agent_skills.get(*n).map(|e| e.source.clone());
             !deferred_sources
                 .iter()
-                .any(|e| Some(&e.source) == src.as_ref())
+                .any(|e| e.source.as_ref() == src.as_ref())
         })
         .cloned()
         .collect();
@@ -130,12 +131,14 @@ pub fn run(file: Option<PathBuf>, dry_run: bool) -> Result<()> {
         println!("  {} install agent   {}", "+".green(), n);
     }
     for entry in &deferred_sources {
-        println!(
-            "  {} install agent   {} {}",
-            "+".green(),
-            entry.source,
-            "(all skills in repo)".dimmed()
-        );
+        if let Some(s) = &entry.source {
+            println!(
+                "  {} install agent   {} {}",
+                "+".green(),
+                s,
+                "(all skills in repo)".dimmed()
+            );
+        }
     }
     for n in &agent_to_refresh_named {
         println!("  {} refresh agent   {}", "~".cyan(), n);
@@ -165,14 +168,44 @@ pub fn run(file: Option<PathBuf>, dry_run: bool) -> Result<()> {
     crate::settings::save(&settings_path, &settings)?;
 
     for entry in &manifest.agent_skills {
-        match crate::agent_skill::install(&entry.source, entry.name.as_deref()) {
-            Ok(names) => {
-                for n in &names {
-                    println!("  installed agent skill {}", n.bold());
+        match (entry.source.as_deref(), entry.name.as_deref()) {
+            (Some(src), name) => match crate::agent_skill::install(src, name) {
+                Ok(names) => {
+                    for n in &names {
+                        println!("  installed agent skill {}", n.bold());
+                    }
+                }
+                Err(e) => {
+                    eprintln!("{} {}: {}", "✗".red(), src, e);
+                }
+            },
+            (None, Some(name)) => {
+                // Local-only entry: register in inventory if present on disk; don't fetch.
+                let mut inv = crate::agent_skill::load_inventory()?;
+                if !inv.agent_skills.contains_key(name) {
+                    inv.agent_skills.insert(
+                        name.to_string(),
+                        crate::agent_skill::Entry {
+                            source: "local".to_string(),
+                            installed_at: format!(
+                                "@{}",
+                                std::time::SystemTime::now()
+                                    .duration_since(std::time::UNIX_EPOCH)
+                                    .map(|d| d.as_secs())
+                                    .unwrap_or(0)
+                            ),
+                            head_sha: "local".to_string(),
+                        },
+                    );
+                    crate::agent_skill::save_inventory(&inv)?;
+                    println!("  tracked local agent skill {}", name.bold());
                 }
             }
-            Err(e) => {
-                eprintln!("{} {}: {}", "✗".red(), entry.source, e);
+            (None, None) => {
+                eprintln!(
+                    "{} agent_skill entry needs either `source` or `name`",
+                    "✗".red()
+                );
             }
         }
     }

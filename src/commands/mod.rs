@@ -4,6 +4,8 @@ pub mod install;
 pub mod list;
 pub mod marketplace;
 pub mod migrate;
+pub mod migrate_all;
+pub mod migrate_skill;
 pub mod remove;
 pub mod scan;
 pub mod sync;
