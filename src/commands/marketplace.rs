@@ -4,6 +4,12 @@ use serde_json::{json, Map, Value};
 
 use crate::cli::MarketplaceCmd;
 
+/// Built-in remote indexes. Registered without a git clone; search/install dispatch on
+/// `source.source == "remote-index"` and `source.url`. Each driver lives behind its own
+/// cargo feature so the binary stays vanilla unless you opt in.
+#[cfg(feature = "skills-sh")]
+const REMOTE_INDEX_SKILLS_SH: &str = "skills.sh";
+
 pub fn run(cmd: MarketplaceCmd) -> Result<()> {
     match cmd {
         MarketplaceCmd::Add { source } => add(source),
@@ -15,6 +21,10 @@ pub fn run(cmd: MarketplaceCmd) -> Result<()> {
 }
 
 fn add(source: String) -> Result<()> {
+    #[cfg(feature = "skills-sh")]
+    if source == REMOTE_INDEX_SKILLS_SH {
+        return add_remote_index(REMOTE_INDEX_SKILLS_SH, "https://skills.sh");
+    }
     let (name, repo_url) = parse_source(&source)?;
     let path = crate::paths::known_marketplaces_json()?;
     let mut known = crate::marketplace::load_known(&path)?;
@@ -76,7 +86,49 @@ fn add_recommended() -> Result<()> {
             e
         );
     }
+    #[cfg(feature = "skills-sh")]
+    println!(
+        "\n{}",
+        "Tip: skills.sh federation is opt-in. Add it with `zskills marketplace add skills.sh` and set ZSKILLS_SKILLS_SH_API_KEY."
+            .dimmed()
+    );
     Ok(())
+}
+
+#[cfg(feature = "skills-sh")]
+fn add_remote_index(name: &str, url: &str) -> Result<()> {
+    let path = crate::paths::known_marketplaces_json()?;
+    let mut known = crate::marketplace::load_known(&path)?;
+
+    let mut entry = Map::new();
+    entry.insert(
+        "source".into(),
+        json!({ "source": "remote-index", "url": url }),
+    );
+    entry.insert("autoUpdate".into(), Value::Bool(false));
+    known.insert(name.to_string(), Value::Object(entry));
+    crate::marketplace::save_known(&path, &known)?;
+
+    // Don't mirror into settings.json extraKnownMarketplaces — Claude Code won't recognize
+    // remote-index entries. They're purely zskills-internal.
+    println!(
+        "{} added remote index {} ({})",
+        "✓".green(),
+        name.bold(),
+        url
+    );
+    Ok(())
+}
+
+/// Recognize a remote-index entry by its JSON shape. Non-feature-gated so older configs
+/// (entries written by a `skills-sh`-enabled build) are still tolerated when the feature
+/// is off — we just skip them in list/update rather than crashing.
+pub(crate) fn is_remote_index(entry: &Value) -> bool {
+    entry
+        .get("source")
+        .and_then(|s| s.get("source"))
+        .and_then(|v| v.as_str())
+        == Some("remote-index")
 }
 
 fn parse_source(source: &str) -> Result<(String, String)> {
@@ -132,6 +184,20 @@ fn list(as_json: bool) -> Result<()> {
         return Ok(());
     }
     for (name, entry) in &known {
+        if is_remote_index(entry) {
+            let url = entry
+                .get("source")
+                .and_then(|s| s.get("url"))
+                .and_then(|v| v.as_str())
+                .unwrap_or("");
+            println!(
+                "  {}  {} {}",
+                name.bold(),
+                "[remote-index]".cyan(),
+                url.dimmed()
+            );
+            continue;
+        }
         let count = crate::marketplace::load_manifest(&crate::paths::marketplace_manifest(name)?)
             .map(|m| m.plugins.len())
             .unwrap_or(0);
@@ -160,6 +226,9 @@ fn update(name: Option<String>) -> Result<()> {
         None => known.keys().cloned().collect(),
     };
     for n in &targets {
+        if known.get(n).is_some_and(is_remote_index) {
+            continue;
+        }
         let repo = crate::paths::marketplaces_dir()?.join(n);
         if !repo.exists() {
             continue;

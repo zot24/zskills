@@ -10,6 +10,8 @@ mod marketplace;
 mod paths;
 mod reconcile;
 mod settings;
+#[cfg(feature = "skills-sh")]
+mod skills_sh;
 
 use clap::Parser;
 
