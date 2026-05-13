@@ -72,13 +72,19 @@ pub enum Command {
 
     /// Apply a declarative skills.toml manifest to the current scope
     Sync {
-        /// Path to skills.toml (default: ./skills.toml then ~/.config/zskills/skills.toml)
+        /// Path to skills.toml. Default: ~/.config/zskills/skills.toml. (`./skills.toml`
+        /// is ignored unless passed explicitly — it caused data loss in v0.5.)
         #[arg(long)]
         file: Option<PathBuf>,
 
         /// Show what would change without writing
         #[arg(long)]
         dry_run: bool,
+
+        /// Allow destructive removals (deleting agent skill bytes for entries no longer
+        /// in the manifest). Without this, sync only enables/disables — it never deletes.
+        #[arg(long)]
+        prune: bool,
     },
 
     /// Reconcile disk ↔ inventory ↔ settings; report orphans + mismatches
@@ -191,7 +197,11 @@ impl Cli {
             Command::Disable { skills } => crate::commands::enable::run(skills, false),
             Command::Update { skills } => crate::commands::update::run(skills),
             Command::Upgrade { names } => crate::commands::upgrade::run(names),
-            Command::Sync { file, dry_run } => crate::commands::sync::run(file, dry_run),
+            Command::Sync {
+                file,
+                dry_run,
+                prune,
+            } => crate::commands::sync::run(file, dry_run, prune),
             Command::Doctor { fix } => crate::commands::doctor::run(fix),
             Command::Scan { path, depth, json } => crate::commands::scan::run(path, depth, json),
             Command::Migrate {

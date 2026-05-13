@@ -75,14 +75,11 @@ pub struct AgentSkillEntry {
     pub claims: Vec<String>,
 }
 
+/// Find the user-level manifest. Does NOT look at `./skills.toml` — that path
+/// requires explicit `--file` to use, because running `zskills sync` inside an
+/// unrelated repo that happens to ship its own skills.toml has destructively
+/// surprising consequences (it's the source of a v0.5.0-era data-loss incident).
 pub fn discover() -> Option<PathBuf> {
-    let cwd = std::env::current_dir().ok()?.join("skills.toml");
-    if cwd.exists() {
-        return Some(cwd);
-    }
-    // XDG-style first: $XDG_CONFIG_HOME/zskills/skills.toml, then ~/.config/zskills/skills.toml.
-    // Most CLI tools (cargo, starship, atuin) use ~/.config on macOS too rather than
-    // dirs::config_dir()'s ~/Library/Application Support default.
     let xdg = std::env::var_os("XDG_CONFIG_HOME").map(PathBuf::from);
     let home_cfg = xdg
         .or_else(|| dirs::home_dir().map(|h| h.join(".config")))?
@@ -91,12 +88,18 @@ pub fn discover() -> Option<PathBuf> {
     if home_cfg.exists() {
         return Some(home_cfg);
     }
-    // Fall back to the platform default if a user has actively chosen that location.
     let platform_cfg = dirs::config_dir()?.join("zskills").join("skills.toml");
     if platform_cfg.exists() {
         return Some(platform_cfg);
     }
     None
+}
+
+/// Returns Some(path) if `./skills.toml` exists. Used by sync to warn the user
+/// that a CWD manifest was *not* loaded.
+pub fn cwd_skills_toml() -> Option<PathBuf> {
+    let cwd = std::env::current_dir().ok()?.join("skills.toml");
+    cwd.exists().then_some(cwd)
 }
 
 pub fn load(path: &Path) -> Result<Manifest> {

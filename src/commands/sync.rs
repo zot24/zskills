@@ -6,10 +6,21 @@ use serde_json::Value;
 use std::collections::BTreeSet;
 use std::path::PathBuf;
 
-pub fn run(file: Option<PathBuf>, dry_run: bool) -> Result<()> {
-    let path = file.or_else(crate::manifest::discover).ok_or_else(|| {
-        anyhow::anyhow!("no skills.toml found (looked in ./ and ~/.config/zskills/)")
-    })?;
+pub fn run(file: Option<PathBuf>, dry_run: bool, prune: bool) -> Result<()> {
+    // Warn loudly if a `./skills.toml` exists and the user didn't pass --file.
+    if file.is_none() {
+        if let Some(cwd_path) = crate::manifest::cwd_skills_toml() {
+            eprintln!(
+                "{} ignoring {} — pass {} to use it",
+                "!".yellow(),
+                cwd_path.display().to_string().dimmed(),
+                "--file <path>".bold()
+            );
+        }
+    }
+    let path = file
+        .or_else(crate::manifest::discover)
+        .ok_or_else(|| anyhow::anyhow!("no skills.toml found at ~/.config/zskills/skills.toml"))?;
     println!("Manifest: {}", path.display().to_string().dimmed());
 
     let manifest = crate::manifest::load(&path)?;
@@ -181,12 +192,21 @@ pub fn run(file: Option<PathBuf>, dry_run: bool) -> Result<()> {
         }
     }
     for n in &agent_to_remove {
-        println!(
-            "  {} remove  agent   {} {}",
-            "-".yellow(),
-            n,
-            "(installed but not in manifest)".dimmed()
-        );
+        if prune {
+            println!(
+                "  {} remove  agent   {} {}",
+                "-".red(),
+                n,
+                "(installed but not in manifest — bytes will be DELETED)".dimmed()
+            );
+        } else {
+            println!(
+                "  {} skip    agent   {} {}",
+                "·".dimmed(),
+                n,
+                "(in inventory but not in manifest — pass --prune to delete)".dimmed()
+            );
+        }
     }
 
     if dry_run {
@@ -296,10 +316,12 @@ pub fn run(file: Option<PathBuf>, dry_run: bool) -> Result<()> {
         }
     }
 
-    for n in &agent_to_remove {
-        match crate::agent_skill::remove(n) {
-            Ok(_) => println!("  removed agent skill {}", n.bold()),
-            Err(e) => eprintln!("{} {}: {}", "✗".red(), n, e),
+    if prune {
+        for n in &agent_to_remove {
+            match crate::agent_skill::remove(n) {
+                Ok(_) => println!("  removed agent skill {}", n.bold()),
+                Err(e) => eprintln!("{} {}: {}", "✗".red(), n, e),
+            }
         }
     }
 
