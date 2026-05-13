@@ -53,7 +53,10 @@ pub fn has_api_key() -> bool {
 
 /// Search skills.sh for skills matching `query`. `limit` is clamped to 1..=200 by the API.
 pub fn search(query: &str, limit: u32) -> Result<Vec<SearchHit>> {
-    let Some(api_key) = std::env::var(API_KEY_ENV).ok().filter(|v| !v.trim().is_empty()) else {
+    let Some(api_key) = std::env::var(API_KEY_ENV)
+        .ok()
+        .filter(|v| !v.trim().is_empty())
+    else {
         anyhow::bail!(
             "skills.sh requires an API key. Set {} (get one from https://www.skills.sh/account).",
             API_KEY_ENV

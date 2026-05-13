@@ -80,11 +80,7 @@ fn add(source: String) -> Result<()> {
 fn add_recommended() -> Result<()> {
     println!("Seeding recommended marketplaces ...");
     if let Err(e) = add("anthropics/claude-plugins-official".to_string()) {
-        eprintln!(
-            "  {} anthropics/claude-plugins-official: {}",
-            "✗".red(),
-            e
-        );
+        eprintln!("  {} anthropics/claude-plugins-official: {}", "✗".red(), e);
     }
     #[cfg(feature = "skills-sh")]
     println!(

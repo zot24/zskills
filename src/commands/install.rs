@@ -17,8 +17,7 @@ pub fn run(specs: Vec<String>) -> Result<()> {
     if known.is_empty() {
         println!(
             "{}",
-            "No marketplaces registered. Run `zskills marketplace add-recommended` first."
-                .yellow()
+            "No marketplaces registered. Run `zskills marketplace add-recommended` first.".yellow()
         );
         return Ok(());
     }
@@ -76,10 +75,7 @@ pub fn run(specs: Vec<String>) -> Result<()> {
 /// driver matched (and the caller should surface the plugin error), or Err if a driver
 /// was selected but failed.
 #[cfg(feature = "skills-sh")]
-fn try_install_from_remote(
-    spec: &str,
-    known: &serde_json::Map<String, Value>,
-) -> Result<bool> {
+fn try_install_from_remote(spec: &str, known: &serde_json::Map<String, Value>) -> Result<bool> {
     let has_skills_sh = known.values().any(|entry| {
         crate::commands::marketplace::is_remote_index(entry)
             && entry
@@ -109,9 +105,6 @@ fn try_install_from_remote(
 }
 
 #[cfg(not(feature = "skills-sh"))]
-fn try_install_from_remote(
-    _spec: &str,
-    _known: &serde_json::Map<String, Value>,
-) -> Result<bool> {
+fn try_install_from_remote(_spec: &str, _known: &serde_json::Map<String, Value>) -> Result<bool> {
     Ok(false)
 }
