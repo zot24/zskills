@@ -1,0 +1,27 @@
+[book]
+title = "zskills"
+description = "Package manager for Claude Code skills — declarative install across marketplaces"
+authors = ["zot24"]
+language = "en"
+src = "docs"
+
+[output.html]
+default-theme = "navy"
+preferred-dark-theme = "navy"
+git-repository-url = "https://github.com/zot24/zskills"
+edit-url-template = "https://github.com/zot24/zskills/edit/main/{path}"
+site-url = "/zskills/"
+
+[output.html.fold]
+enable = true
+level = 1
+
+[output.html.search]
+enable = true
+limit-results = 30
+use-boolean-and = true
+boost-title = 2
+boost-hierarchy = 2
+boost-paragraph = 1
+expand = true
+heading-split-level = 3
