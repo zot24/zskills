@@ -2,6 +2,29 @@
 
 All notable changes to this project are documented here. The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html). Releases from this point forward are managed by [release-please](https://github.com/googleapis/release-please) based on [Conventional Commits](https://www.conventionalcommits.org/).
 
+## [0.6.0](https://github.com/zot24/zskills/compare/v0.5.0...v0.6.0) (2026-05-13)
+
+
+### Features
+
+* add search command and optional skills.sh driver ([#4](https://github.com/zot24/zskills/issues/4)) ([f65573c](https://github.com/zot24/zskills/commit/f65573cc69cfa0f35b309e89809d912a1db7d39e))
+
+
+### Bug Fixes
+
+* **list:** cleaner group header — bare name + arrow source kind ([ea68a63](https://github.com/zot24/zskills/commit/ea68a63bc10ca87e8d1d66aa95d8a074caf1727c))
+* **sync:** honor npm/claims ownership; skip already-present source entries ([be3e187](https://github.com/zot24/zskills/commit/be3e1874658a0fa0e7280261e211cc85f854f56f))
+* **sync:** prevent data loss via safer defaults ([b97c721](https://github.com/zot24/zskills/commit/b97c721911a26fcc7cedbfd5e93374ff0d0af6b9))
+
+
+### Documentation
+
+* add mdBook static site + GitHub Pages deploy ([4a12893](https://github.com/zot24/zskills/commit/4a128938d6336791c88be738678137d2f45ddb4d))
+* cover v0.5/v0.5.1 features in depth ([cd802ef](https://github.com/zot24/zskills/commit/cd802ef21cb4a4977fabd64ccc94a0b709919e23))
+* document v0.6 search command and skills-sh optional feature ([#5](https://github.com/zot24/zskills/issues/5)) ([793ec61](https://github.com/zot24/zskills/commit/793ec61d3e214a7735b0b7e37f10e6826d67c601))
+* **site:** add CNAME for zskills.zot24.com ([a82cf7e](https://github.com/zot24/zskills/commit/a82cf7ef0a5726465dac36051116a19c7953fd65))
+* **site:** mirror .md files + add llms.txt and llms-full.txt ([4e0be13](https://github.com/zot24/zskills/commit/4e0be135ab5bbde5e3e9275a627a528ad9958ec7))
+
 ## [0.5.0](https://github.com/zot24/zskills/compare/v0.4.0...v0.5.0) (2026-05-13)
 
 
