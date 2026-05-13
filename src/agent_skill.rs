@@ -158,10 +158,18 @@ pub fn remove_from_user_dir(skill_name: &str) -> Result<()> {
 }
 
 /// Install an npm-based agent skill. Runs `npm install -g <pkg>` (or `install_cmd`),
-/// then diffs `~/.claude/skills/` before/after to discover which skills the package
-/// placed there. Each discovered skill is recorded in inventory with
-/// `source: "npm:<pkg>"`. Returns the list of newly-discovered skill names.
-pub fn install_npm(package: &str, install_cmd: Option<&str>) -> Result<Vec<String>> {
+/// then determines ownership of on-disk skills via:
+///
+/// 1. diff `~/.claude/skills/` before/after (catches packages that place new files)
+/// 2. glob-match `claims` patterns (catches packages that update pre-existing files)
+/// 3. preserve existing inventory tags for this source
+///
+/// Returns the list of skills now claimed (sorted).
+pub fn install_npm(
+    package: &str,
+    install_cmd: Option<&str>,
+    claims: &[String],
+) -> Result<Vec<String>> {
     if which::which("npm").is_err() && install_cmd.is_none() {
         anyhow::bail!("npm not found on PATH. Install Node.js, or set install_cmd for this entry.");
     }
@@ -177,7 +185,6 @@ pub fn install_npm(package: &str, install_cmd: Option<&str>) -> Result<Vec<Strin
         .unwrap_or_default()
         .into_iter()
         .collect();
-    let new_skills: Vec<String> = after.difference(&before).cloned().collect();
 
     let now = format!(
         "@{}",
@@ -189,20 +196,35 @@ pub fn install_npm(package: &str, install_cmd: Option<&str>) -> Result<Vec<Strin
     let pkg_version = npm_installed_version(package).unwrap_or_else(|_| "unknown".to_string());
     let source_tag = format!("npm:{}", package);
 
-    let mut inv = load_inventory()?;
-    // Mark every skill currently present-and-tagged-as-this-npm-pkg, plus the new ones.
-    // We re-claim *all* matching skills so re-runs detect renames/removals.
-    let mut owned_now: Vec<String> = new_skills.clone();
-    for n in &after {
-        if let Some(existing) = inv.agent_skills.get(n) {
-            if existing.source == source_tag {
-                owned_now.push(n.clone());
+    let mut owned: std::collections::BTreeSet<String> =
+        after.difference(&before).cloned().collect();
+
+    for pattern in claims {
+        for name in &after {
+            if glob_match(pattern, name) {
+                owned.insert(name.clone());
             }
         }
     }
-    owned_now.sort();
-    owned_now.dedup();
-    for n in &owned_now {
+
+    let mut inv = load_inventory()?;
+    for (name, entry) in &inv.agent_skills {
+        if entry.source == source_tag && after.contains(name) {
+            owned.insert(name.clone());
+        }
+    }
+
+    let to_drop: Vec<String> = inv
+        .agent_skills
+        .iter()
+        .filter(|(name, e)| e.source == source_tag && !after.contains(name.as_str()))
+        .map(|(name, _)| name.clone())
+        .collect();
+    for name in &to_drop {
+        inv.agent_skills.remove(name);
+    }
+
+    for n in &owned {
         inv.agent_skills.insert(
             n.clone(),
             Entry {
@@ -213,14 +235,42 @@ pub fn install_npm(package: &str, install_cmd: Option<&str>) -> Result<Vec<Strin
         );
     }
     save_inventory(&inv)?;
-    Ok(new_skills)
+
+    let mut out: Vec<String> = owned.into_iter().collect();
+    out.sort();
+    Ok(out)
 }
 
-/// Re-run the install command to upgrade an npm-based skill in place.
-pub fn upgrade_npm(package: &str, install_cmd: Option<&str>) -> Result<Vec<String>> {
-    // For most packages, running `npm install -g <pkg>@latest` upgrades to the
-    // newest matching version. We rely on the same diff-discovery as install.
-    install_npm(package, install_cmd)
+/// Re-run install (idempotent; same logic). Re-claims `claims` patterns each time.
+pub fn upgrade_npm(
+    package: &str,
+    install_cmd: Option<&str>,
+    claims: &[String],
+) -> Result<Vec<String>> {
+    install_npm(package, install_cmd, claims)
+}
+
+/// Minimal glob: `*` matches any sequence within a name (no `/`). Enough for `gsd-*` etc.
+#[cfg_attr(test, allow(dead_code))]
+pub(crate) fn glob_match(pattern: &str, name: &str) -> bool {
+    let parts: Vec<&str> = pattern.split('*').collect();
+    if parts.len() == 1 {
+        return pattern == name;
+    }
+    if !name.starts_with(parts[0]) {
+        return false;
+    }
+    let mut pos = parts[0].len();
+    for seg in &parts[1..parts.len() - 1] {
+        if seg.is_empty() {
+            continue;
+        }
+        match name[pos..].find(seg) {
+            Some(i) => pos += i + seg.len(),
+            None => return false,
+        }
+    }
+    name[pos..].ends_with(parts[parts.len() - 1])
 }
 
 fn run_install_command(package: &str, install_cmd: Option<&str>) -> Result<()> {
@@ -346,4 +396,34 @@ fn chrono_now_iso() -> String {
         .map(|d| d.as_secs())
         .unwrap_or(0);
     format!("@{}", now)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::glob_match;
+
+    #[test]
+    fn glob_prefix() {
+        assert!(glob_match("gsd-*", "gsd-add-tests"));
+        assert!(glob_match("gsd-*", "gsd-"));
+        assert!(!glob_match("gsd-*", "foo-bar"));
+    }
+
+    #[test]
+    fn glob_suffix() {
+        assert!(glob_match("*-skill", "my-skill"));
+        assert!(!glob_match("*-skill", "skill"));
+    }
+
+    #[test]
+    fn glob_middle() {
+        assert!(glob_match("a-*-b", "a-foo-b"));
+        assert!(!glob_match("a-*-b", "x-foo-b"));
+    }
+
+    #[test]
+    fn glob_exact_no_wildcard() {
+        assert!(glob_match("foo", "foo"));
+        assert!(!glob_match("foo", "foobar"));
+    }
 }

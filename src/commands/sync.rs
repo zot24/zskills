@@ -169,40 +169,61 @@ pub fn run(file: Option<PathBuf>, dry_run: bool) -> Result<()> {
 
     for entry in &manifest.agent_skills {
         if let Some(pkg) = entry.npm.as_deref() {
-            match crate::agent_skill::install_npm(pkg, entry.install_cmd.as_deref()) {
+            match crate::agent_skill::install_npm(pkg, entry.install_cmd.as_deref(), &entry.claims)
+            {
                 Ok(names) => {
-                    if names.is_empty() {
-                        println!(
-                            "  {} {} {}",
-                            "·".dimmed(),
-                            format!("npm:{}", pkg).bold(),
-                            "(no new skills discovered)".dimmed()
-                        );
-                    } else {
-                        println!(
-                            "  installed via npm:{}  ({} new skill{})",
-                            pkg.bold(),
-                            names.len(),
-                            if names.len() == 1 { "" } else { "s" }
-                        );
-                    }
+                    println!(
+                        "  {} npm:{}  ({} skill{})",
+                        "✓".green(),
+                        pkg.bold(),
+                        names.len(),
+                        if names.len() == 1 { "" } else { "s" }
+                    );
                 }
                 Err(e) => eprintln!("{} npm:{}: {}", "✗".red(), pkg, e),
             }
             continue;
         }
         match (entry.source.as_deref(), entry.name.as_deref()) {
-            (Some(src), name) => match crate::agent_skill::install(src, name) {
-                Ok(names) => {
-                    for n in &names {
-                        println!("  installed agent skill {}", n.bold());
+            (Some(src), name) => {
+                // Skip the (re-)install if the skill is already on disk + tagged
+                // with this same source. `upgrade` is the deliberate refresh path.
+                let inv_now = crate::agent_skill::load_inventory()?;
+                let on_disk: std::collections::BTreeSet<String> =
+                    crate::agent_skill::installed_on_disk()
+                        .unwrap_or_default()
+                        .into_iter()
+                        .collect();
+                let already_present = match name {
+                    Some(n) => {
+                        on_disk.contains(n)
+                            && inv_now.agent_skills.get(n).is_some_and(|e| e.source == src)
+                    }
+                    None => false,
+                };
+                if already_present {
+                    if let Some(n) = name {
+                        println!(
+                            "  {} {}  {}",
+                            "·".dimmed(),
+                            n,
+                            format!("← {}  (already present)", src).dimmed()
+                        );
+                    }
+                    continue;
+                }
+                match crate::agent_skill::install(src, name) {
+                    Ok(names) => {
+                        for n in &names {
+                            println!("  installed agent skill {}", n.bold());
+                        }
+                    }
+                    Err(e) => {
+                        eprintln!("{} {}: {}", "✗".red(), src, e);
                     }
                 }
-                Err(e) => {
-                    eprintln!("{} {}: {}", "✗".red(), src, e);
-                }
-            },
-            (None, Some(name)) => {
+            }
+            (None, Some(name)) if entry.npm.is_none() => {
                 // Local-only entry: register in inventory if present on disk; don't fetch.
                 let mut inv = crate::agent_skill::load_inventory()?;
                 if !inv.agent_skills.contains_key(name) {
@@ -229,6 +250,11 @@ pub fn run(file: Option<PathBuf>, dry_run: bool) -> Result<()> {
                     "{} agent_skill entry needs either `source` or `name`",
                     "✗".red()
                 );
+            }
+            (None, Some(_)) => {
+                // npm path; already handled by the early `if let Some(pkg) = entry.npm` continue.
+                // Reachable only if npm = Some(_) AND name = Some(_) — name is informational
+                // for npm entries.
             }
         }
     }

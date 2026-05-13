@@ -67,6 +67,12 @@ pub struct AgentSkillEntry {
     pub install_cmd: Option<String>,
     #[serde(default)]
     pub name: Option<String>,
+    /// Optional glob patterns matching skill directory names in `~/.claude/skills/`.
+    /// After install, every match gets tagged with this entry's source — useful when
+    /// the install command updates pre-existing files (no diff) but you want zskills
+    /// to take ownership of them. Example: `claims = ["gsd-*"]`.
+    #[serde(default)]
+    pub claims: Vec<String>,
 }
 
 pub fn discover() -> Option<PathBuf> {

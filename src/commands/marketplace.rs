@@ -148,12 +148,17 @@ fn update(name: Option<String>) -> Result<()> {
     };
     for n in &targets {
         let repo = crate::paths::marketplaces_dir()?.join(n);
-        if repo.exists() {
-            print!("Updating {} ... ", n);
-            match crate::git::pull(&repo) {
-                Ok(()) => println!("{}", "ok".green()),
-                Err(e) => println!("{} ({})", "fail".red(), e),
-            }
+        if !repo.exists() {
+            continue;
+        }
+        print!("Updating {} ... ", n);
+        if !crate::git::is_git_repo(&repo) {
+            println!("{}", "skipped (not a git working tree)".dimmed());
+            continue;
+        }
+        match crate::git::pull(&repo) {
+            Ok(()) => println!("{}", "ok".green()),
+            Err(e) => println!("{} ({})", "fail".red(), e),
         }
     }
     Ok(())

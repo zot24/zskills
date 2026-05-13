@@ -19,12 +19,20 @@ pub fn run(filter: Vec<String>) -> Result<()> {
                 continue;
             }
             let repo = crate::paths::marketplaces_dir()?.join(name);
-            if repo.exists() {
-                print!("  {} {} ... ", "↻".cyan(), name);
-                match crate::git::pull(&repo) {
-                    Ok(()) => println!("{}", "ok".green()),
-                    Err(e) => println!("{} ({})", "fail".red(), e),
-                }
+            if !repo.exists() {
+                continue;
+            }
+            print!("  {} {} ... ", "↻".cyan(), name);
+            if !crate::git::is_git_repo(&repo) {
+                println!(
+                    "{}",
+                    "skipped (not a git working tree — managed by Claude Code)".dimmed()
+                );
+                continue;
+            }
+            match crate::git::pull(&repo) {
+                Ok(()) => println!("{}", "ok".green()),
+                Err(e) => println!("{} ({})", "fail".red(), e),
             }
         }
     }
@@ -54,17 +62,17 @@ pub fn run(filter: Vec<String>) -> Result<()> {
 
             if let Some(pkg) = entry.npm.as_deref() {
                 print!("  {} npm:{} ... ", "↻".cyan(), pkg);
-                match crate::agent_skill::upgrade_npm(pkg, entry.install_cmd.as_deref()) {
-                    Ok(new_skills) => {
-                        if new_skills.is_empty() {
-                            println!("{}", "ok".green());
-                        } else {
-                            println!(
-                                "{} {}",
-                                "ok".green(),
-                                format!("(+{} new)", new_skills.len()).dimmed()
-                            );
-                        }
+                match crate::agent_skill::upgrade_npm(
+                    pkg,
+                    entry.install_cmd.as_deref(),
+                    &entry.claims,
+                ) {
+                    Ok(owned) => {
+                        println!(
+                            "{} {}",
+                            "ok".green(),
+                            format!("({} skills owned)", owned.len()).dimmed()
+                        );
                     }
                     Err(e) => println!("{} ({})", "fail".red(), e),
                 }
