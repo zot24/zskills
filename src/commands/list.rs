@@ -140,13 +140,24 @@ pub fn run(json_out: bool, verbose: bool) -> Result<()> {
 fn print_group(source: &str, names: &[String], verbose: bool) {
     let count = names.len();
     if count == 1 {
+        // Single skill from a source: "✓ <skill>  ← <source>"
         println!("  ✓ {}  {}", names[0], format!("← {}", source).dimmed());
         return;
     }
+    // Group header: "<label> (N skills)  ← <kind>"
+    // - npm:foo  → label = "foo",     kind = "npm"
+    // - owner/repo → label = "owner/repo", kind = "github"
+    // - local → label = "local",      kind = "local"
+    let (label, kind) = match source.split_once(':') {
+        Some(("npm", pkg)) => (pkg.to_string(), "npm"),
+        _ if source.contains('/') => (source.to_string(), "github"),
+        _ => (source.to_string(), source),
+    };
     println!(
-        "  ✓ {}  {}",
-        source.bold(),
-        format!("({} skills)", count).dimmed()
+        "  ✓ {} {}  {}",
+        label.bold(),
+        format!("({} skills)", count).dimmed(),
+        format!("← {}", kind).dimmed()
     );
     if verbose || count <= 5 {
         for n in names {
