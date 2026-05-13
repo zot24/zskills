@@ -39,7 +39,9 @@ claims = ["gsd-*"]
 Then:
 
 ```bash
-zskills marketplace add zot24/skills    # register the marketplace
+zskills marketplace add-recommended     # seed trusted defaults (Anthropic-official marketplace)
+zskills marketplace add zot24/skills    # register additional taps as needed
+zskills search <query>                  # find skills across registered marketplaces
 zskills sync                            # apply the manifest
 zskills upgrade                         # refresh everything from origin
 zskills list                            # see what's installed
@@ -62,8 +64,12 @@ zskills scan [path]                     # find project-scope skills across a tre
 zskills migrate <project>               # promote project skills to user scope
 zskills migrate-skill <name>            # promote ONE skill across every project
 zskills migrate-all <dir>               # interactive sweep
+zskills search <query>                  # keyword search across registered marketplaces
 zskills marketplace add|remove|list|update
+zskills marketplace add-recommended     # seed trusted defaults (anthropics/claude-plugins-official)
 ```
+
+Optional capabilities live behind cargo features so the default binary stays minimal — see [Commands → Optional features](./commands.md#optional-features) for the `skills-sh` remote-index driver.
 
 Full reference: [Commands](./commands.md). Workflows and recipes: [Use cases](./use-cases.md). How it works internally: [Architecture](./architecture.md). Stuck? [Troubleshooting](./troubleshooting.md).
 
@@ -73,4 +79,4 @@ Existing skill managers are JavaScript shims with per-skill Node cold-start, no 
 
 ## Source
 
-[github.com/zot24/zskills](https://github.com/zot24/zskills) · MIT license · v0.5+
+[github.com/zot24/zskills](https://github.com/zot24/zskills) · MIT license · v0.6+

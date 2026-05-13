@@ -11,10 +11,10 @@ cargo install --git https://github.com/zot24/zskills
 mkdir -p ~/.config/zskills
 scp old-machine:~/.config/zskills/skills.toml ~/.config/zskills/
 
-# Add the marketplaces named in the manifest
+# Seed the trusted defaults, then add any additional marketplaces named in the manifest
+zskills marketplace add-recommended       # anthropics/claude-plugins-official
 zskills marketplace add zot24/skills
 zskills marketplace add cloudflare/skills
-# (claude-plugins-official is registered automatically by Claude Code)
 
 # Apply
 zskills sync
@@ -172,3 +172,25 @@ Moves both `enabledPlugins` entries from the project's `.claude/settings.json` (
 ## 12. Vendor a global skill INTO a project (rare; manual)
 
 zskills doesn't push this direction yet (user-scope → project-scope). If you need a particular project to pin an exact version of a skill that diverges from the global one, copy `~/.claude/skills/<name>/` into the project's `.claude/skills/<name>/` and commit it. Claude Code resolves project scope before user scope, so the project's pinned copy wins.
+
+## 13. Find a skill before installing it
+
+You remember there's a Stripe integration somewhere but you don't know which marketplace ships it:
+
+```bash
+zskills search stripe                # substring-matches name + description across taps
+zskills search stripe --limit 5      # tighter output
+zskills search "data analytics"      # quoted multi-word queries work
+zskills search stripe --json | jq    # JSON for scripting
+```
+
+Search reads each marketplace's cached `marketplace.json` — purely local, no network. If you also have the `skills-sh` cargo feature compiled in and `ZSKILLS_SKILLS_SH_API_KEY` set, results from the skills.sh remote index are tagged `[skill]` and merged in:
+
+```bash
+cargo install --git https://github.com/zot24/zskills --features skills-sh --force
+export ZSKILLS_SKILLS_SH_API_KEY=sk_live_...
+zskills marketplace add skills.sh
+zskills search next-js                # now federates to skills.sh
+```
+
+Once you've found the name, `zskills install <name>` flips it on (or appends `[[skills]]` to `skills.toml` for the declarative path).

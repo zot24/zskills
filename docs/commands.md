@@ -231,9 +231,43 @@ Tap management — register, list, refresh, and remove Claude Code marketplaces.
 
 ```
 zskills marketplace add <owner/repo | git-url>
+zskills marketplace add-recommended
 zskills marketplace remove <name>
 zskills marketplace list [--json]
 zskills marketplace update [<name>]
 ```
 
 `add` clones the marketplace repo into `~/.claude/plugins/marketplaces/<name>/` and writes both `known_marketplaces.json` and `settings.json`'s `extraKnownMarketplaces`. Mirrors what `/plugin marketplace add` does inside Claude Code.
+
+`add-recommended` seeds the trusted defaults (currently just `anthropics/claude-plugins-official`). Idempotent — safe to re-run; existing marketplaces are left as-is.
+
+`add skills.sh` is recognized only when zskills was built with `--features skills-sh`. It registers skills.sh as a `remote-index` source type (no git clone) and is dispatched by `search` and `install` via the HTTP API. See [Optional features](#optional-features) below.
+
+## `search`
+
+Keyword search across every registered marketplace. Substring-matches `<query>` against `name + description` in each marketplace's cached `marketplace.json`. Purely local — no network calls.
+
+```
+zskills search <query> [--limit <n>] [--json]
+```
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--limit <n>` | 25 | Maximum results per marketplace |
+| `--json` | off | Emit results as a JSON array for scripting |
+
+With the `skills-sh` cargo feature compiled in AND `ZSKILLS_SKILLS_SH_API_KEY` set, `search` also federates to the skills.sh remote index and tags those results `[skill]`. Without the env var, the registered remote-index is skipped with a one-line hint and local search continues uninterrupted.
+
+## Optional features
+
+`zskills` ships vanilla by default. Optional capabilities are gated behind cargo features so they aren't even compiled into the binary unless you ask for them.
+
+| Feature | What it adds | How to enable |
+|---|---|---|
+| `skills-sh` | Federated `search` + `install` against the [skills.sh](https://www.skills.sh) remote index. Registers a new `remote-index` source type. Runtime activation requires `ZSKILLS_SKILLS_SH_API_KEY`. | `cargo install --git https://github.com/zot24/zskills --features skills-sh` |
+
+Without the feature, `zskills marketplace add skills.sh` returns *"unrecognized marketplace source"* — there's no dormant code, no env-var detection, nothing. The compiled binary is byte-identical to a feature-free build except for what you explicitly asked for.
+
+### `install` fallback (skills.sh feature only)
+
+When `skills-sh` is built in and a remote index is registered with a valid key, `install <name>` will fall through to skills.sh if the spec doesn't resolve in any local plugin marketplace. It performs an exact-slug match against the skills.sh search API and, on hit, routes through the existing Agent Skill install path (`git clone source/repo` → drop `SKILL.md` into `~/.claude/skills/<name>/`). No `enabledPlugins` flip — agent skills don't use that gate.

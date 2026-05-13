@@ -155,6 +155,20 @@ zskills sync
 zskills doctor --fix
 ```
 
+## "unrecognized marketplace source: skills.sh"
+
+You ran `zskills marketplace add skills.sh` against a default build. The skills.sh driver is gated behind the `skills-sh` cargo feature and not compiled into vanilla binaries. Reinstall with the feature on:
+
+```bash
+cargo install --git https://github.com/zot24/zskills --features skills-sh --force
+```
+
+Then set `ZSKILLS_SKILLS_SH_API_KEY` (get one from [skills.sh/account](https://www.skills.sh/account)) and retry the `marketplace add`. Without the env var, `search` will skip skills.sh with a one-line hint and `install` will not fall through to it.
+
+## "skills.sh rejected the API key in ZSKILLS_SKILLS_SH_API_KEY (HTTP 401)"
+
+The key is wrong, revoked, or expired. Generate a fresh one at [skills.sh/account](https://www.skills.sh/account), update your shell rc, and re-source. The whole skills.sh API is gated — there's no unauthenticated fallback today.
+
 ## Cargo install fails with "edition2024 not stabilized"
 
 You're on Rust < 1.85. zskills requires Rust 1.85 or newer (transitive `idna_adapter` dep). Update:
