@@ -30,6 +30,8 @@ jobs:
         with:
           mdbook-version: 'latest'
       - run: mdbook build
+      - name: Mirror .md files + generate llms.txt / llms-full.txt
+        run: ./scripts/build-llms-txt.sh docs book
       - uses: actions/configure-pages@v5
       - uses: actions/upload-pages-artifact@v3
         with:
