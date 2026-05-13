@@ -10,11 +10,12 @@ pub fn run(_skills: Vec<String>) -> Result<()> {
             continue;
         }
         print!("Updating {} ... ", mp_name);
-        if !crate::git::is_git_repo(&repo) {
-            println!("{}", "skipped (not a git working tree)".dimmed());
-            continue;
-        }
-        match crate::git::pull(&repo) {
+        let result = if crate::git::is_git_repo(&repo) {
+            crate::git::pull(&repo)
+        } else {
+            crate::marketplace::update_via_tarball(mp_name, &repo)
+        };
+        match result {
             Ok(()) => println!("{}", "ok".green()),
             Err(e) => println!("{} ({})", "fail".red(), e),
         }
