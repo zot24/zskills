@@ -7,6 +7,7 @@ use crate::cli::MarketplaceCmd;
 pub fn run(cmd: MarketplaceCmd) -> Result<()> {
     match cmd {
         MarketplaceCmd::Add { source } => add(source),
+        MarketplaceCmd::AddRecommended => add_recommended(),
         MarketplaceCmd::Remove { name } => remove(name),
         MarketplaceCmd::List { json: as_json } => list(as_json),
         MarketplaceCmd::Update { name } => update(name),
@@ -63,6 +64,18 @@ fn add(source: String) -> Result<()> {
     crate::settings::save(&settings_path, &settings)?;
 
     println!("{} added marketplace {}", "✓".green(), name);
+    Ok(())
+}
+
+fn add_recommended() -> Result<()> {
+    println!("Seeding recommended marketplaces ...");
+    if let Err(e) = add("anthropics/claude-plugins-official".to_string()) {
+        eprintln!(
+            "  {} anthropics/claude-plugins-official: {}",
+            "✗".red(),
+            e
+        );
+    }
     Ok(())
 }
 
