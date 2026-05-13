@@ -113,6 +113,46 @@ Three failure modes:
 
 Doctor never deletes plugin bytes. That's `purge`'s job — a deliberate, explicit operation.
 
+## Marketplace update strategies
+
+Marketplaces installed via Claude Code can be either git working trees or unpacked tarballs (the latter is how `claude-plugins-official` ships, with a `.gcs-sha` cache marker file). `zskills upgrade` handles both:
+
+```
+                        ┌─ is .git/ present?
+                        │
+                  ┌─────┴──────┐
+                yes            no
+                  │            │
+            git pull         resolve source from known_marketplaces.json
+                                  │
+                          ┌───────┴────────┐
+                  github source        other
+                          │                │
+            fetch archive tarball       error / skip
+            from GitHub HEAD branch
+            (falls back to main, master)
+                          │
+            extract to sibling staging dir
+                          │
+            atomic-ish rename swap (backup → rename → cleanup)
+```
+
+The tarball path uses `reqwest` blocking + `flate2` + `tar`. Result: every marketplace recorded in `known_marketplaces.json` is updatable from one command regardless of how Claude Code originally installed it.
+
+## Ownership tracking for agent skills
+
+Agent skill inventory entries carry a `source` field that's *typed* by prefix:
+
+| Inventory source | Means | Refresh via |
+|---|---|---|
+| `owner/repo` (or git URL) | Git-cloned source | `git pull` cached clone + re-copy |
+| `npm:<pkg>` | npm-installed | `npm install -g <pkg>` |
+| `local` | Local-only, never refreshed | (manual) |
+
+The manifest entry's `claims` glob list bridges the gap when an npm package overwrites files in-place: after the install command runs, every `~/.claude/skills/<name>/` directory matching any glob in `claims` is tagged with the entry's source. This is the only way to claim "I own these 66 pre-existing directories" without re-installing fresh.
+
+`sync` uses the same ownership signals (source match + npm tag + claims glob) when deciding whether a skill not in the desired set should be removed — preventing accidental deletion of skills owned by a `[[agent_skills]]` entry.
+
 ## Why git is shelled out
 
 `zskills` runs `git clone --depth 1` and `git pull --ff-only` via `std::process::Command` instead of linking `libgit2`. Reasons:

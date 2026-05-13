@@ -58,19 +58,76 @@ zskills disable <name>...
 Apply a declarative `skills.toml` manifest. Diffs intent against current state, then atomically writes the necessary settings.json and inventory changes.
 
 ```
-zskills sync [--file <path>] [--dry-run]
+zskills sync [--file <path>] [--dry-run] [--prune]
 ```
 
 | Flag | Default | Description |
 |------|---------|-------------|
-| `--file <path>` | auto | Path to `skills.toml`. Default: `./skills.toml` → `$XDG_CONFIG_HOME/zskills/skills.toml` → `~/.config/zskills/skills.toml` |
+| `--file <path>` | `$XDG_CONFIG_HOME/zskills/skills.toml` (then `~/.config/zskills/skills.toml`) | Path to `skills.toml`. **`./skills.toml` is NOT auto-loaded** — pass `--file ./skills.toml` to use a project-local manifest. (This caused destructive surprises in v0.5; the v0.5.1 default is safer.) |
 | `--dry-run` | off | Print the plan; do not write |
+| `--prune` | off | Allow destructive removals. Without `--prune`, agent skills present on disk but absent from the manifest are reported as `skip` and left untouched. With `--prune`, their bytes are deleted from `~/.claude/skills/`. |
 
 What sync does:
 1. For each `[[skills]]` entry: resolve `name@marketplace`, write to `enabledPlugins`. Entries currently enabled but not in the manifest get flipped off.
-2. For each `[[agent_skills]]` entry: if `source` is present, clone/pull the source repo into the cache, copy `skills/<name>/` to `~/.claude/skills/`, record in inventory. If `source` is absent (local-only), register the existing on-disk skill in inventory without fetching anything.
+2. For each `[[agent_skills]]` entry: if `source` is present, clone/pull and copy `skills/<name>/` to `~/.claude/skills/`. If `npm` is present, run `npm install -g <pkg>` (or `install_cmd`), then claim all matching `claims` globs. If neither is present (just `name`), register the existing on-disk skill in inventory without fetching anything.
+3. Agent skills tracked in inventory but missing from the manifest are reported. With `--prune` they're deleted; without, they're skipped.
 
 Sync is idempotent. Run it on every fresh machine to reproduce your global state from a single file.
+
+If a `./skills.toml` exists in CWD when you run `sync` without `--file`, zskills prints a yellow warning telling you it's being ignored — pass `--file ./skills.toml` if that's actually what you wanted.
+
+## `upgrade`
+
+The one command for refreshing everything zskills manages — marketplaces, git agent skills, and npm agent skills.
+
+```
+zskills upgrade [<name>...]
+```
+
+| Source kind | What `upgrade` does |
+|---|---|
+| Plugins (marketplace-based) | For each registered marketplace tap, `git pull --ff-only` if it's a git working tree; otherwise fetch the GitHub archive tarball from the source recorded in `known_marketplaces.json` and atomically swap the tree. Claude Code picks up new plugin versions on next start. |
+| Git agent skills (`source = "owner/repo"`) | `git pull` the cached source clone + re-copy bytes |
+| npm agent skills (`npm = "pkg"`) | Run `npm install -g <pkg>` (or `install_cmd`), then re-apply the `claims` glob to retag inventory |
+
+Pass specific names to upgrade just those; empty = upgrade everything. The `name` filter matches against the manifest's `npm`, `source`, or `name` fields.
+
+## Agent skills manifest schema
+
+The `[[agent_skills]]` table supports four orthogonal fields, used in combination:
+
+```toml
+# Git-sourced single skill
+[[agent_skills]]
+source = "jakubkrehel/make-interfaces-feel-better"
+
+# Git-sourced multi-skill repo, install just one
+[[agent_skills]]
+source = "owner/multi-skill-repo"
+name = "specific-skill"
+
+# npm-distributed package
+[[agent_skills]]
+npm = "get-shit-done-cc"
+claims = ["gsd-*"]              # glob patterns; every match in ~/.claude/skills/ is owned by this entry
+
+# npm with custom installer command
+[[agent_skills]]
+npm = "some-tool"
+install_cmd = "npx some-tool setup"
+
+# Local-only (just tracked, never refreshed from a remote)
+[[agent_skills]]
+name = "my-internal-tool"
+```
+
+| Field | Purpose |
+|---|---|
+| `source` | Git source: `owner/repo` (GitHub) or full git URL. `sync`/`upgrade` clone/pull and copy. |
+| `npm` | npm package name. `sync`/`upgrade` runs `npm install -g <pkg>`. |
+| `install_cmd` | Custom installer command — overrides the default `npm install -g`. Used for packages with their own setup CLI. |
+| `name` | Optional. For source entries, pick a single skill out of a multi-skill repo. For local-only entries, required — names the on-disk skill to track. |
+| `claims` | Glob patterns (e.g., `["gsd-*"]`) matched against `~/.claude/skills/`. After install, every match is tagged with this entry's source. Used for npm packages whose installer touches pre-existing directories — so the diff-after-install discovers nothing, but `claims` retroactively claims ownership. |
 
 ## `update`
 

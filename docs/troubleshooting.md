@@ -30,6 +30,27 @@ zskills install firecrawl@zot24-skills        # instead of just firecrawl
 2. **The plugin was removed from its marketplace upstream.** Pick a replacement or `zskills disable <name>` to silence the warning.
 3. **The marketplace tap was unregistered (`marketplace remove`).** `zskills doctor --fix` will drop the orphan reference from `enabledPlugins`.
 
+## Sync deleted agent skills I didn't expect to lose
+
+A v0.5 incident: running `zskills sync` inside a repo that ships its own `skills.toml` (like the zot24/skills marketplace) destructively re-applied *that* manifest against your user-scope state. v0.5.1+ defaults prevent this:
+
+1. **`./skills.toml` no longer auto-loads.** Sync without `--file` uses only `~/.config/zskills/skills.toml`. If `./skills.toml` exists, sync prints a yellow warning pointing at it.
+2. **`sync` never deletes bytes by default.** Removal of agent skills no longer in the manifest requires `--prune`. Without it, they're reported as `skip` and left intact.
+
+If you lost a skill before these defaults, check whether the skill was committed in any project under your tree:
+
+```bash
+find ~/Desktop/code -path '*/.claude/skills/<name>/SKILL.md' 2>/dev/null
+# Or via git history (any project that had it)
+for p in ~/Desktop/code/*; do
+  [ -d "$p/.git" ] || continue
+  sha=$(git -C "$p" log --all --oneline -- ".claude/skills/<name>/SKILL.md" | head -1 | awk '{print $1}')
+  [ -n "$sha" ] && echo "$p: $sha"
+done
+```
+
+Then restore via `git checkout <sha> -- .claude/skills/<name>/` in the relevant project and `cp -R` to `~/.claude/skills/`.
+
 ## Sync wants to disable plugins I want to keep
 
 If your `skills.toml` doesn't list a plugin, `sync` will flip it off because the manifest is *declarative* — it represents your complete intent. Two ways to handle:
@@ -66,6 +87,27 @@ The first project (alphabetical) wins as canonical. If you want a *different* pr
 - Manually copy the desired version to `~/.claude/skills/<name>/` before `migrate-skill` (which will detect it as "already at user scope" and overwrite with canonical only if you proceed — so cancel first).
 
 A `--canonical <project-path>` flag is reasonable for v0.4 if this becomes common pain.
+
+## npm agent skill says "no new skills discovered"
+
+Some npm packages place their skill files via a separate setup CLI (e.g., `npx <pkg> install`), not via npm's own postinstall hook. If `npm install -g <pkg>` alone doesn't write to `~/.claude/skills/`, the diff-before-after returns empty and zskills sees nothing to claim.
+
+Two fixes:
+
+1. Add a `claims` glob so zskills retroactively claims pre-existing directories that match:
+   ```toml
+   [[agent_skills]]
+   npm = "get-shit-done-cc"
+   claims = ["gsd-*"]
+   ```
+2. Set `install_cmd` to whatever the package's actual installer is:
+   ```toml
+   [[agent_skills]]
+   npm = "some-tool"
+   install_cmd = "npx some-tool install"
+   ```
+
+If you're not sure where a package writes its skills, run it once manually, then check `~/.claude/skills/` and pick a `claims` pattern that covers them.
 
 ## `sync` clones repeatedly / is slow on Agent Skills
 

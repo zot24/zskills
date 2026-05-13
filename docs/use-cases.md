@@ -103,7 +103,49 @@ Sometimes a skill is genuinely project-specific (e.g., the project's own ops run
 
 **Pattern B: Put a project-scope `skills.toml` in the project root.** `zskills sync` (run from inside the project) auto-discovers `./skills.toml` before falling back to `~/.config/zskills/`. So a project can carry its own intent for what should be globally enabled when working on it.
 
-## 7. Diagnose drift
+## 7. Adopt a multi-skill npm package (e.g., `get-shit-done-cc`)
+
+Some skill bundles ship as npm packages whose post-install hook writes many skill directories under `~/.claude/skills/`. zskills owns them via a `npm` + `claims` declaration:
+
+```toml
+[[agent_skills]]
+npm = "get-shit-done-cc"
+claims = ["gsd-*"]               # any name matching this glob is owned by this entry
+```
+
+After `zskills sync`, all matching `~/.claude/skills/gsd-*/` directories are tagged `source: "npm:get-shit-done-cc"` in inventory. `zskills list` groups them under one line:
+
+```
+✓ get-shit-done-cc (66 skills)  ← npm
+    gsd-add-tests, gsd-ai-integration-phase, … [-v to list all 66]
+```
+
+`zskills upgrade` will run `npm update -g get-shit-done-cc` and re-claim, keeping the bundle current.
+
+If the npm package needs a custom setup command (some packages have a separate CLI to actually place files), use `install_cmd`:
+
+```toml
+[[agent_skills]]
+npm = "some-tool"
+install_cmd = "npx some-tool install"
+claims = ["sometool-*"]
+```
+
+## 8. One command, refresh everything
+
+```bash
+zskills upgrade
+```
+
+That single command:
+
+- `git pull` (or tarball fetch) every marketplace tap, so Claude Code sees the latest plugin versions
+- `git pull` every git-sourced agent skill and re-copy bytes
+- `npm update -g` every npm-sourced agent skill (and re-claim via `claims` globs)
+
+Pass names to limit scope: `zskills upgrade get-shit-done-cc zot24-skills`.
+
+## 9. Diagnose drift
 
 ```bash
 zskills doctor
@@ -115,11 +157,11 @@ If something's amiss:
 - **"installed from a marketplace that's no longer registered"** — you `marketplace remove`-d a tap but plugins from it are still in the inventory. Run `zskills purge <name>` to clean.
 - **"agent skill tracked in inventory but missing on disk"** — someone deleted `~/.claude/skills/<name>/` manually. `zskills doctor --fix` removes the stale inventory entry, or re-run `sync` to reinstall.
 
-## 8. Reproduce someone else's setup
+## 10. Reproduce someone else's setup
 
 Ask them for their `skills.toml`. Drop it in `~/.config/zskills/skills.toml`. Register any marketplaces they use (`zskills marketplace add owner/repo`). Run `zskills sync`. Done.
 
-## 9. Promote project skills + remove the project's `.claude/skills/`
+## 11. Promote project skills + remove the project's `.claude/skills/`
 
 ```bash
 zskills migrate ~/Desktop/code/some-project --remove-from-project
@@ -127,6 +169,6 @@ zskills migrate ~/Desktop/code/some-project --remove-from-project
 
 Moves both `enabledPlugins` entries from the project's `.claude/settings.json` (or `settings.local.json`) AND every directory under `.claude/skills/` into user scope, then clears the project copies. Useful when you've decided "these are clearly global tools — they shouldn't be vendored per-project."
 
-## 10. Vendor a global skill INTO a project (rare; manual)
+## 12. Vendor a global skill INTO a project (rare; manual)
 
 zskills doesn't push this direction yet (user-scope → project-scope). If you need a particular project to pin an exact version of a skill that diverges from the global one, copy `~/.claude/skills/<name>/` into the project's `.claude/skills/<name>/` and commit it. Claude Code resolves project scope before user scope, so the project's pinned copy wins.
