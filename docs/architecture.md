@@ -139,6 +139,26 @@ Marketplaces installed via Claude Code can be either git working trees or unpack
 
 The tarball path uses `reqwest` blocking + `flate2` + `tar`. Result: every marketplace recorded in `known_marketplaces.json` is updatable from one command regardless of how Claude Code originally installed it.
 
+## Remote-index marketplaces (cargo-feature-gated)
+
+A third marketplace shape lives behind cargo features: **remote indexes**. Their `known_marketplaces.json` entry has `source.source = "remote-index"` and a `source.url`, but no `installLocation` — there's no git clone. `search` and `install` dispatch to driver code that talks to the index's HTTP API.
+
+```
+known_marketplaces.json:
+{
+  "skills.sh": {
+    "source": { "source": "remote-index", "url": "https://skills.sh" },
+    "autoUpdate": false
+  }
+}
+```
+
+Each driver lives behind its own cargo feature (today: `skills-sh`). Default builds don't compile the driver in — `marketplace add skills.sh` errors with *"unrecognized marketplace source"*. With the feature, `add` accepts the special name, `search` federates to the API when `ZSKILLS_SKILLS_SH_API_KEY` is set, and `install` falls through to the index when local plugin resolution misses (routing through the existing agent-skill install path).
+
+The non-feature build still tolerates remote-index entries that might be in `known_marketplaces.json` from a feature-built version: `list` shows them with a `[remote-index]` tag, `update` skips them, `remove` works as expected. This is a forward-compatibility hedge, not a runtime dispatch path.
+
+See [README → Roadmap: third-party marketplace drivers](https://github.com/zot24/zskills#roadmap-third-party-marketplace-drivers) for when the cargo-feature pattern is the wrong shape and a subprocess plugin protocol takes over.
+
 ## Ownership tracking for agent skills
 
 Agent skill inventory entries carry a `source` field that's *typed* by prefix:
