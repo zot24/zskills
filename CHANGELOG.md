@@ -2,6 +2,19 @@
 
 All notable changes to this project are documented here. The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html). Releases from this point forward are managed by [release-please](https://github.com/googleapis/release-please) based on [Conventional Commits](https://www.conventionalcommits.org/).
 
+## [0.5.0](https://github.com/zot24/zskills/compare/v0.4.0...v0.5.0) (2026-05-13)
+
+
+### Features
+
+* tarball update for non-git marketplaces ([db6e370](https://github.com/zot24/zskills/commit/db6e370cf2a511f0fa1318d8f61a7b2502dcbe83))
+* v0.5 — upgrade command, npm sources, grouped list ([fb37468](https://github.com/zot24/zskills/commit/fb37468a68a03b43cbc13c1f9e574a10d8ef9273))
+
+
+### Bug Fixes
+
+* claims field + quiet git output + skip non-git marketplaces ([b424711](https://github.com/zot24/zskills/commit/b42471127db361b1ac210a2edae073f49c2cece7))
+
 ## [0.4.0](https://github.com/zot24/zskills/compare/v0.3.0...v0.4.0) (2026-05-12)
 
 
