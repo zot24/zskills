@@ -33,6 +33,13 @@ glob = "0.3"
 dialoguer = { version = "0.11", default-features = false }
 which = "6"
 
+[features]
+default = []
+# Opt-in driver for the skills.sh remote index. Requires a personal API key via
+# ZSKILLS_SKILLS_SH_API_KEY at runtime. Off by default — the binary stays vanilla
+# unless you ask for it: `cargo install zskills --features skills-sh`.
+skills-sh = []
+
 [dev-dependencies]
 assert_cmd = "2"
 predicates = "3"

@@ -163,12 +163,29 @@ pub enum Command {
     /// Marketplace (tap) management
     #[command(subcommand)]
     Marketplace(MarketplaceCmd),
+
+    /// Search registered marketplaces by keyword (substring-match on name + description)
+    Search {
+        /// Query string
+        query: String,
+
+        /// Max results to return per marketplace
+        #[arg(long, default_value_t = 25)]
+        limit: u32,
+
+        /// Output as JSON
+        #[arg(long)]
+        json: bool,
+    },
 }
 
 #[derive(Subcommand)]
 pub enum MarketplaceCmd {
     /// Add a marketplace tap (owner/repo or full git URL)
     Add { source: String },
+
+    /// Seed the recommended trusted marketplaces (anthropics/claude-plugins-official)
+    AddRecommended,
 
     /// Remove a marketplace tap
     Remove { name: String },
@@ -223,6 +240,9 @@ impl Cli {
                 dry_run,
             } => crate::commands::migrate_all::run(dir, threshold, yes, dry_run),
             Command::Marketplace(cmd) => crate::commands::marketplace::run(cmd),
+            Command::Search { query, limit, json } => {
+                crate::commands::search::run(query, limit, json)
+            }
         }
     }
 }

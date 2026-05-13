@@ -8,6 +8,7 @@ pub mod migrate_all;
 pub mod migrate_skill;
 pub mod remove;
 pub mod scan;
+pub mod search;
 pub mod sync;
 pub mod update;
 pub mod upgrade;

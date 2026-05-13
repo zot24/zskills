@@ -135,13 +135,40 @@ zskills migrate-all ~/Desktop/code --threshold 2 -y    # non-interactive (no sou
 - **Git is shelled out.** Reuses your credential helpers; no `libgit2` to bundle.
 - **No async network unless needed.** Marketplace caches live on disk; `git pull` does the work.
 
+## Optional features
+
+`zskills` ships vanilla by default — the binary only talks to local marketplace caches you already trust. Optional capabilities are gated behind cargo features so they aren't even compiled in unless you ask for them.
+
+| Feature | What it adds | How to enable |
+|---|---|---|
+| `skills-sh` | Federated `search` + `install` against the [skills.sh](https://www.skills.sh) remote index. Registers a `remote-index` source type, dispatches to its REST API, requires `ZSKILLS_SKILLS_SH_API_KEY` at runtime. | `cargo install --git https://github.com/zot24/zskills --features skills-sh` |
+
+Without the feature, `zskills marketplace add skills.sh` returns *"unrecognized marketplace source"* — no dormant code paths, no env-var detection, nothing.
+
 ## Status
+
+v0.6 — `search <query>` across registered marketplaces, `marketplace add-recommended` seeder for trusted defaults, optional `skills-sh` federation behind a cargo feature.
 
 v0.3 — adds `migrate-skill` (promote ONE skill across all projects in a tree) and `migrate-all` (interactive sweep with per-skill prompts for source + cleanup). Agent skill entries now support optional `source` (local-only entries are valid). Manifest writes preserve existing comments via `toml_edit`.
 
 v0.2 — declarative `sync` for both plugins and Agent Skills, scan/migrate over both, atomic settings.json round-trip, doctor reconciliation across all three states (settings, inventory, disk).
 
-Lockfile semantics, `info`/`search`, and full version pinning still to come.
+Lockfile semantics, `info`, and full version pinning still to come.
+
+## Roadmap: third-party marketplace drivers
+
+The `skills-sh` cargo feature is a holding pattern for *"one known remote index, ship it as opt-in code."* It's the right shape today; it stops being the right shape if two or three other remote indexes want to plug in.
+
+When that happens, the planned move is a **subprocess plugin protocol** rather than more cargo features:
+
+- Drivers ship as separate binaries on `$PATH`, named `zskills-driver-<name>` (git-style extension pattern).
+- Marketplaces with `source.source = "remote-index"` get matched to a driver by URL host (or an explicit `driver` field on the entry).
+- zskills exec's the driver with a JSON request on stdin (`{"method": "search", "params": {"query": "stripe", "limit": 25}}`) and reads a JSON response from stdout. Methods: `search`, `resolve` (slug → install coordinates), and optionally `audit`.
+- Drivers can be written in any language, version independently, and ship under their own trust models.
+
+What this buys: third parties can publish drivers without forking zskills, and the core binary doesn't grow with each new index. What it costs: a stable wire protocol commitment, subprocess overhead, and a public surface to support long-term. **It's worth it once there are at least two or three confirmed driver consumers** — building it for one half-confirmed consumer (skills.sh, gated behind API keys) is premature abstraction. Until then, `--features skills-sh` is the right ergonomic.
+
+If you maintain a remote index that would want to plug in, [open an issue](https://github.com/zot24/zskills/issues) so we can size demand.
 
 ## Sister project
 
