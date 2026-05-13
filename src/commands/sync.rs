@@ -84,21 +84,62 @@ pub fn run(file: Option<PathBuf>, dry_run: bool) -> Result<()> {
         .filter(|n| !on_disk.contains(*n))
         .cloned()
         .collect();
-    let agent_to_refresh_named: Vec<_> = desired_named
+    let _agent_to_refresh_named: Vec<String> = desired_named
         .iter()
         .filter(|n| on_disk.contains(*n))
         .cloned()
         .collect();
+
+    // For source-only entries: only show "install" if at least one of the skills the
+    // repo would provide isn't yet on disk OR tagged with this source. Otherwise we'd
+    // re-install every sync, which is wasteful and noisy.
+    let deferred_sources_to_install: Vec<&crate::manifest::AgentSkillEntry> = deferred_sources
+        .iter()
+        .filter(|e| {
+            let Some(src) = &e.source else { return false };
+            // If we've already inventoried anything from this source AND those entries
+            // are all on disk, treat as "already present".
+            let inventoried_from_source: Vec<&String> = inv
+                .agent_skills
+                .iter()
+                .filter(|(_, entry)| entry.source == *src)
+                .map(|(name, _)| name)
+                .collect();
+            if inventoried_from_source.is_empty() {
+                return true;
+            }
+            inventoried_from_source
+                .iter()
+                .any(|n| !on_disk.contains(n.as_str()))
+        })
+        .copied()
+        .collect();
+    // Don't propose removing a skill that's owned by any manifest entry — either:
+    //   (a) it came from a source-only [[agent_skills]] entry (we'll re-resolve), or
+    //   (b) its inventory source is "npm:<pkg>" matching an [[agent_skills]] npm= entry, or
+    //   (c) its name matches a `claims` glob on any entry.
     let agent_to_remove: Vec<_> = current_managed
         .iter()
         .filter(|n| !desired_named.contains(*n))
-        // Don't remove a skill that's in inventory but came from a source-only entry.
-        // We'll re-resolve those when applying; planning here is conservative.
         .filter(|n| {
-            let src = inv.agent_skills.get(*n).map(|e| e.source.clone());
-            !deferred_sources
-                .iter()
-                .any(|e| e.source.as_ref() == src.as_ref())
+            let inv_src = inv.agent_skills.get(*n).map(|e| e.source.clone());
+            let owned_by_manifest = manifest.agent_skills.iter().any(|e| {
+                // (a) source-only entry whose source matches the inventory tag
+                if e.source.is_some() && e.name.is_none() && e.source == inv_src {
+                    return true;
+                }
+                // (b) npm entry whose tag matches
+                if let Some(pkg) = &e.npm {
+                    if inv_src.as_deref() == Some(&format!("npm:{}", pkg)) {
+                        return true;
+                    }
+                }
+                // (c) claims glob match on any entry
+                e.claims
+                    .iter()
+                    .any(|pat| crate::agent_skill::glob_match(pat, n))
+            });
+            !owned_by_manifest
         })
         .cloned()
         .collect();
@@ -109,8 +150,7 @@ pub fn run(file: Option<PathBuf>, dry_run: bool) -> Result<()> {
         && plugins_to_disable.is_empty()
         && agent_to_install_named.is_empty()
         && agent_to_remove.is_empty()
-        && deferred_sources.is_empty()
-        && agent_to_refresh_named.is_empty();
+        && deferred_sources_to_install.is_empty();
     if nothing {
         println!("  (no changes — manifest matches current state)");
         return Ok(());
@@ -130,7 +170,7 @@ pub fn run(file: Option<PathBuf>, dry_run: bool) -> Result<()> {
     for n in &agent_to_install_named {
         println!("  {} install agent   {}", "+".green(), n);
     }
-    for entry in &deferred_sources {
+    for entry in &deferred_sources_to_install {
         if let Some(s) = &entry.source {
             println!(
                 "  {} install agent   {} {}",
@@ -139,9 +179,6 @@ pub fn run(file: Option<PathBuf>, dry_run: bool) -> Result<()> {
                 "(all skills in repo)".dimmed()
             );
         }
-    }
-    for n in &agent_to_refresh_named {
-        println!("  {} refresh agent   {}", "~".cyan(), n);
     }
     for n in &agent_to_remove {
         println!(
