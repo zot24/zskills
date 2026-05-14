@@ -1,0 +1,84 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="630" viewBox="0 0 1200 630">
+  <!-- Background: navy gradient matching the mdBook navy theme -->
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#161923"/>
+      <stop offset="1" stop-color="#262d3f"/>
+    </linearGradient>
+    <linearGradient id="accent" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0" stop-color="#7aa2f7"/>
+      <stop offset="1" stop-color="#bb9af7"/>
+    </linearGradient>
+  </defs>
+
+  <rect width="1200" height="630" fill="url(#bg)"/>
+
+  <!-- Subtle dot grid -->
+  <g fill="#3b4261" opacity="0.35">
+    <circle cx="60"  cy="60"  r="1.5"/>
+    <circle cx="120" cy="60"  r="1.5"/>
+    <circle cx="180" cy="60"  r="1.5"/>
+    <circle cx="60"  cy="120" r="1.5"/>
+    <circle cx="120" cy="120" r="1.5"/>
+    <circle cx="180" cy="120" r="1.5"/>
+    <circle cx="1020" cy="510" r="1.5"/>
+    <circle cx="1080" cy="510" r="1.5"/>
+    <circle cx="1140" cy="510" r="1.5"/>
+    <circle cx="1020" cy="570" r="1.5"/>
+    <circle cx="1080" cy="570" r="1.5"/>
+    <circle cx="1140" cy="570" r="1.5"/>
+  </g>
+
+  <!-- Wordmark -->
+  <text x="80" y="220"
+        font-family="-apple-system, 'SF Pro Display', 'Inter', system-ui, sans-serif"
+        font-size="156"
+        font-weight="800"
+        fill="url(#accent)"
+        letter-spacing="-4">zskills</text>
+
+  <!-- Tagline -->
+  <text x="80" y="290"
+        font-family="-apple-system, 'SF Pro Display', 'Inter', system-ui, sans-serif"
+        font-size="32"
+        font-weight="500"
+        fill="#c0caf5">Package manager for Claude Code skills</text>
+
+  <text x="80" y="336"
+        font-family="-apple-system, 'SF Pro Display', 'Inter', system-ui, sans-serif"
+        font-size="22"
+        font-weight="400"
+        fill="#7c8a9e">Declarative · Atomic · Multi-marketplace · Written in Rust</text>
+
+  <!-- Terminal preview -->
+  <g transform="translate(80, 396)">
+    <rect width="1040" height="168" rx="14" fill="#1a1e2c" stroke="#2c324a" stroke-width="1.5"/>
+    <!-- Window dots -->
+    <circle cx="26" cy="26" r="6" fill="#f7768e"/>
+    <circle cx="48" cy="26" r="6" fill="#e0af68"/>
+    <circle cx="70" cy="26" r="6" fill="#9ece6a"/>
+    <text x="100" y="32" font-family="ui-monospace, 'SF Mono', Menlo, monospace"
+          font-size="14" fill="#5a6378">~/projects</text>
+
+    <!-- Prompt lines -->
+    <g font-family="ui-monospace, 'SF Mono', Menlo, monospace" font-size="22">
+      <text x="28" y="78"  fill="#bb9af7">$</text>
+      <text x="52" y="78"  fill="#c0caf5">zskills marketplace add-recommended</text>
+      <text x="28" y="114" fill="#bb9af7">$</text>
+      <text x="52" y="114" fill="#c0caf5">zskills search stripe</text>
+      <text x="28" y="150" fill="#bb9af7">$</text>
+      <text x="52" y="150" fill="#c0caf5">zskills sync</text>
+    </g>
+  </g>
+
+  <!-- Version badge -->
+  <g transform="translate(1020, 60)">
+    <rect width="100" height="36" rx="18" fill="#9ece6a" opacity="0.18" stroke="#9ece6a" stroke-width="1.5"/>
+    <text x="50" y="24"
+          font-family="-apple-system, 'SF Pro Display', system-ui, sans-serif"
+          font-size="18"
+          font-weight="600"
+          fill="#9ece6a"
+          text-anchor="middle">v0.6</text>
+  </g>
+</svg>
