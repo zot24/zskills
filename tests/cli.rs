@@ -549,3 +549,114 @@ fn remove_without_args_or_interactive_errors() {
     let home = fake_home();
     zskills(&home).args(["remove"]).assert().failure();
 }
+
+/// Build a test fixture where CLAUDE_HOME is nested inside a temp parent dir,
+/// so `~/.claude.json` (sibling of `~/.claude/`) can be created at a known path.
+fn fake_home_nested() -> (TempDir, std::path::PathBuf) {
+    let parent = tempfile::tempdir().unwrap();
+    let claude_home = parent.path().join(".claude");
+    fs::create_dir_all(claude_home.join("plugins").join("marketplaces")).unwrap();
+    fs::write(
+        claude_home.join("settings.json"),
+        serde_json::to_string(&json!({"enabledPlugins": {}})).unwrap(),
+    )
+    .unwrap();
+    fs::write(
+        claude_home.join("plugins").join("installed_plugins.json"),
+        r#"{"version":2,"plugins":{}}"#,
+    )
+    .unwrap();
+    fs::write(
+        claude_home.join("plugins").join("known_marketplaces.json"),
+        "{}",
+    )
+    .unwrap();
+    (parent, claude_home)
+}
+
+fn zskills_nested(parent: &TempDir, claude_home: &std::path::Path) -> Command {
+    let mut cmd = Command::cargo_bin("zskills").unwrap();
+    cmd.env("CLAUDE_HOME", claude_home);
+    // Make sure the managed-settings probe doesn't pick up a real system file in CI.
+    cmd.env(
+        "ZSKILLS_MANAGED_SETTINGS",
+        parent.path().join("__no_managed__"),
+    );
+    // Pin CWD so project-scope probes are deterministic.
+    cmd.current_dir(parent.path());
+    cmd
+}
+
+#[test]
+fn list_shows_user_mcps_from_claude_json() {
+    let (parent, claude_home) = fake_home_nested();
+    let claude_json = parent.path().join(".claude.json");
+    fs::write(
+        &claude_json,
+        serde_json::to_string(&json!({
+            "mcpServers": {
+                "honcho":  { "type": "http", "url": "https://mcp.honcho.dev" },
+                "github":  { "command": "npx", "args": ["-y", "@modelcontextprotocol/server-github"],
+                             "env": { "GITHUB_TOKEN": "${GITHUB_TOKEN}" } }
+            }
+        }))
+        .unwrap(),
+    )
+    .unwrap();
+    zskills_nested(&parent, &claude_home)
+        .args(["list"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("MCP Servers"))
+        .stdout(predicate::str::contains("honcho"))
+        .stdout(predicate::str::contains("github"))
+        .stdout(predicate::str::contains("1 env"));
+}
+
+#[test]
+fn list_shows_project_mcps_from_mcp_json_wrapped() {
+    let (parent, claude_home) = fake_home_nested();
+    fs::write(
+        parent.path().join(".mcp.json"),
+        serde_json::to_string(&json!({
+            "mcpServers": { "postgres": { "command": "docker", "args": ["run", "..."] } }
+        }))
+        .unwrap(),
+    )
+    .unwrap();
+    zskills_nested(&parent, &claude_home)
+        .args(["list"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("project"))
+        .stdout(predicate::str::contains("postgres"));
+}
+
+#[test]
+fn list_handles_flat_mcp_json_schema() {
+    let (parent, claude_home) = fake_home_nested();
+    // Many plugins ship .mcp.json without the `mcpServers` wrapper — flat map.
+    fs::write(
+        parent.path().join(".mcp.json"),
+        serde_json::to_string(&json!({
+            "linear": { "type": "http", "url": "https://mcp.linear.app/mcp" }
+        }))
+        .unwrap(),
+    )
+    .unwrap();
+    zskills_nested(&parent, &claude_home)
+        .args(["list"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("linear"));
+}
+
+#[test]
+fn list_with_no_mcps_anywhere_shows_none_configured() {
+    let (parent, claude_home) = fake_home_nested();
+    zskills_nested(&parent, &claude_home)
+        .args(["list"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("(none configured)"));
+}

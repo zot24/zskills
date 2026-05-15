@@ -7,6 +7,7 @@ pub fn run(json_out: bool, verbose: bool) -> Result<()> {
     let report = crate::reconcile::run()?;
     let inv = crate::agent_skill::load_inventory()?;
     let on_disk = crate::agent_skill::installed_on_disk().unwrap_or_default();
+    let mcps = crate::mcp::load_all().unwrap_or_default();
 
     let managed_names: Vec<&String> = inv.agent_skills.keys().collect();
     let untracked: Vec<String> = on_disk
@@ -51,7 +52,8 @@ pub fn run(json_out: bool, verbose: bool) -> Result<()> {
             "agent_skills": {
                 "managed": groups,
                 "untracked": untracked,
-            }
+            },
+            "mcp_servers": mcps,
         });
         println!("{}", serde_json::to_string_pretty(&out)?);
         return Ok(());
@@ -106,6 +108,8 @@ pub fn run(json_out: bool, verbose: bool) -> Result<()> {
             print_group(src, names, verbose);
         }
     }
+
+    print_mcp_section(&mcps);
 
     if !untracked.is_empty() {
         println!(
@@ -170,6 +174,93 @@ fn print_group(source: &str, names: &[String], verbose: bool) {
             preview.join(", ").dimmed(),
             format!("… [-v to list all {}]", count).dimmed()
         );
+    }
+}
+
+fn print_mcp_section(mcps: &[crate::mcp::McpServer]) {
+    println!("\n{}", "MCP Servers".bold().green());
+    if mcps.is_empty() {
+        println!("  (none configured)");
+        return;
+    }
+
+    let mut by_scope: BTreeMap<u8, (crate::mcp::Scope, Vec<&crate::mcp::McpServer>)> =
+        BTreeMap::new();
+    for m in mcps {
+        by_scope
+            .entry(m.scope.precedence())
+            .or_insert_with(|| (m.scope.clone(), Vec::new()))
+            .1
+            .push(m);
+    }
+
+    let name_w = mcps.iter().map(|m| m.name.len()).max().unwrap_or(0).max(8);
+
+    for (_, (scope, servers)) in by_scope.iter_mut() {
+        servers.sort_by(|a, b| a.name.cmp(&b.name));
+        println!(
+            "  {} {}",
+            scope.label().bold(),
+            format!("({})", servers.len()).dimmed()
+        );
+        for m in servers {
+            let attribution = match &m.source {
+                crate::mcp::Source::FromPlugin { plugin } => {
+                    format!("  ★ plugin:{}", plugin).cyan().to_string()
+                }
+                crate::mcp::Source::Manual => String::new(),
+            };
+            let sensitive = match m.transport.sensitive_count() {
+                0 => String::new(),
+                n => format!("  ({})", pluralize_sensitive(&m.transport, n))
+                    .dimmed()
+                    .to_string(),
+            };
+            let deprecated = if m.transport.kind() == "sse" {
+                "  [sse: deprecated]".yellow().to_string()
+            } else {
+                String::new()
+            };
+            println!(
+                "    {:name_w$}  {:5}  {}{}{}{}",
+                m.name,
+                m.transport.kind(),
+                short(&m.transport.short(), 60),
+                attribution,
+                sensitive,
+                deprecated,
+                name_w = name_w
+            );
+        }
+    }
+}
+
+fn pluralize_sensitive(t: &crate::mcp::Transport, n: usize) -> String {
+    let word = match t {
+        crate::mcp::Transport::Stdio { .. } => {
+            if n == 1 {
+                "env"
+            } else {
+                "envs"
+            }
+        }
+        _ => {
+            if n == 1 {
+                "header"
+            } else {
+                "headers"
+            }
+        }
+    };
+    format!("{} {}", n, word)
+}
+
+fn short(s: &str, max: usize) -> String {
+    if s.chars().count() <= max {
+        s.to_string()
+    } else {
+        let truncated: String = s.chars().take(max.saturating_sub(1)).collect();
+        format!("{}…", truncated)
     }
 }
 
