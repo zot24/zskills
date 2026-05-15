@@ -49,20 +49,29 @@ pub enum Transport {
         command: String,
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         args: Vec<String>,
-        /// Env var *keys* only — values are never captured (often contain `${VAR}` refs
-        /// or, in rare bad-practice cases, inline secrets).
+        /// Env var *keys* only — values are never stored, only briefly inspected
+        /// for `${VAR}` references which land in `env_refs`. Both `key` and `var-name`
+        /// are safe to surface; raw values are not, so they get dropped.
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         env_keys: Vec<String>,
+        /// Names of `${VAR}` references appearing anywhere in the env values.
+        /// Used by `doctor` to verify each referenced env var is actually set.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        env_refs: Vec<String>,
     },
     Http {
         url: String,
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         header_keys: Vec<String>,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        header_refs: Vec<String>,
     },
     Sse {
         url: String,
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         header_keys: Vec<String>,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        header_refs: Vec<String>,
     },
 }
 
@@ -93,6 +102,15 @@ impl Transport {
             Transport::Http { header_keys, .. } | Transport::Sse { header_keys, .. } => {
                 header_keys.len()
             }
+        }
+    }
+
+    /// Names of all `${VAR}` references in this server's values. Doctor checks
+    /// each against the process environment.
+    pub fn referenced_vars(&self) -> &[String] {
+        match self {
+            Transport::Stdio { env_refs, .. } => env_refs,
+            Transport::Http { header_refs, .. } | Transport::Sse { header_refs, .. } => header_refs,
         }
     }
 }
@@ -235,36 +253,89 @@ fn parse_transport(entry: &Value) -> Option<Transport> {
     let obj = entry.as_object()?;
     let kind = obj.get("type").and_then(|v| v.as_str());
     match kind {
-        Some("http") => Some(Transport::Http {
-            url: obj.get("url")?.as_str()?.to_string(),
-            header_keys: key_list(obj.get("headers")),
-        }),
-        Some("sse") => Some(Transport::Sse {
-            url: obj.get("url")?.as_str()?.to_string(),
-            header_keys: key_list(obj.get("headers")),
-        }),
+        Some("http") => {
+            let (header_keys, header_refs) = keys_and_refs(obj.get("headers"));
+            Some(Transport::Http {
+                url: obj.get("url")?.as_str()?.to_string(),
+                header_keys,
+                header_refs,
+            })
+        }
+        Some("sse") => {
+            let (header_keys, header_refs) = keys_and_refs(obj.get("headers"));
+            Some(Transport::Sse {
+                url: obj.get("url")?.as_str()?.to_string(),
+                header_keys,
+                header_refs,
+            })
+        }
         // No `type` → stdio (Claude's default).
-        _ => Some(Transport::Stdio {
-            command: obj.get("command")?.as_str()?.to_string(),
-            args: obj
-                .get("args")
-                .and_then(|v| v.as_array())
-                .map(|a| {
-                    a.iter()
-                        .filter_map(|x| x.as_str())
-                        .map(str::to_string)
-                        .collect()
-                })
-                .unwrap_or_default(),
-            env_keys: key_list(obj.get("env")),
-        }),
+        _ => {
+            let (env_keys, env_refs) = keys_and_refs(obj.get("env"));
+            Some(Transport::Stdio {
+                command: obj.get("command")?.as_str()?.to_string(),
+                args: obj
+                    .get("args")
+                    .and_then(|v| v.as_array())
+                    .map(|a| {
+                        a.iter()
+                            .filter_map(|x| x.as_str())
+                            .map(str::to_string)
+                            .collect()
+                    })
+                    .unwrap_or_default(),
+                env_keys,
+                env_refs,
+            })
+        }
     }
 }
 
-fn key_list(v: Option<&Value>) -> Vec<String> {
-    v.and_then(|x| x.as_object())
-        .map(|m| m.keys().cloned().collect())
-        .unwrap_or_default()
+/// For an env/headers object, return (keys, ${VAR} refs found in values).
+/// Values themselves are dropped — only the `${VAR}` variable *names* are kept.
+fn keys_and_refs(v: Option<&Value>) -> (Vec<String>, Vec<String>) {
+    let Some(obj) = v.and_then(|x| x.as_object()) else {
+        return (vec![], vec![]);
+    };
+    let mut keys: Vec<String> = Vec::new();
+    let mut refs: Vec<String> = Vec::new();
+    for (k, val) in obj {
+        keys.push(k.clone());
+        if let Some(s) = val.as_str() {
+            for r in extract_var_refs(s) {
+                if !refs.contains(&r) {
+                    refs.push(r);
+                }
+            }
+        }
+    }
+    (keys, refs)
+}
+
+/// Pull every `${VAR}` reference out of a string, returning just the variable names.
+/// Accepts identifiers matching `[A-Za-z_][A-Za-z0-9_]*` inside the braces.
+fn extract_var_refs(s: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    let bytes = s.as_bytes();
+    let mut i = 0;
+    while i + 2 < bytes.len() {
+        if bytes[i] == b'$' && bytes[i + 1] == b'{' {
+            let start = i + 2;
+            if let Some(end_off) = bytes[start..].iter().position(|&b| b == b'}') {
+                let name = &s[start..start + end_off];
+                let valid = !name.is_empty()
+                    && name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
+                    && !name.chars().next().unwrap().is_ascii_digit();
+                if valid {
+                    out.push(name.to_string());
+                }
+                i = start + end_off + 1;
+                continue;
+            }
+        }
+        i += 1;
+    }
+    out
 }
 
 /// Walk enabled plugins' install paths, parse their `.claude-plugin/plugin.json`
@@ -370,7 +441,10 @@ mod tests {
     #[test]
     fn parse_stdio_counts_env_keys_only() {
         let v = json!({"command":"x","env":{"A":"${A}","B":"literal"}});
-        assert_eq!(parse_transport(&v).unwrap().sensitive_count(), 2);
+        let t = parse_transport(&v).unwrap();
+        assert_eq!(t.sensitive_count(), 2);
+        // Only "A" references a ${VAR}; "B" is a literal and contributes no refs.
+        assert_eq!(t.referenced_vars(), &["A".to_string()]);
     }
 
     #[test]
@@ -380,6 +454,28 @@ mod tests {
         assert_eq!(t.kind(), "http");
         assert_eq!(t.short(), "https://x.example");
         assert_eq!(t.sensitive_count(), 1);
+        assert_eq!(t.referenced_vars(), &["X".to_string()]);
+    }
+
+    #[test]
+    fn extract_var_refs_handles_embedded_and_multiple() {
+        assert_eq!(extract_var_refs("${A}"), vec!["A"]);
+        assert_eq!(extract_var_refs("Bearer ${TOKEN}"), vec!["TOKEN"]);
+        assert_eq!(extract_var_refs("${A}-${B}"), vec!["A", "B"]);
+        assert_eq!(extract_var_refs("literal"), Vec::<String>::new());
+        // Bad shapes don't panic and don't produce false matches.
+        assert_eq!(extract_var_refs("${}"), Vec::<String>::new());
+        assert_eq!(extract_var_refs("${1BAD}"), Vec::<String>::new());
+        assert_eq!(extract_var_refs("$NOTBRACED"), Vec::<String>::new());
+    }
+
+    #[test]
+    fn refs_are_deduped() {
+        let v = json!({"command":"x","env":{"A":"${TOK}","B":"x ${TOK} y"}});
+        assert_eq!(
+            parse_transport(&v).unwrap().referenced_vars(),
+            &["TOK".to_string()]
+        );
     }
 
     #[test]

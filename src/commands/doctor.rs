@@ -5,6 +5,8 @@ pub fn run(fix: bool) -> Result<()> {
     let report = crate::reconcile::run()?;
     let mut issues = 0;
 
+    issues += check_mcps();
+
     if !report.enabled_orphan.is_empty() {
         issues += report.enabled_orphan.len();
         println!(
@@ -86,4 +88,63 @@ pub fn run(fix: bool) -> Result<()> {
     }
 
     Ok(())
+}
+
+/// Static MCP server checks. Returns the number of warnings emitted.
+///
+/// We don't try to spawn or talk to the servers themselves — that's a runtime
+/// concern that belongs to Claude Code, and replicating it would risk divergent
+/// diagnoses. What we *can* verify without spawning:
+///
+/// 1. **stdio** servers reference a `command` that resolves on `$PATH`.
+/// 2. Every `${VAR}` referenced in `env` (stdio) or `headers` (http/sse) is
+///    actually defined in the user's environment.
+/// 3. SSE servers get a deprecation note (the spec marks `sse` as legacy).
+///
+/// `--fix` is a no-op for MCPs in M3: none of these failures are auto-fixable
+/// (we won't install a missing binary or invent an env var). Surfacing them is
+/// the value-add.
+fn check_mcps() -> usize {
+    let mcps = match crate::mcp::load_all() {
+        Ok(m) => m,
+        Err(_) => return 0,
+    };
+    if mcps.is_empty() {
+        return 0;
+    }
+    let mut issues = 0;
+    let mut by_server: Vec<(String, String, Vec<String>)> = Vec::new(); // (name, scope, messages)
+
+    for m in &mcps {
+        let mut msgs: Vec<String> = Vec::new();
+        if let crate::mcp::Transport::Stdio { command, .. } = &m.transport {
+            if which::which(command).is_err() {
+                msgs.push(format!("command not found on $PATH: {}", command));
+            }
+        }
+        for var in m.transport.referenced_vars() {
+            if std::env::var(var).is_err() {
+                msgs.push(format!("env var `{}` is referenced but not set", var));
+            }
+        }
+        if m.transport.kind() == "sse" {
+            msgs.push("transport `sse` is deprecated; switch to `http`".to_string());
+        }
+        if !msgs.is_empty() {
+            issues += msgs.len();
+            by_server.push((m.name.clone(), m.scope.label().to_string(), msgs));
+        }
+    }
+
+    if by_server.is_empty() {
+        return 0;
+    }
+    println!("{} {} MCP issue(s):", "✗".red(), issues);
+    for (name, scope, msgs) in &by_server {
+        println!("  {} {}", format!("[{}]", scope).dimmed(), name.bold());
+        for msg in msgs {
+            println!("    - {}", msg);
+        }
+    }
+    issues
 }
