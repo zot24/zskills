@@ -20,8 +20,7 @@ impl Item {
 }
 
 pub fn fzf_available() -> bool {
-    which::which("fzf").is_ok()
-        && !std::env::var("ZSKILLS_NO_FZF").is_ok_and(|v| !v.is_empty())
+    which::which("fzf").is_ok() && !std::env::var("ZSKILLS_NO_FZF").is_ok_and(|v| !v.is_empty())
 }
 
 /// Prompt the user to pick one item. Returns `None` if cancelled.

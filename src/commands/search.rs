@@ -117,7 +117,12 @@ fn install_from_hits(hits: &[Hit]) -> Result<()> {
 
     let items: Vec<Item> = hits
         .iter()
-        .map(|h| Item::new(format!("{}@{}", h.name, h.marketplace), h.description.clone()))
+        .map(|h| {
+            Item::new(
+                format!("{}@{}", h.name, h.marketplace),
+                h.description.clone(),
+            )
+        })
         .collect();
     match crate::interactive::pick_one("Install", &items)? {
         None => println!("Aborted."),
