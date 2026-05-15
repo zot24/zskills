@@ -7,6 +7,7 @@ mod inventory;
 mod lockfile;
 mod manifest;
 mod marketplace;
+mod mcp;
 mod paths;
 mod reconcile;
 mod settings;

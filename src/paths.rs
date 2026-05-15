@@ -13,6 +13,17 @@ pub fn settings_json() -> Result<PathBuf> {
     Ok(claude_home()?.join("settings.json"))
 }
 
+/// `~/.claude.json` — Claude Code's user-scope state file, sibling of `~/.claude/`.
+/// This is where `claude mcp add --scope user` writes its `mcpServers` map, distinct
+/// from `~/.claude/settings.json`. Both can contain `mcpServers`; zskills reads both.
+pub fn claude_json() -> Result<PathBuf> {
+    let home = claude_home()?;
+    let parent = home
+        .parent()
+        .context("claude_home has no parent directory")?;
+    Ok(parent.join(".claude.json"))
+}
+
 pub fn plugins_dir() -> Result<PathBuf> {
     Ok(claude_home()?.join("plugins"))
 }

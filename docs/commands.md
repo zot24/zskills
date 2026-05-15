@@ -21,7 +21,15 @@ zskills list [--json]
 |------|---------|-------------|
 | `--json` | off | Emit a machine-readable JSON document for scripting |
 
-The non-JSON output groups results into four plugin buckets (active, installed-but-disabled, enabled-but-not-installed, installed-from-missing-marketplace) plus two Agent Skill buckets (managed by zskills, on-disk-but-untracked).
+The non-JSON output groups results into four plugin buckets (active, installed-but-disabled, enabled-but-not-installed, installed-from-missing-marketplace) plus two Agent Skill buckets (managed by zskills, on-disk-but-untracked), plus a final **MCP Servers** section that aggregates every server visible to Claude Code from all of:
+
+- `~/.claude.json` and `~/.claude/settings.json` — user scope
+- `<cwd>/.mcp.json` and `<cwd>/.claude/settings.json` — project scope
+- `<cwd>/.claude.local/settings.json` — local (gitignored) scope
+- `/Library/Application Support/ClaudeCode/managed-settings.json` (macOS) / `/etc/claude-code/managed-settings.json` (Linux) — managed (org-deployed) scope
+- An attribution column reads each enabled plugin's `plugin.json` / sibling `.mcp.json` and marks entries with `★ plugin:<name>` when the server is bundled by a plugin.
+
+Servers are grouped by scope (managed → local → project → user) and only the *keys* of `env` / `headers` are surfaced (no values), so the output never leaks secrets even when `${VAR}` refs aren't used. Set `ZSKILLS_MANAGED_SETTINGS=<path>` to override the managed-settings probe (useful in CI).
 
 ## `install`
 
