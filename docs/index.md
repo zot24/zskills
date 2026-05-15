@@ -1,8 +1,19 @@
 # zskills
 
-A package manager for [Claude Code](https://claude.com/claude-code) skills. Declarative install, multi-marketplace, written in Rust. Manages both **Claude Code plugins** (via marketplaces, `settings.json` → `enabledPlugins`) and **Agent Skills** (the older raw-`SKILL.md` format under `~/.claude/skills/`) from a single manifest.
+A declarative package manager for agentic coding CLIs — skills, plugins, and MCP servers from a single TOML manifest. Written in Rust.
 
-Think `brew bundle` for Claude Code: a `skills.toml` declares intent, your `~/.claude/settings.json` and `installed_plugins.json` get reconciled atomically. Works with any marketplace tap (`zot24-skills`, `claude-plugins-official`, `cloudflare`, custom) and any GitHub repo that exposes an Agent Skill under `skills/<name>/SKILL.md`. npm-distributed skill bundles (like `get-shit-done-cc`) are supported via an `npm = "<pkg>"` declaration.
+Think `brew bundle` for your AI coding setup: `skills.toml` declares intent, the runtime's on-disk config (e.g. Claude Code's `~/.claude/settings.json`, `installed_plugins.json`, and MCP server entries) gets reconciled atomically. Works with any marketplace tap, any GitHub repo that exposes a skill under `skills/<name>/SKILL.md`, and npm-distributed skill bundles via `npm = "<pkg>"`.
+
+## Supported runtimes
+
+| Runtime | Status | What's managed |
+|---|---|---|
+| [Claude Code](https://claude.com/claude-code) | ✅ supported | plugins (via marketplaces), Agent Skills (`~/.claude/skills/`), MCP servers (all five known scopes) |
+| Grok-based CLIs (e.g. [`grok-cli`](https://github.com/superagent-ai/grok-cli)) | planned | skills (`~/.agents/skills/`), MCP servers |
+| [Codex](https://github.com/openai/codex) | planned | skills, MCP servers |
+| xAI's official CLI | planned | once it ships |
+
+The data model is runtime-agnostic; new runtimes are new loaders, not a new tool.
 
 ## Install
 
@@ -75,7 +86,14 @@ Full reference: [Commands](./commands.md). Workflows and recipes: [Use cases](./
 
 ## Why
 
-Existing skill managers are JavaScript shims with per-skill Node cold-start, no atomic write semantics, no notion of upgrade-from-origin for marketplaces shipped as tarballs, and no way to take ownership of skill bundles installed via other tooling. `zskills` is a single static binary that wraps Claude Code's existing plugin substrate, atomically — preserving every unknown field in your `settings.json` (hooks, permissions, env, MCP servers), tracking ownership via inventory tags + glob claims, and reconciling all three sources of truth in one pass.
+Existing tooling is fragmented across runtimes, primitives, and languages: a JS shim for Claude skills, a separate flow for MCP servers, no shared manifest, no atomic write semantics, no way to take ownership of bundles installed via other tooling. `zskills` is a single static binary that:
+
+- Manages **skills**, **plugins**, and **MCP servers** from one declarative manifest.
+- Preserves every unknown field in your settings JSON (hooks, permissions, env, anything the runtime adds later) — atomic round-trips, never clobbers.
+- Tracks ownership via inventory tags + glob claims so you can take over skill bundles installed by other tools.
+- Reconciles intent ↔ inventory ↔ activation in one pass via `sync`.
+- Treats secrets carefully: only `${VAR}` references and key names ever land in zskills's data structures, never values.
+- Is built for multiple runtimes — Claude Code today, more planned as their primitives stabilize.
 
 ## Source
 
