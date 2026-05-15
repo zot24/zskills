@@ -504,3 +504,48 @@ fn doctor_detects_orphan_and_fixes_it() {
     let s: serde_json::Value = serde_json::from_slice(&fs::read(&settings_path).unwrap()).unwrap();
     assert!(s["enabledPlugins"].get("ghost@test-mp").is_none());
 }
+
+#[test]
+fn install_interactive_flag_in_help() {
+    let home = fake_home();
+    zskills(&home)
+        .args(["install", "--help"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("-i"))
+        .stdout(predicate::str::contains("--interactive"));
+}
+
+#[test]
+fn search_interactive_flag_in_help() {
+    let home = fake_home();
+    zskills(&home)
+        .args(["search", "--help"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("-i"))
+        .stdout(predicate::str::contains("--interactive"));
+}
+
+#[test]
+fn remove_interactive_flag_in_help() {
+    let home = fake_home();
+    zskills(&home)
+        .args(["remove", "--help"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("-i"))
+        .stdout(predicate::str::contains("--interactive"));
+}
+
+#[test]
+fn install_without_args_or_interactive_errors() {
+    let home = fake_home();
+    zskills(&home).args(["install"]).assert().failure();
+}
+
+#[test]
+fn remove_without_args_or_interactive_errors() {
+    let home = fake_home();
+    zskills(&home).args(["remove"]).assert().failure();
+}

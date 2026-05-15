@@ -33,7 +33,9 @@ Existing options are JavaScript shims that pay Node cold-start per skill (`bunx 
 ```
 zskills list [-v]                       # what's installed; agent skills grouped by source
 zskills install <name>                  # add to enabledPlugins
+zskills install -i                      # browse all marketplace plugins, fuzzy-pick one
 zskills remove  <name>                  # disable + drop inventory entry (keep bytes — apt style)
+zskills remove  -i                      # multi-select from enabled plugins to remove
 zskills purge   <name>                  # also delete bytes
 zskills enable  <name>                  # flip on without (un)installing
 zskills disable <name>
@@ -45,10 +47,13 @@ zskills scan [path]                     # find project-scope skills across a tre
 zskills migrate <project>               # promote one project's skills to user scope
 zskills migrate-skill <name>            # promote ONE skill across every project in a tree
 zskills migrate-all <dir>               # interactive: walk a tree, prompt per skill
+zskills search <query> [-i]             # -i picks a result and installs it
 zskills marketplace add|remove|list|update
 ```
 
 `<name>` accepts unqualified (`servarr`) when unambiguous, or `name@marketplace` (`servarr@zot24-skills`) to disambiguate.
+
+`-i` / `--interactive` is available on `install`, `remove`, and `search`.
 
 ## Declarative manifest (skills.toml)
 

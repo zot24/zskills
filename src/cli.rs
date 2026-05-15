@@ -29,14 +29,20 @@ pub enum Command {
 
     /// Install + enable one or more skills (format: name or name@marketplace)
     Install {
+        /// Browse all marketplace plugins interactively and pick one to install
+        #[arg(short = 'i', long)]
+        interactive: bool,
+
         /// Skills to install
-        #[arg(required = true)]
         skills: Vec<String>,
     },
 
     /// Disable + drop from inventory (keeps bytes on disk)
     Remove {
-        #[arg(required = true)]
+        /// Browse enabled plugins interactively and pick which to remove
+        #[arg(short = 'i', long)]
+        interactive: bool,
+
         skills: Vec<String>,
     },
 
@@ -176,6 +182,10 @@ pub enum Command {
         /// Output as JSON
         #[arg(long)]
         json: bool,
+
+        /// After showing results, pick one interactively and install it
+        #[arg(short = 'i', long)]
+        interactive: bool,
     },
 }
 
@@ -207,9 +217,15 @@ impl Cli {
     pub fn run(self) -> anyhow::Result<()> {
         match self.command {
             Command::List { json, verbose } => crate::commands::list::run(json, verbose),
-            Command::Install { skills } => crate::commands::install::run(skills),
-            Command::Remove { skills } => crate::commands::remove::run(skills, false),
-            Command::Purge { skills } => crate::commands::remove::run(skills, true),
+            Command::Install {
+                skills,
+                interactive,
+            } => crate::commands::install::run(skills, interactive),
+            Command::Remove {
+                skills,
+                interactive,
+            } => crate::commands::remove::run(skills, interactive, false),
+            Command::Purge { skills } => crate::commands::remove::run(skills, false, true),
             Command::Enable { skills } => crate::commands::enable::run(skills, true),
             Command::Disable { skills } => crate::commands::enable::run(skills, false),
             Command::Update { skills } => crate::commands::update::run(skills),
@@ -240,9 +256,12 @@ impl Cli {
                 dry_run,
             } => crate::commands::migrate_all::run(dir, threshold, yes, dry_run),
             Command::Marketplace(cmd) => crate::commands::marketplace::run(cmd),
-            Command::Search { query, limit, json } => {
-                crate::commands::search::run(query, limit, json)
-            }
+            Command::Search {
+                query,
+                limit,
+                json,
+                interactive,
+            } => crate::commands::search::run(query, limit, json, interactive),
         }
     }
 }

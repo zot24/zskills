@@ -4,7 +4,15 @@
 use anyhow::Result;
 use owo_colors::OwoColorize;
 
-pub fn run(specs: Vec<String>, purge_bytes: bool) -> Result<()> {
+pub fn run(specs: Vec<String>, interactive: bool, purge_bytes: bool) -> Result<()> {
+    if interactive && specs.is_empty() {
+        return run_interactive(purge_bytes);
+    }
+
+    if specs.is_empty() {
+        anyhow::bail!("specify at least one skill name, or use -i/--interactive to browse");
+    }
+
     let known = crate::marketplace::load_known(&crate::paths::known_marketplaces_json()?)?;
     let settings_path = crate::paths::settings_json()?;
     let inventory_path = crate::paths::installed_plugins_json()?;
@@ -54,4 +62,34 @@ pub fn run(specs: Vec<String>, purge_bytes: bool) -> Result<()> {
     crate::settings::save(&settings_path, &settings)?;
     crate::inventory::save(&inventory_path, &inventory)?;
     Ok(())
+}
+
+fn run_interactive(purge_bytes: bool) -> Result<()> {
+    use dialoguer::MultiSelect;
+
+    let settings_path = crate::paths::settings_json()?;
+    let settings = crate::settings::load(&settings_path)?;
+
+    let ep_keys: Vec<String> = crate::settings::enabled_plugins(&settings)
+        .map(|ep| ep.keys().cloned().collect())
+        .unwrap_or_default();
+
+    if ep_keys.is_empty() {
+        println!("{}", "No enabled plugins to remove.".yellow());
+        return Ok(());
+    }
+
+    let selected: Vec<usize> = MultiSelect::new()
+        .with_prompt("Remove plugins (space to select, enter to confirm)")
+        .items(&ep_keys)
+        .interact_opt()?
+        .unwrap_or_default();
+
+    if selected.is_empty() {
+        println!("Nothing selected.");
+        return Ok(());
+    }
+
+    let names: Vec<String> = selected.iter().map(|&i| ep_keys[i].clone()).collect();
+    run(names, false, purge_bytes)
 }
