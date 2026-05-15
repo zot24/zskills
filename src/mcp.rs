@@ -13,7 +13,7 @@ use serde_json::Value;
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
-#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, PartialEq, Eq, PartialOrd, Ord)]
 #[serde(rename_all = "lowercase")]
 pub enum Scope {
     Managed,
@@ -271,19 +271,30 @@ fn parse_transport(entry: &Value) -> Option<Transport> {
         }
         // No `type` → stdio (Claude's default).
         _ => {
-            let (env_keys, env_refs) = keys_and_refs(obj.get("env"));
+            let (env_keys, mut env_refs) = keys_and_refs(obj.get("env"));
+            let args: Vec<String> = obj
+                .get("args")
+                .and_then(|v| v.as_array())
+                .map(|a| {
+                    a.iter()
+                        .filter_map(|x| x.as_str())
+                        .map(str::to_string)
+                        .collect()
+                })
+                .unwrap_or_default();
+            // Real-world configs (e.g. the mcp-remote proxy pattern) embed
+            // `${VAR}` references inside args, not just env values. Surface
+            // those too so doctor can check whether they're set.
+            for a in &args {
+                for r in extract_var_refs(a) {
+                    if !env_refs.contains(&r) {
+                        env_refs.push(r);
+                    }
+                }
+            }
             Some(Transport::Stdio {
                 command: obj.get("command")?.as_str()?.to_string(),
-                args: obj
-                    .get("args")
-                    .and_then(|v| v.as_array())
-                    .map(|a| {
-                        a.iter()
-                            .filter_map(|x| x.as_str())
-                            .map(str::to_string)
-                            .collect()
-                    })
-                    .unwrap_or_default(),
+                args,
                 env_keys,
                 env_refs,
             })
@@ -402,6 +413,101 @@ fn build_plugin_mcp_index() -> Result<BTreeMap<String, String>> {
     Ok(idx)
 }
 
+/// Resolve the on-disk file zskills writes to for a given scope.
+/// Returns the path AND a flag telling callers whether to use the wrapped
+/// `{"mcpServers": {...}}` JSON shape (true) or a flat top-level map (false).
+///
+/// - `user`    → `~/.claude.json` (wrapped — matches what `claude mcp` writes).
+/// - `project` → `<cwd>/.mcp.json` (wrapped *if* the file already exists with
+///   the wrapper; otherwise flat — preserves what's there. New files get wrapped
+///   per the spec).
+/// - `local`   → `<cwd>/.claude.local/settings.json` (wrapped — it's a
+///   settings.json variant).
+///
+/// `managed` is intentionally not supported: that scope is read-only.
+pub fn write_target(scope: &Scope) -> Result<(PathBuf, bool)> {
+    match scope {
+        Scope::User => Ok((crate::paths::claude_json()?, true)),
+        Scope::Local => {
+            let cwd = std::env::current_dir()?;
+            Ok((cwd.join(".claude.local").join("settings.json"), true))
+        }
+        Scope::Project => {
+            let cwd = std::env::current_dir()?;
+            let path = cwd.join(".mcp.json");
+            let wrapped = if !path.exists() {
+                true // default to spec-compliant for new files
+            } else {
+                match read_json(&path) {
+                    Some(v) => v.get("mcpServers").is_some(),
+                    None => true,
+                }
+            };
+            Ok((path, wrapped))
+        }
+        Scope::Managed => {
+            anyhow::bail!("cannot write to managed scope — deployed by IT, not zskills")
+        }
+    }
+}
+
+/// Set or replace one MCP server entry in the target file for `scope`. Atomic.
+/// `name` is the server name; `entry` is the JSON value to store under it.
+pub fn upsert(scope: &Scope, name: &str, entry: serde_json::Value) -> Result<()> {
+    let (path, wrapped) = write_target(scope)?;
+    write_with_mutation(&path, wrapped, |servers| {
+        servers.insert(name.to_string(), entry);
+    })
+}
+
+/// Remove one MCP server entry from the target file for `scope`. Atomic.
+/// No-op if the entry isn't present.
+pub fn remove(scope: &Scope, name: &str) -> Result<()> {
+    let (path, wrapped) = write_target(scope)?;
+    if !path.exists() {
+        return Ok(());
+    }
+    write_with_mutation(&path, wrapped, |servers| {
+        servers.shift_remove(name);
+    })
+}
+
+/// Read the target file (creating an empty shell if missing), apply `mutate` to
+/// the mcpServers map, and write back atomically. Preserves all other top-level
+/// keys (hooks, permissions, env, etc.) and the existing wrapped-vs-flat shape.
+fn write_with_mutation(
+    path: &Path,
+    wrapped: bool,
+    mutate: impl FnOnce(&mut serde_json::Map<String, serde_json::Value>),
+) -> Result<()> {
+    use serde_json::{Map, Value};
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent).ok();
+    }
+    let mut top: Map<String, Value> = if path.exists() {
+        let bytes = std::fs::read(path)?;
+        match serde_json::from_slice::<Value>(&bytes)? {
+            Value::Object(m) => m,
+            _ => anyhow::bail!("{} is not a JSON object", path.display()),
+        }
+    } else {
+        Map::new()
+    };
+
+    if wrapped {
+        let servers = top
+            .entry("mcpServers")
+            .or_insert_with(|| Value::Object(Map::new()))
+            .as_object_mut()
+            .ok_or_else(|| anyhow::anyhow!("mcpServers must be a JSON object"))?;
+        mutate(servers);
+    } else {
+        mutate(&mut top);
+    }
+
+    crate::settings::save(path, &top)
+}
+
 /// Platform-specific path for org/IT-deployed managed settings.
 /// Overridable via `ZSKILLS_MANAGED_SETTINGS` for testing.
 fn managed_settings_path() -> Option<PathBuf> {
@@ -476,6 +582,25 @@ mod tests {
             parse_transport(&v).unwrap().referenced_vars(),
             &["TOK".to_string()]
         );
+    }
+
+    #[test]
+    fn parse_stdio_extracts_refs_from_args_too() {
+        // mcp-remote proxy pattern: `${VAR}` is referenced inside args,
+        // not in the env block. Doctor needs to see those.
+        let v = json!({
+            "command": "npx",
+            "args": [
+                "mcp-remote",
+                "https://example.com",
+                "--header", "Authorization:${AUTH_HEADER}",
+                "--header", "X-User-Name:${USER_NAME}"
+            ],
+            "env": {}
+        });
+        let refs = parse_transport(&v).unwrap().referenced_vars().to_vec();
+        assert!(refs.contains(&"AUTH_HEADER".to_string()));
+        assert!(refs.contains(&"USER_NAME".to_string()));
     }
 
     #[test]

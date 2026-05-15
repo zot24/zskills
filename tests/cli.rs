@@ -753,3 +753,178 @@ fn doctor_passes_when_mcps_are_healthy() {
             predicate::str::contains("All good").or(predicate::str::contains("MCP issue").not()),
         );
 }
+
+#[test]
+fn sync_installs_mcp_from_manifest_into_claude_json() {
+    let (parent, claude_home) = fake_home_nested();
+    let manifest_dir = tempfile::tempdir().unwrap();
+    let manifest_path = manifest_dir.path().join("skills.toml");
+    fs::write(
+        &manifest_path,
+        r#"
+[[mcps]]
+name = "linear"
+url = "https://mcp.linear.app/mcp"
+transport = "http"
+scope = "user"
+
+[[mcps]]
+name = "github"
+command = "npx"
+args = ["-y", "@modelcontextprotocol/server-github"]
+scope = "user"
+env = { GITHUB_TOKEN = "${GITHUB_TOKEN}" }
+"#,
+    )
+    .unwrap();
+    zskills_nested(&parent, &claude_home)
+        .args(["sync", "--file", manifest_path.to_str().unwrap()])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("install mcp"))
+        .stdout(predicate::str::contains("linear"))
+        .stdout(predicate::str::contains("github"));
+
+    let claude_json: serde_json::Value =
+        serde_json::from_slice(&fs::read(parent.path().join(".claude.json")).unwrap()).unwrap();
+    assert_eq!(claude_json["mcpServers"]["linear"]["type"], "http");
+    assert_eq!(
+        claude_json["mcpServers"]["linear"]["url"],
+        "https://mcp.linear.app/mcp"
+    );
+    assert_eq!(claude_json["mcpServers"]["github"]["command"], "npx");
+    assert_eq!(
+        claude_json["mcpServers"]["github"]["env"]["GITHUB_TOKEN"],
+        "${GITHUB_TOKEN}"
+    );
+}
+
+#[test]
+fn sync_writes_project_mcp_to_dot_mcp_json() {
+    let (parent, claude_home) = fake_home_nested();
+    let manifest_dir = tempfile::tempdir().unwrap();
+    let manifest_path = manifest_dir.path().join("skills.toml");
+    fs::write(
+        &manifest_path,
+        r#"
+[[mcps]]
+name = "postgres"
+command = "docker"
+args = ["run", "--rm", "..."]
+scope = "project"
+"#,
+    )
+    .unwrap();
+    zskills_nested(&parent, &claude_home)
+        .args(["sync", "--file", manifest_path.to_str().unwrap()])
+        .assert()
+        .success();
+    let mcp_json: serde_json::Value =
+        serde_json::from_slice(&fs::read(parent.path().join(".mcp.json")).unwrap()).unwrap();
+    assert_eq!(mcp_json["mcpServers"]["postgres"]["command"], "docker");
+}
+
+#[test]
+fn sync_preserves_unrelated_fields_in_claude_json() {
+    let (parent, claude_home) = fake_home_nested();
+    // Pre-populate ~/.claude.json with a bunch of unrelated top-level keys.
+    let claude_json_path = parent.path().join(".claude.json");
+    fs::write(
+        &claude_json_path,
+        serde_json::to_string(&json!({
+            "anonymousId": "abc",
+            "claudeCodeFirstTokenDate": "2026-01-01",
+            "cachedDynamicConfigs": { "foo": "bar" },
+            "mcpServers": { "existing": { "type": "http", "url": "https://x.example" } }
+        }))
+        .unwrap(),
+    )
+    .unwrap();
+    let manifest_dir = tempfile::tempdir().unwrap();
+    let manifest_path = manifest_dir.path().join("skills.toml");
+    fs::write(
+        &manifest_path,
+        r#"
+[[mcps]]
+name = "linear"
+url = "https://mcp.linear.app/mcp"
+scope = "user"
+"#,
+    )
+    .unwrap();
+    zskills_nested(&parent, &claude_home)
+        .args(["sync", "--file", manifest_path.to_str().unwrap()])
+        .assert()
+        .success();
+    let after: serde_json::Value =
+        serde_json::from_slice(&fs::read(&claude_json_path).unwrap()).unwrap();
+    // Unrelated fields preserved
+    assert_eq!(after["anonymousId"], "abc");
+    assert_eq!(after["claudeCodeFirstTokenDate"], "2026-01-01");
+    assert_eq!(after["cachedDynamicConfigs"]["foo"], "bar");
+    // New entry landed
+    assert_eq!(
+        after["mcpServers"]["linear"]["url"],
+        "https://mcp.linear.app/mcp"
+    );
+    // Existing entry untouched (sync doesn't prune without --prune)
+    assert_eq!(after["mcpServers"]["existing"]["type"], "http");
+}
+
+#[test]
+fn sync_prune_removes_mcps_not_in_manifest() {
+    let (parent, claude_home) = fake_home_nested();
+    let claude_json_path = parent.path().join(".claude.json");
+    fs::write(
+        &claude_json_path,
+        serde_json::to_string(&json!({
+            "mcpServers": {
+                "old": { "type": "http", "url": "https://old.example" },
+                "keep": { "type": "http", "url": "https://keep.example" }
+            }
+        }))
+        .unwrap(),
+    )
+    .unwrap();
+    let manifest_dir = tempfile::tempdir().unwrap();
+    let manifest_path = manifest_dir.path().join("skills.toml");
+    fs::write(
+        &manifest_path,
+        r#"
+[[mcps]]
+name = "keep"
+url = "https://keep.example"
+scope = "user"
+"#,
+    )
+    .unwrap();
+    zskills_nested(&parent, &claude_home)
+        .args(["sync", "--file", manifest_path.to_str().unwrap(), "--prune"])
+        .assert()
+        .success();
+    let after: serde_json::Value =
+        serde_json::from_slice(&fs::read(&claude_json_path).unwrap()).unwrap();
+    assert!(after["mcpServers"].get("old").is_none());
+    assert!(after["mcpServers"].get("keep").is_some());
+}
+
+#[test]
+fn sync_rejects_invalid_mcp_entry() {
+    let (parent, claude_home) = fake_home_nested();
+    let manifest_dir = tempfile::tempdir().unwrap();
+    let manifest_path = manifest_dir.path().join("skills.toml");
+    // No command AND no url → stdio inferred, missing command → validation fails.
+    fs::write(
+        &manifest_path,
+        r#"
+[[mcps]]
+name = "broken"
+scope = "user"
+"#,
+    )
+    .unwrap();
+    zskills_nested(&parent, &claude_home)
+        .args(["sync", "--file", manifest_path.to_str().unwrap()])
+        .assert()
+        .failure();
+}

@@ -155,13 +155,50 @@ pub fn run(file: Option<PathBuf>, dry_run: bool, prune: bool) -> Result<()> {
         .cloned()
         .collect();
 
+    // -------- 2.5) MCP reconciliation --------
+    // Validate every manifest entry up-front; bail on any error so we don't half-apply.
+    for m in &manifest.mcps {
+        m.validate()?;
+    }
+    let desired_mcp_keys: BTreeSet<(crate::mcp::Scope, String)> = manifest
+        .mcps
+        .iter()
+        .map(|m| {
+            let scope = match m.scope_kind().unwrap() {
+                "user" => crate::mcp::Scope::User,
+                "project" => crate::mcp::Scope::Project,
+                "local" => crate::mcp::Scope::Local,
+                _ => unreachable!(),
+            };
+            (scope, m.name.clone())
+        })
+        .collect();
+    // Current state: every writable, manually-added MCP. Skip managed (read-only)
+    // and skip plugin-injected (owned by their plugin, not by zskills's manifest).
+    let current_mcps = crate::mcp::load_all().unwrap_or_default();
+    let current_mcp_keys: BTreeSet<(crate::mcp::Scope, String)> = current_mcps
+        .iter()
+        .filter(|m| m.scope != crate::mcp::Scope::Managed)
+        .filter(|m| matches!(m.source, crate::mcp::Source::Manual))
+        .map(|m| (m.scope.clone(), m.name.clone()))
+        .collect();
+
+    let mcps_to_install: Vec<_> = desired_mcp_keys.difference(&current_mcp_keys).collect();
+    // Sync always rewrites the manifest's entries (overwrite-on-overlap) so the
+    // file is the source of truth; explicit "update" tracking is unnecessary.
+    let mcps_to_update: Vec<_> = desired_mcp_keys.intersection(&current_mcp_keys).collect();
+    let mcps_to_remove: Vec<_> = current_mcp_keys.difference(&desired_mcp_keys).collect();
+
     // -------- 3) Print plan --------
     println!("\n{}", "Plan".bold());
     let nothing = plugins_to_enable.is_empty()
         && plugins_to_disable.is_empty()
         && agent_to_install_named.is_empty()
         && agent_to_remove.is_empty()
-        && deferred_sources_to_install.is_empty();
+        && deferred_sources_to_install.is_empty()
+        && mcps_to_install.is_empty()
+        && mcps_to_update.is_empty()
+        && mcps_to_remove.is_empty();
     if nothing {
         println!("  (no changes — manifest matches current state)");
         return Ok(());
@@ -205,6 +242,44 @@ pub fn run(file: Option<PathBuf>, dry_run: bool, prune: bool) -> Result<()> {
                 "·".dimmed(),
                 n,
                 "(in inventory but not in manifest — pass --prune to delete)".dimmed()
+            );
+        }
+    }
+    for (scope, name) in &mcps_to_install {
+        println!(
+            "  {} install mcp     {} {}",
+            "+".green(),
+            name,
+            format!("({})", scope.label()).dimmed()
+        );
+    }
+    for (scope, name) in &mcps_to_update {
+        println!(
+            "  {} update  mcp     {} {}",
+            "~".cyan(),
+            name,
+            format!("({}) — manifest wins on conflict", scope.label()).dimmed()
+        );
+    }
+    for (scope, name) in &mcps_to_remove {
+        if prune {
+            println!(
+                "  {} remove  mcp     {} {}",
+                "-".red(),
+                name,
+                format!("({}) — not in manifest, will be deleted", scope.label()).dimmed()
+            );
+        } else {
+            println!(
+                "  {} skip    mcp     {} {}",
+                "·".dimmed(),
+                name,
+                format!(
+                    "({}) — in {} but not in manifest, pass --prune to delete",
+                    scope.label(),
+                    scope.label()
+                )
+                .dimmed()
             );
         }
     }
@@ -321,6 +396,35 @@ pub fn run(file: Option<PathBuf>, dry_run: bool, prune: bool) -> Result<()> {
             match crate::agent_skill::remove(n) {
                 Ok(_) => println!("  removed agent skill {}", n.bold()),
                 Err(e) => eprintln!("{} {}: {}", "✗".red(), n, e),
+            }
+        }
+    }
+
+    // -------- 5) Apply MCP changes --------
+    for m in &manifest.mcps {
+        // validate() already ran above, but scope_kind() may fail at runtime if a
+        // future field is added; tolerate per-entry errors without aborting the rest.
+        let scope = match m.scope_kind() {
+            Ok("user") => crate::mcp::Scope::User,
+            Ok("project") => crate::mcp::Scope::Project,
+            Ok("local") => crate::mcp::Scope::Local,
+            _ => {
+                eprintln!("{} mcp `{}`: invalid scope", "✗".red(), m.name);
+                continue;
+            }
+        };
+        if let Err(e) = crate::mcp::upsert(&scope, &m.name, m.to_json_value()) {
+            eprintln!("{} mcp `{}`: {}", "✗".red(), m.name, e);
+        } else {
+            println!("  applied mcp {} ({})", m.name.bold(), scope.label());
+        }
+    }
+    if prune {
+        for (scope, name) in &mcps_to_remove {
+            if let Err(e) = crate::mcp::remove(scope, name) {
+                eprintln!("{} mcp `{}`: {}", "✗".red(), name, e);
+            } else {
+                println!("  removed mcp {} ({})", name.bold(), scope.label());
             }
         }
     }
