@@ -53,7 +53,7 @@ zskills marketplace add|remove|list|update
 
 `<name>` accepts unqualified (`servarr`) when unambiguous, or `name@marketplace` (`servarr@zot24-skills`) to disambiguate.
 
-`-i` / `--interactive` is available on `install`, `remove`, and `search`.
+`-i` / `--interactive` is available on `install`, `remove`, and `search`. If `fzf` is on `$PATH` it gets used automatically; otherwise zskills falls back to a built-in fuzzy picker. Disable fzf detection with `ZSKILLS_NO_FZF=1`.
 
 ## Declarative manifest (skills.toml)
 

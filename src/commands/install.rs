@@ -80,10 +80,10 @@ pub fn run(specs: Vec<String>, interactive: bool) -> Result<()> {
 }
 
 fn run_interactive(known: &serde_json::Map<String, Value>) -> Result<()> {
-    use dialoguer::FuzzySelect;
+    use crate::interactive::Item;
 
     let mut qualified_names: Vec<String> = Vec::new();
-    let mut labels: Vec<String> = Vec::new();
+    let mut items: Vec<Item> = Vec::new();
 
     for (mp_name, entry) in known {
         if crate::commands::marketplace::is_remote_index(entry) {
@@ -97,11 +97,7 @@ fn run_interactive(known: &serde_json::Map<String, Value>) -> Result<()> {
             for plugin in manifest.plugins {
                 let qualified = format!("{}@{}", plugin.name, mp_name);
                 let desc = plugin.description.unwrap_or_default();
-                labels.push(if desc.is_empty() {
-                    qualified.clone()
-                } else {
-                    format!("{}  — {}", qualified, desc)
-                });
+                items.push(Item::new(qualified.clone(), desc));
                 qualified_names.push(qualified);
             }
         }
@@ -115,11 +111,7 @@ fn run_interactive(known: &serde_json::Map<String, Value>) -> Result<()> {
         return Ok(());
     }
 
-    match FuzzySelect::new()
-        .with_prompt("Install plugin")
-        .items(&labels)
-        .interact_opt()?
-    {
+    match crate::interactive::pick_one("Install plugin", &items)? {
         None => println!("Aborted."),
         Some(idx) => run(vec![qualified_names[idx].clone()], false)?,
     }

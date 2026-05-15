@@ -65,7 +65,7 @@ pub fn run(specs: Vec<String>, interactive: bool, purge_bytes: bool) -> Result<(
 }
 
 fn run_interactive(purge_bytes: bool) -> Result<()> {
-    use dialoguer::MultiSelect;
+    use crate::interactive::Item;
 
     let settings_path = crate::paths::settings_json()?;
     let settings = crate::settings::load(&settings_path)?;
@@ -79,11 +79,8 @@ fn run_interactive(purge_bytes: bool) -> Result<()> {
         return Ok(());
     }
 
-    let selected: Vec<usize> = MultiSelect::new()
-        .with_prompt("Remove plugins (space to select, enter to confirm)")
-        .items(&ep_keys)
-        .interact_opt()?
-        .unwrap_or_default();
+    let items: Vec<Item> = ep_keys.iter().map(|k| Item::new(k.clone(), "")).collect();
+    let selected = crate::interactive::pick_many("Remove plugins (space to select)", &items)?;
 
     if selected.is_empty() {
         println!("Nothing selected.");

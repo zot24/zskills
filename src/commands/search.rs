@@ -113,23 +113,18 @@ pub fn run(query: String, limit: u32, as_json: bool, interactive: bool) -> Resul
 }
 
 fn install_from_hits(hits: &[Hit]) -> Result<()> {
-    use dialoguer::Select;
+    use crate::interactive::Item;
 
-    let labels: Vec<String> = hits
+    let items: Vec<Item> = hits
         .iter()
         .map(|h| {
-            if h.description.is_empty() {
-                format!("{}@{}", h.name, h.marketplace)
-            } else {
-                format!("{}@{}  — {}", h.name, h.marketplace, h.description)
-            }
+            Item::new(
+                format!("{}@{}", h.name, h.marketplace),
+                h.description.clone(),
+            )
         })
         .collect();
-    match Select::new()
-        .with_prompt("Install")
-        .items(&labels)
-        .interact_opt()?
-    {
+    match crate::interactive::pick_one("Install", &items)? {
         None => println!("Aborted."),
         Some(idx) => {
             let h = &hits[idx];
