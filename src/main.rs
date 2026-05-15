@@ -3,6 +3,7 @@ mod cli;
 mod commands;
 mod error;
 mod git;
+mod interactive;
 mod inventory;
 mod lockfile;
 mod manifest;

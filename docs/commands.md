@@ -279,6 +279,10 @@ With the `skills-sh` cargo feature compiled in AND `ZSKILLS_SKILLS_SH_API_KEY` s
 
 Without the feature, `zskills marketplace add skills.sh` returns *"unrecognized marketplace source"* — there's no dormant code, no env-var detection, nothing. The compiled binary is byte-identical to a feature-free build except for what you explicitly asked for.
 
+### fzf integration (auto-detected)
+
+`install -i`, `search -i`, and `remove -i` automatically use `fzf` when it's on `$PATH`, which gets you full fuzzy filtering and the familiar fzf keybindings. When fzf is not installed, zskills falls back to the built-in dialoguer picker (`FuzzySelect` for single-select, `MultiSelect` for multi). Set `ZSKILLS_NO_FZF=1` to force the dialoguer path even when fzf is installed.
+
 ### `install` fallback (skills.sh feature only)
 
 When `skills-sh` is built in and a remote index is registered with a valid key, `install <name>` will fall through to skills.sh if the spec doesn't resolve in any local plugin marketplace. It performs an exact-slug match against the skills.sh search API and, on hit, routes through the existing Agent Skill install path (`git clone source/repo` → drop `SKILL.md` into `~/.claude/skills/<name>/`). No `enabledPlugins` flip — agent skills don't use that gate.
