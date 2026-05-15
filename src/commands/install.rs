@@ -12,7 +12,7 @@ use anyhow::Result;
 use owo_colors::OwoColorize;
 use serde_json::Value;
 
-pub fn run(specs: Vec<String>) -> Result<()> {
+pub fn run(specs: Vec<String>, interactive: bool) -> Result<()> {
     let known = crate::marketplace::load_known(&crate::paths::known_marketplaces_json()?)?;
     if known.is_empty() {
         println!(
@@ -20,6 +20,14 @@ pub fn run(specs: Vec<String>) -> Result<()> {
             "No marketplaces registered. Run `zskills marketplace add-recommended` first.".yellow()
         );
         return Ok(());
+    }
+
+    if interactive && specs.is_empty() {
+        return run_interactive(&known);
+    }
+
+    if specs.is_empty() {
+        anyhow::bail!("specify at least one skill name, or use -i/--interactive to browse");
     }
 
     let settings_path = crate::paths::settings_json()?;
@@ -67,6 +75,53 @@ pub fn run(specs: Vec<String>) -> Result<()> {
             count,
             crate::paths::user_skills_dir()?.display()
         );
+    }
+    Ok(())
+}
+
+fn run_interactive(known: &serde_json::Map<String, Value>) -> Result<()> {
+    use dialoguer::FuzzySelect;
+
+    let mut qualified_names: Vec<String> = Vec::new();
+    let mut labels: Vec<String> = Vec::new();
+
+    for (mp_name, entry) in known {
+        if crate::commands::marketplace::is_remote_index(entry) {
+            continue;
+        }
+        let manifest_path = match crate::paths::marketplace_manifest(mp_name) {
+            Ok(p) => p,
+            Err(_) => continue,
+        };
+        if let Ok(manifest) = crate::marketplace::load_manifest(&manifest_path) {
+            for plugin in manifest.plugins {
+                let qualified = format!("{}@{}", plugin.name, mp_name);
+                let desc = plugin.description.unwrap_or_default();
+                labels.push(if desc.is_empty() {
+                    qualified.clone()
+                } else {
+                    format!("{}  — {}", qualified, desc)
+                });
+                qualified_names.push(qualified);
+            }
+        }
+    }
+
+    if qualified_names.is_empty() {
+        println!(
+            "{}",
+            "No plugins found. Run `zskills marketplace update` to refresh caches.".yellow()
+        );
+        return Ok(());
+    }
+
+    match FuzzySelect::new()
+        .with_prompt("Install plugin")
+        .items(&labels)
+        .interact_opt()?
+    {
+        None => println!("Aborted."),
+        Some(idx) => run(vec![qualified_names[idx].clone()], false)?,
     }
     Ok(())
 }

@@ -29,9 +29,14 @@ Flip a plugin's `enabledPlugins` entry on. Claude Code fetches bytes on next sta
 
 ```
 zskills install <name>...
+zskills install -i
 ```
 
 Accepts multiple names. Resolves unqualified names against your registered marketplaces; errors on ambiguity.
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `-i`, `--interactive` | off | When passed without any `<name>`, browse all plugins across registered marketplaces with a fuzzy picker and install the selection. |
 
 ## `remove` / `purge`
 
@@ -39,8 +44,13 @@ Accepts multiple names. Resolves unqualified names against your registered marke
 
 ```
 zskills remove <name>...
+zskills remove -i
 zskills purge  <name>...
 ```
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `-i`, `--interactive` | off | (`remove` only) When passed without any `<name>`, browse enabled plugins with a multi-select picker and remove the selection. |
 
 ## `enable` / `disable`
 
@@ -248,13 +258,14 @@ zskills marketplace update [<name>]
 Keyword search across every registered marketplace. Substring-matches `<query>` against `name + description` in each marketplace's cached `marketplace.json`. Purely local — no network calls.
 
 ```
-zskills search <query> [--limit <n>] [--json]
+zskills search <query> [--limit <n>] [--json] [-i]
 ```
 
 | Flag | Default | Description |
 |------|---------|-------------|
 | `--limit <n>` | 25 | Maximum results per marketplace |
 | `--json` | off | Emit results as a JSON array for scripting |
+| `-i`, `--interactive` | off | After printing results, open a picker; selecting one installs it. |
 
 With the `skills-sh` cargo feature compiled in AND `ZSKILLS_SKILLS_SH_API_KEY` set, `search` also federates to the skills.sh remote index and tags those results `[skill]`. Without the env var, the registered remote-index is skipped with a one-line hint and local search continues uninterrupted.
 

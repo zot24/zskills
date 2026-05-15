@@ -33,7 +33,7 @@ pub enum HitKind {
     Skill,
 }
 
-pub fn run(query: String, limit: u32, as_json: bool) -> Result<()> {
+pub fn run(query: String, limit: u32, as_json: bool, interactive: bool) -> Result<()> {
     let known = crate::marketplace::load_known(&crate::paths::known_marketplaces_json()?)?;
     if known.is_empty() {
         println!(
@@ -105,6 +105,38 @@ pub fn run(query: String, limit: u32, as_json: bool) -> Result<()> {
         println!("           {}", format!("from {}", h.marketplace).dimmed());
     }
     println!("\n{}", format!("{} result(s)", hits.len()).dimmed());
+
+    if interactive {
+        install_from_hits(&hits)?;
+    }
+    Ok(())
+}
+
+fn install_from_hits(hits: &[Hit]) -> Result<()> {
+    use dialoguer::Select;
+
+    let labels: Vec<String> = hits
+        .iter()
+        .map(|h| {
+            if h.description.is_empty() {
+                format!("{}@{}", h.name, h.marketplace)
+            } else {
+                format!("{}@{}  — {}", h.name, h.marketplace, h.description)
+            }
+        })
+        .collect();
+    match Select::new()
+        .with_prompt("Install")
+        .items(&labels)
+        .interact_opt()?
+    {
+        None => println!("Aborted."),
+        Some(idx) => {
+            let h = &hits[idx];
+            let spec = format!("{}@{}", h.name, h.marketplace);
+            crate::commands::install::run(vec![spec], false)?;
+        }
+    }
     Ok(())
 }
 
