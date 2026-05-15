@@ -660,3 +660,96 @@ fn list_with_no_mcps_anywhere_shows_none_configured() {
         .success()
         .stdout(predicate::str::contains("(none configured)"));
 }
+
+#[test]
+fn doctor_flags_missing_stdio_command() {
+    let (parent, claude_home) = fake_home_nested();
+    let claude_json = parent.path().join(".claude.json");
+    fs::write(
+        &claude_json,
+        serde_json::to_string(&json!({
+            "mcpServers": {
+                "ghost": { "command": "this-binary-definitely-does-not-exist-xyz", "args": [] }
+            }
+        }))
+        .unwrap(),
+    )
+    .unwrap();
+    zskills_nested(&parent, &claude_home)
+        .args(["doctor"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("MCP issue"))
+        .stdout(predicate::str::contains("ghost"))
+        .stdout(predicate::str::contains("command not found"));
+}
+
+#[test]
+fn doctor_flags_unset_env_var_referenced_in_mcp() {
+    let (parent, claude_home) = fake_home_nested();
+    let claude_json = parent.path().join(".claude.json");
+    fs::write(
+        &claude_json,
+        serde_json::to_string(&json!({
+            "mcpServers": {
+                "linear": {
+                    "type": "http",
+                    "url": "https://mcp.linear.app/mcp",
+                    "headers": { "Authorization": "Bearer ${ZSKILLS_TEST_UNSET_TOKEN_XYZ}" }
+                }
+            }
+        }))
+        .unwrap(),
+    )
+    .unwrap();
+    zskills_nested(&parent, &claude_home)
+        .env_remove("ZSKILLS_TEST_UNSET_TOKEN_XYZ")
+        .args(["doctor"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("ZSKILLS_TEST_UNSET_TOKEN_XYZ"))
+        .stdout(predicate::str::contains("referenced but not set"));
+}
+
+#[test]
+fn doctor_flags_sse_as_deprecated() {
+    let (parent, claude_home) = fake_home_nested();
+    let claude_json = parent.path().join(".claude.json");
+    fs::write(
+        &claude_json,
+        serde_json::to_string(&json!({
+            "mcpServers": { "legacy": { "type": "sse", "url": "https://old.example/sse" } }
+        }))
+        .unwrap(),
+    )
+    .unwrap();
+    zskills_nested(&parent, &claude_home)
+        .args(["doctor"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("legacy"))
+        .stdout(predicate::str::contains("sse"))
+        .stdout(predicate::str::contains("deprecated"));
+}
+
+#[test]
+fn doctor_passes_when_mcps_are_healthy() {
+    let (parent, claude_home) = fake_home_nested();
+    let claude_json = parent.path().join(".claude.json");
+    // Use a binary that is guaranteed to be on PATH in any unix env: `sh`.
+    fs::write(
+        &claude_json,
+        serde_json::to_string(&json!({
+            "mcpServers": { "shellish": { "command": "sh", "args": ["-c", "echo"] } }
+        }))
+        .unwrap(),
+    )
+    .unwrap();
+    zskills_nested(&parent, &claude_home)
+        .args(["doctor"])
+        .assert()
+        .success()
+        .stdout(
+            predicate::str::contains("All good").or(predicate::str::contains("MCP issue").not()),
+        );
+}

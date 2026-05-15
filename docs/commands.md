@@ -159,17 +159,23 @@ Runs `git pull --ff-only` against each marketplace clone. Claude Code reads the 
 
 ## `doctor`
 
-Reconcile disk ↔ inventory ↔ settings. Reports drift in three categories:
+Reconcile disk ↔ inventory ↔ settings, and statically validate every configured MCP server. Reports drift in four categories:
 
 1. Plugins enabled in `enabledPlugins` but not present in `installed_plugins.json` (broken references — Claude Code will fetch on next start).
 2. Plugins in inventory whose marketplace tap is no longer registered.
 3. Agent skills tracked in inventory but missing from `~/.claude/skills/` on disk.
+4. **MCP server issues** — static checks against every server returned by `list`:
+   - **stdio**: `command` must resolve on `$PATH` (uses `which`-style lookup).
+   - **any transport**: every `${VAR}` reference in `env` (stdio) or `headers` (http/sse) must be set in the user's environment.
+   - **sse transport**: flagged as deprecated; the spec recommends migrating to `http`.
 
 ```
 zskills doctor [--fix]
 ```
 
-With `--fix`, dangling references are removed (settings.json entries pointing nowhere, orphaned inventory entries). `--fix` never deletes installed bytes — that's what `purge` is for.
+With `--fix`, dangling plugin/inventory references are removed. **`--fix` is a no-op for MCP issues** — none of them are auto-fixable (we won't install a missing binary or invent an env var), so doctor's job there is purely to surface what's broken. `--fix` never deletes installed bytes — that's what `purge` is for.
+
+Doctor never spawns or talks to an MCP server. Running-state diagnosis (whether a server is actually connected, last error, latency) is Claude Code's job — replicating it here would risk divergent diagnoses. If you need that, run the server directly or check Claude Code's own logs.
 
 ## `scan`
 
