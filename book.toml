@@ -1,6 +1,6 @@
 [book]
 title = "zskills"
-description = "Package manager for Claude Code skills — declarative install across marketplaces"
+description = "Declarative package manager for agentic coding CLI skills, plugins, and MCP servers"
 authors = ["zot24"]
 language = "en"
 src = "docs"
