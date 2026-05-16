@@ -1,6 +1,6 @@
 # Architecture
 
-How zskills models the three sources of truth in your Claude Code install and reconciles between them.
+How zskills models the three sources of truth in your Claude Code install — across three primitives — and reconciles between them.
 
 ## The three states
 
@@ -8,13 +8,13 @@ How zskills models the three sources of truth in your Claude Code install and re
 |---|---|---|
 | **Intent** | `skills.toml` | What you *want* installed and enabled |
 | **Inventory** | `~/.claude/plugins/installed_plugins.json` + `~/.claude/skills/.zskills.json` | What *exists* on disk |
-| **Activation** | `~/.claude/settings.json` → `enabledPlugins` | What's currently *running* in a Claude Code session |
+| **Activation** | `~/.claude/settings.json` → `enabledPlugins`; `~/.claude.json` + per-scope MCP files → `mcpServers` | What's currently *running* in a Claude Code session |
 
-The first is what zskills writes from. The second and third are what Claude Code reads. zskills' job is to keep all three consistent.
+The first is what zskills writes from. The second and third are what Claude Code reads. zskills' job is to keep all three consistent across all three primitives.
 
-## Two ecosystems
+## Three primitives
 
-Claude Code has two parallel skill systems that we manage from one manifest:
+zskills models a single manifest over three first-class types of artifact, each with its own activation surface:
 
 ### Claude Code plugins
 - Distributed via **marketplaces** (Git repos with a `.claude-plugin/marketplace.json`)
@@ -29,7 +29,21 @@ Claude Code has two parallel skill systems that we manage from one manifest:
 - No "enabled" flag — files-on-disk *is* the activation
 - Inventory: `~/.claude/skills/.zskills.json` (we own this; Claude Code doesn't write it)
 
-Both kinds are declared in `skills.toml`:
+### MCP servers
+- No "installed bytes" of zskills's own — the MCP server is just a process to spawn (stdio) or a URL to call (http/sse). Inventory and activation collapse into the same record.
+- Activation lives in `mcpServers` keys across multiple files, by scope:
+
+  | Scope | File | Notes |
+  |---|---|---|
+  | `managed` | `/Library/Application Support/ClaudeCode/managed-settings.json` (macOS) / `/etc/claude-code/managed-settings.json` (Linux) | IT-deployed. Read-only — `sync` never writes here. |
+  | `local` | `<cwd>/.claude.local/settings.json` | Gitignored, personal+creds. |
+  | `project` | `<cwd>/.mcp.json` (recommended) OR `<cwd>/.claude/settings.json` (legacy) | Team-shared via git. |
+  | `user` | `~/.claude.json` (where `claude mcp add --scope user` writes) AND `~/.claude/settings.json` | Both are loaded; sync writes to `~/.claude.json`. |
+  | (attribution) | Each enabled plugin's `plugin.json` + sibling `.mcp.json` | Plugin-bundled entries — surfaced in `list` as `★ plugin:<name>`, **never pruned** by sync. |
+
+- The data model in `src/mcp.rs` (`McpServer { name, scope, transport, source, source_file }`) is intentionally runtime-agnostic — when grok-cli / Codex adapters arrive, only the loader paths change; the struct stays.
+
+All three are declared in `skills.toml`:
 
 ```toml
 [[skills]]                          # plugin
@@ -41,6 +55,18 @@ source = "owner/repo"
 
 [[agent_skills]]                    # local-only agent skill
 name = "my-internal-tool"           # name required; source omitted = no remote refresh
+
+[[mcps]]                            # MCP server, stdio transport
+name = "github"
+command = "npx"
+args = ["-y", "@modelcontextprotocol/server-github"]
+env = { GITHUB_TOKEN = "${GITHUB_TOKEN}" }
+scope = "user"
+
+[[mcps]]                            # MCP server, http transport
+name = "linear"
+url = "https://mcp.linear.app/mcp"
+scope = "user"
 ```
 
 ## Atomic JSON writes
@@ -105,13 +131,16 @@ Same idea for `skills.toml` writes: we use `toml_edit::DocumentMut` so existing 
                          doctor
 ```
 
-Three failure modes:
+Failure modes covered by doctor:
 
-1. **Settings says enabled, inventory says nothing** — broken reference. Claude Code's startup install will fix this on next launch, OR `doctor --fix` removes the flag.
+1. **Settings says enabled, inventory says nothing** — broken plugin reference. Claude Code's startup install will fix this on next launch, OR `doctor --fix` removes the flag.
 2. **Inventory says installed, marketplace gone** — orphan from a `marketplace remove`. `doctor` reports; `purge` cleans.
 3. **Agent skill inventory entry, no bytes on disk** — someone `rm -rf`'d the skill manually. `doctor --fix` drops the inventory entry; `sync` would reinstall from manifest.
+4. **MCP stdio command not found on `$PATH`** — flagged per-server; `--fix` is a no-op (we won't install missing binaries).
+5. **MCP `${VAR}` reference but the env var is unset** — flagged per-server; `--fix` is a no-op (we won't invent env vars).
+6. **MCP uses deprecated `sse` transport** — flagged; the spec recommends migrating to `http`.
 
-Doctor never deletes plugin bytes. That's `purge`'s job — a deliberate, explicit operation.
+Doctor never deletes plugin bytes — that's `purge`'s job. Doctor also **never spawns or contacts an MCP server**: runtime state (connection, latency, last error) is Claude Code's domain. Replicating it here would risk divergent diagnoses ("zskills says fine, Claude says auth failed"). Static checks only.
 
 ## Marketplace update strategies
 
@@ -187,20 +216,31 @@ The trade-off is one process spawn per fetch, which is fine: marketplace updates
 ## Path resolution
 
 ```
+~/.claude.json                          MCP servers (user scope, where `claude mcp` writes)
 ~/.claude/                              ($CLAUDE_HOME)
-├── settings.json                       activation
+├── settings.json                       activation; may also carry mcpServers
 ├── plugins/
 │   ├── installed_plugins.json          plugin inventory
 │   ├── known_marketplaces.json         tap registry
 │   ├── marketplaces/<name>/            tap clones
 │   └── cache/<mp>/<name>/<v>/          plugin bytes
+│        └── .claude-plugin/plugin.json plugin manifest (may declare mcpServers)
+│        └── .mcp.json                  plugin-bundled MCP servers (sibling shape)
 └── skills/
     ├── .zskills.json                   agent skill inventory
     └── <name>/SKILL.md                 agent skill bytes
 
+<cwd>/.mcp.json                         project-scope MCPs (team-shared, git-committed)
+<cwd>/.claude/settings.json             legacy project-scope MCPs + enabledPlugins
+<cwd>/.claude.local/settings.json       local-scope MCPs (gitignored, personal+creds)
+
+/Library/Application Support/ClaudeCode/managed-settings.json   managed MCPs (macOS, IT-deployed, read-only)
+/etc/claude-code/managed-settings.json                          managed MCPs (Linux)
+                                        Override with $ZSKILLS_MANAGED_SETTINGS.
+
 $XDG_CACHE_HOME/zskills/agent-skills/<owner>-<repo>/  source clones
 $XDG_CONFIG_HOME/zskills/skills.toml                  manifest (fallback)
-./skills.toml                                         manifest (project-scope wins)
+./skills.toml                                         manifest (project-scope wins, NOT auto-loaded since v0.5.1)
 ```
 
 `CLAUDE_HOME` env var overrides `~/.claude`. `XDG_CACHE_HOME` and `XDG_CONFIG_HOME` are respected. On macOS, zskills uses `~/.config/zskills/` for the manifest by default (matching cargo/starship/atuin) rather than the platform's `~/Library/Application Support/` location.

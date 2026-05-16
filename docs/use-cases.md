@@ -173,7 +173,91 @@ Moves both `enabledPlugins` entries from the project's `.claude/settings.json` (
 
 zskills doesn't push this direction yet (user-scope → project-scope). If you need a particular project to pin an exact version of a skill that diverges from the global one, copy `~/.claude/skills/<name>/` into the project's `.claude/skills/<name>/` and commit it. Claude Code resolves project scope before user scope, so the project's pinned copy wins.
 
-## 13. Find a skill before installing it
+## 13. See every MCP server configured on this machine
+
+Claude Code can read MCP servers from up to six files (per scope). `zskills list` aggregates the lot and attributes plugin-injected entries:
+
+```bash
+zskills list                # everything; MCPs are the last section
+zskills list --paths        # also show which file each entry was loaded from
+zskills list --json | jq '.mcp_servers'
+```
+
+Output looks like:
+
+```
+MCP Servers
+  user (3)
+    github          stdio  npx -y @modelcontextprotocol/server-github  ★ plugin:github  (1 env)
+    honcho          http   https://mcp.honcho.dev                                       (3 headers)
+    linear-server   http   https://mcp.linear.app/mcp
+  project (1)
+    postgres        stdio  docker run --rm postgres-mcp                                 (2 envs)
+```
+
+Only `env` / `header` *keys* are surfaced — values are never read into memory, so the output is safe even if a secret got pasted in literally instead of as a `${VAR}` ref.
+
+## 14. Declare MCP servers in the manifest
+
+```toml
+[[mcps]]
+name = "github"
+command = "npx"
+args = ["-y", "@modelcontextprotocol/server-github"]
+env = { GITHUB_TOKEN = "${GITHUB_TOKEN}" }
+scope = "user"
+
+[[mcps]]
+name = "linear"
+url = "https://mcp.linear.app/mcp"
+scope = "user"
+```
+
+```bash
+zskills sync                # writes both into ~/.claude.json atomically
+```
+
+Restart Claude Code (or use its `/mcp` prompt) so it picks up the new servers.
+
+## 15. Centralize scattered MCP configs
+
+You've added MCP servers ad-hoc with `claude mcp add` from different projects; now they're spread across `~/.claude.json`, project `.mcp.json` files, and one rogue `.claude.local/settings.json`. To consolidate at user scope:
+
+1. **See what's where:**
+
+   ```bash
+   zskills list --paths
+   ```
+
+2. **Manually transcribe each into `~/.config/zskills/skills.toml`** as `[[mcps]]` entries. Use `${VAR}` refs for any credentials — never paste literal tokens.
+
+3. **Sync with prune** to write at user scope AND delete the duplicates from other scopes:
+
+   ```bash
+   zskills sync --prune
+   ```
+
+`--prune` removes MCP entries currently in settings files but absent from the manifest. **Plugin-injected MCPs are never pruned** — zskills detects them by name match against every enabled plugin's `plugin.json` / sibling `.mcp.json` and leaves them alone. **Managed scope is never written** — IT-deployed entries are read-only.
+
+A `dump-mcps` helper to skip the manual transcription step is on the roadmap (see [issue #14](https://github.com/zot24/zskills/issues/14)).
+
+## 16. Validate MCPs before launching Claude Code
+
+```bash
+zskills doctor
+```
+
+Three static checks per MCP server, no process spawning:
+
+- **stdio**: `command` must resolve on `$PATH` (e.g. `npx` is installed, the package would be reachable).
+- **any transport**: every `${VAR}` referenced in `env` / `headers` / `args` must be defined in your shell environment.
+- **sse transport**: flagged as deprecated; switch to `transport = "http"`.
+
+`--fix` is a no-op for MCP findings — none of them are auto-fixable (zskills won't install a missing binary or invent an env var). The contribution is surfacing the problem so you know before Claude Code complains.
+
+Doctor never spawns or talks to a server. Runtime health (connection, latency, last error) is Claude Code's job; replicating it here would risk divergent diagnoses.
+
+## 17. Find a skill before installing it
 
 You remember there's a Stripe integration somewhere but you don't know which marketplace ships it:
 

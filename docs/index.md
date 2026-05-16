@@ -45,6 +45,19 @@ source = "jakubkrehel/make-interfaces-feel-better"
 [[agent_skills]]
 npm = "get-shit-done-cc"
 claims = ["gsd-*"]
+
+# MCP servers (v0.7+)
+[[mcps]]
+name = "github"
+command = "npx"
+args = ["-y", "@modelcontextprotocol/server-github"]
+env = { GITHUB_TOKEN = "${GITHUB_TOKEN}" }
+scope = "user"
+
+[[mcps]]
+name = "linear"
+url = "https://mcp.linear.app/mcp"
+scope = "user"
 ```
 
 Then:
