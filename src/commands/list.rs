@@ -3,11 +3,23 @@ use owo_colors::OwoColorize;
 use serde_json::json;
 use std::collections::BTreeMap;
 
-pub fn run(json_out: bool, verbose: bool) -> Result<()> {
+pub fn run(json_out: bool, verbose: bool, paths: bool) -> Result<()> {
     let report = crate::reconcile::run()?;
     let inv = crate::agent_skill::load_inventory()?;
     let on_disk = crate::agent_skill::installed_on_disk().unwrap_or_default();
     let mcps = crate::mcp::load_all().unwrap_or_default();
+    // Load plugin inventory for installPath lookups when --paths is on.
+    let plugin_inv: serde_json::Value = if paths {
+        let p = crate::paths::installed_plugins_json()?;
+        if p.exists() {
+            serde_json::from_slice(&std::fs::read(&p)?).unwrap_or_else(|_| serde_json::json!({}))
+        } else {
+            serde_json::json!({})
+        }
+    } else {
+        serde_json::json!({})
+    };
+    let user_skills = crate::paths::user_skills_dir().ok();
 
     let managed_names: Vec<&String> = inv.agent_skills.keys().collect();
     let untracked: Vec<String> = on_disk
@@ -67,14 +79,14 @@ pub fn run(json_out: bool, verbose: bool) -> Result<()> {
         println!("  (none)");
     } else {
         for k in &report.active {
-            println!("  ✓ {}", k);
+            print_plugin_line("✓", k, paths, &plugin_inv);
         }
     }
 
     if !report.installed_disabled.is_empty() {
         println!("\n{}", "Plugins — installed but disabled".bold().yellow());
         for k in &report.installed_disabled {
-            println!("  • {}", k);
+            print_plugin_line("•", k, paths, &plugin_inv);
         }
     }
 
@@ -105,11 +117,11 @@ pub fn run(json_out: bool, verbose: bool) -> Result<()> {
         println!("  (none)");
     } else {
         for (src, names) in &by_source {
-            print_group(src, names, verbose);
+            print_group(src, names, verbose, paths, user_skills.as_deref());
         }
     }
 
-    print_mcp_section(&mcps);
+    print_mcp_section(&mcps, paths);
 
     if !untracked.is_empty() {
         println!(
@@ -141,17 +153,29 @@ pub fn run(json_out: bool, verbose: bool) -> Result<()> {
     Ok(())
 }
 
-fn print_group(source: &str, names: &[String], verbose: bool) {
+fn print_group(
+    source: &str,
+    names: &[String],
+    verbose: bool,
+    paths: bool,
+    user_skills: Option<&std::path::Path>,
+) {
     let count = names.len();
     if count == 1 {
-        // Single skill from a source: "✓ <skill>  ← <source>"
-        println!("  ✓ {}  {}", names[0], format!("← {}", source).dimmed());
+        // Single skill from a source: "✓ <skill>  ← <source>  (<path>)"
+        let path_suffix = if paths {
+            agent_skill_path_suffix(&names[0], user_skills)
+        } else {
+            String::new()
+        };
+        println!(
+            "  ✓ {}  {}{}",
+            names[0],
+            format!("← {}", source).dimmed(),
+            path_suffix
+        );
         return;
     }
-    // Group header: "<label> (N skills)  ← <kind>"
-    // - npm:foo  → label = "foo",     kind = "npm"
-    // - owner/repo → label = "owner/repo", kind = "github"
-    // - local → label = "local",      kind = "local"
     let (label, kind) = match source.split_once(':') {
         Some(("npm", pkg)) => (pkg.to_string(), "npm"),
         _ if source.contains('/') => (source.to_string(), "github"),
@@ -165,7 +189,12 @@ fn print_group(source: &str, names: &[String], verbose: bool) {
     );
     if verbose || count <= 5 {
         for n in names {
-            println!("      • {}", n);
+            let path_suffix = if paths {
+                agent_skill_path_suffix(n, user_skills)
+            } else {
+                String::new()
+            };
+            println!("      • {}{}", n, path_suffix);
         }
     } else {
         let preview: Vec<&str> = names.iter().take(5).map(|s| s.as_str()).collect();
@@ -177,7 +206,32 @@ fn print_group(source: &str, names: &[String], verbose: bool) {
     }
 }
 
-fn print_mcp_section(mcps: &[crate::mcp::McpServer]) {
+fn agent_skill_path_suffix(name: &str, user_skills: Option<&std::path::Path>) -> String {
+    match user_skills {
+        Some(base) => format!("  {}", base.join(name).display().to_string().dimmed()),
+        None => String::new(),
+    }
+}
+
+fn print_plugin_line(marker: &str, qualified: &str, paths: bool, inv: &serde_json::Value) {
+    if !paths {
+        println!("  {} {}", marker, qualified);
+        return;
+    }
+    let path = plugin_install_path(qualified, inv).unwrap_or_else(|| "(unknown)".to_string());
+    println!("  {} {}  {}", marker, qualified, path.dimmed());
+}
+
+fn plugin_install_path(qualified: &str, inv: &serde_json::Value) -> Option<String> {
+    let entries = inv.get("plugins")?.get(qualified)?.as_array()?;
+    let entry = entries.first()?;
+    entry
+        .get("installPath")
+        .and_then(|v| v.as_str())
+        .map(str::to_string)
+}
+
+fn print_mcp_section(mcps: &[crate::mcp::McpServer], paths: bool) {
     println!("\n{}", "MCP Servers".bold().green());
     if mcps.is_empty() {
         println!("  (none configured)");
@@ -221,14 +275,20 @@ fn print_mcp_section(mcps: &[crate::mcp::McpServer]) {
             } else {
                 String::new()
             };
+            let path_suffix = if paths {
+                format!("  {}", m.source_file.display().to_string().dimmed())
+            } else {
+                String::new()
+            };
             println!(
-                "    {:name_w$}  {:5}  {}{}{}{}",
+                "    {:name_w$}  {:5}  {}{}{}{}{}",
                 m.name,
                 m.transport.kind(),
                 short(&m.transport.short(), 60),
                 attribution,
                 sensitive,
                 deprecated,
+                path_suffix,
                 name_w = name_w
             );
         }

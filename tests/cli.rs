@@ -928,3 +928,58 @@ scope = "user"
         .assert()
         .failure();
 }
+
+#[test]
+fn list_paths_shows_install_paths_for_plugins() {
+    let home = fake_home();
+    let out = zskills(&home)
+        .args(["list", "--paths"])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let stdout = String::from_utf8_lossy(&out);
+    // fake_home's inventory has foo@test-mp with installPath=/tmp/foo.
+    assert!(stdout.contains("foo@test-mp"));
+    assert!(stdout.contains("/tmp/foo"));
+}
+
+#[test]
+fn list_paths_shows_mcp_source_file() {
+    let (parent, claude_home) = fake_home_nested();
+    let claude_json = parent.path().join(".claude.json");
+    fs::write(
+        &claude_json,
+        serde_json::to_string(&json!({
+            "mcpServers": { "x": { "type": "http", "url": "https://x.example" } }
+        }))
+        .unwrap(),
+    )
+    .unwrap();
+    let out = zskills_nested(&parent, &claude_home)
+        .args(["list", "--paths"])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let stdout = String::from_utf8_lossy(&out);
+    assert!(stdout.contains("x"));
+    assert!(stdout.contains(".claude.json"));
+}
+
+#[test]
+fn list_without_paths_omits_them() {
+    let home = fake_home();
+    let out = zskills(&home)
+        .args(["list"])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let stdout = String::from_utf8_lossy(&out);
+    // Default mode: install path should NOT appear next to the plugin entry.
+    assert!(!stdout.contains("/tmp/foo"));
+}
