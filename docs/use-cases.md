@@ -49,6 +49,25 @@ The declarative path is reproducible across machines; the imperative path is wha
 
 ## 3. Mirror an Agent Skill from a GitHub repo
 
+Two paths — pick whichever fits.
+
+**Imperative**, one-shot:
+
+```bash
+zskills install jakubkrehel/make-interfaces-feel-better
+```
+
+zskills clones the repo, surveys it, and installs every `skills/<name>/SKILL.md` it finds. For repos with ≤5 skills, all install by default. For one skill, it installs silently. For multi-skill repos (e.g. a collection), see ["large collections"](#large-collections-from-a-repo) below.
+
+The same command accepts full git URLs too:
+
+```bash
+zskills install https://github.com/jakubkrehel/make-interfaces-feel-better.git
+zskills install git@github.com:jakubkrehel/make-interfaces-feel-better.git
+```
+
+**Declarative**, reproducible across machines:
+
 ```toml
 [[agent_skills]]
 source = "jakubkrehel/make-interfaces-feel-better"
@@ -58,7 +77,37 @@ source = "jakubkrehel/make-interfaces-feel-better"
 zskills sync
 ```
 
-`sync` clones (or pulls) `github.com/jakubkrehel/make-interfaces-feel-better.git` into `$XDG_CACHE_HOME/zskills/agent-skills/`, then copies every directory under `skills/<name>/SKILL.md` into `~/.claude/skills/<name>/`. To pin just one skill out of a multi-skill repo, add `name = "specific-skill"`.
+`sync` clones (or pulls) the repo into `$XDG_CACHE_HOME/zskills/agent-skills/`, then copies every directory under `skills/<name>/SKILL.md` into `~/.claude/skills/<name>/`. To pin just one skill out of a multi-skill repo, add `name = "specific-skill"`.
+
+### Large collections from a repo
+
+When a repo exposes more than 5 skills (a curated collection, say), the imperative install path **won't silently flood `~/.claude/skills/`**:
+
+```
+$ zskills install owner/big-skill-collection
+owner/big-skill-collection contains 47 Agent Skills — zskills won't install all of them by default.
+
+Options:
+  zskills install owner/big-skill-collection -i      interactive picker
+  zskills install owner/big-skill-collection --all   install all 47 skills
+
+Sample (5 of 47): skill-a, skill-b, skill-c, skill-d, skill-e, …
+```
+
+`-i` opens a multi-select picker (fzf when on `$PATH`, else dialoguer's `MultiSelect`); `--all` is the explicit-consent escape hatch.
+
+### Marketplace repos
+
+If the repo is actually a Claude Code marketplace (has `.claude-plugin/marketplace.json`), zskills redirects:
+
+```
+$ zskills install anthropics/claude-plugins-official
+This repo is a plugin marketplace. To register and install plugins from it:
+  zskills marketplace add anthropics/claude-plugins-official
+  zskills install <plugin>@<marketplace>
+```
+
+That's the canonical path for plugins — they go through marketplace registration, not direct install from the marketplace's repo.
 
 ## 4. Centralize duplicate skills scattered across projects
 

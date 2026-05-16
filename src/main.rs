@@ -11,6 +11,7 @@ mod marketplace;
 mod mcp;
 mod paths;
 mod reconcile;
+mod repo_scanner;
 mod settings;
 #[cfg(feature = "skills-sh")]
 mod skills_sh;

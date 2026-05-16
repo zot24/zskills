@@ -129,7 +129,7 @@ fn install_from_hits(hits: &[Hit]) -> Result<()> {
         Some(idx) => {
             let h = &hits[idx];
             let spec = format!("{}@{}", h.name, h.marketplace);
-            crate::commands::install::run(vec![spec], false)?;
+            crate::commands::install::run(vec![spec], false, false)?;
         }
     }
     Ok(())
