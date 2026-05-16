@@ -35,6 +35,17 @@ cargo install --git https://github.com/zot24/zskills
 
 Requires `git` on `$PATH`.
 
+### Companion Agent Skill
+
+This repo also ships an Agent Skill that teaches Claude how to use zskills. Add it to your `skills.toml`:
+
+```toml
+[[agent_skills]]
+source = "zot24/zskills"
+```
+
+Then `zskills sync`. Claude will reach for zskills with confidence for install / search / sync / doctor / MCP management.
+
 ## Why
 
 Existing tooling is per-runtime, per-language, and per-primitive: there's a JavaScript shim for Claude skills, a separate flow for MCP servers, no way to track ownership across machines, no declarative reproducibility. zskills is a single static binary that:

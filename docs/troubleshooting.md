@@ -178,6 +178,69 @@ rustup update stable
 cargo install --git https://github.com/zot24/zskills --force
 ```
 
+## `doctor` flags `command not found on $PATH` for an MCP
+
+The MCP server's `command` (stdio transport) doesn't resolve via `which`-style lookup. Two fixes:
+
+- Install the binary. For npx-launched servers, `npx` itself is on PATH but a global like `node` is required first.
+- If the config has a non-absolute name pointing at something only available in a Node/Python project shell, switch to an absolute path or wrap with `npx -y <package>`.
+
+zskills never spawns the server itself; the check is purely "is the file findable." So this catches the common "I'm not in the right shell environment" case before Claude Code does.
+
+## `doctor` says `env var X is referenced but not set`
+
+An MCP entry references `${X}` in `env`, `headers`, or `args`, but `X` isn't defined in your shell. Export it (and put it in your shell rc for persistence):
+
+```bash
+export GITHUB_TOKEN=ghp_...
+```
+
+zskills extracts `${VAR}` references from values **without storing the values themselves** — only the variable *names* land in our data structures. So this check is safe even if you paste a literal secret elsewhere in the same entry.
+
+## `doctor` says `transport sse is deprecated`
+
+The MCP spec marks `sse` as legacy in favor of `http`. To migrate an existing entry, edit its config:
+
+```diff
+-{ "type": "sse",  "url": "https://x.example/sse" }
++{ "type": "http", "url": "https://x.example/http" }
+```
+
+(Check the server's docs for the correct HTTP endpoint — it usually differs from the SSE endpoint.) If you manage MCPs declaratively, change `transport = "http"` (or remove `transport` to let zskills infer it from `url`) and run `zskills sync`.
+
+## `sync` overwrote my hand-edited MCP entry
+
+`sync` treats `skills.toml` as the source of truth: any MCP in the manifest is rewritten to match the manifest's values on every run. If you customized an entry in `~/.claude.json` directly, those changes are lost on the next sync.
+
+Two options:
+
+- **Move the customization into the manifest** so it's tracked and reproducible.
+- **Remove the entry from `skills.toml`** — then the manifest doesn't claim ownership and sync leaves it alone (and without `--prune`, never removes it).
+
+## MCP entry didn't appear after `zskills sync` — where did it go?
+
+Check the scope you targeted. zskills writes per-scope:
+
+- `scope = "user"` → `~/.claude.json` (NOT `~/.claude/settings.json` — that file isn't where `claude mcp` writes today)
+- `scope = "project"` → `<cwd>/.mcp.json`
+- `scope = "local"` → `<cwd>/.claude.local/settings.json`
+
+Verify with `zskills list --paths`. If the entry shows up there but Claude Code doesn't see it, restart Claude Code (or use its `/mcp` flow) so it re-reads the settings file.
+
+## `zskills list` doesn't show an MCP that exists in my managed-settings file
+
+It should, with `scope = managed`. If it doesn't:
+
+- Confirm the file exists at `/Library/Application Support/ClaudeCode/managed-settings.json` (macOS) or `/etc/claude-code/managed-settings.json` (Linux).
+- Confirm `mcpServers` is a top-level key in that file.
+- Set `ZSKILLS_MANAGED_SETTINGS=<absolute-path>` to override the auto-discovered path (useful when corp IT puts it elsewhere, or for CI where you want to skip the probe).
+
+Managed scope is **read-only** by design — `zskills sync` never writes to it, even with `--prune`.
+
+## I want to remove an MCP from one scope without touching others
+
+`sync --prune` removes everything not in the manifest, across every writable scope. For a one-MCP one-scope removal today, edit the relevant settings file directly (or use `claude mcp remove` if it targets the scope you want). A finer-grained removal API is on the [roadmap](https://github.com/zot24/zskills/issues/14).
+
 ## How do I uninstall zskills entirely?
 
 ```bash
