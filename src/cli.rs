@@ -32,11 +32,17 @@ pub enum Command {
         paths: bool,
     },
 
-    /// Install + enable one or more skills (format: name or name@marketplace)
+    /// Install + enable one or more skills (format: name, name@marketplace, owner/repo, or git URL)
     Install {
         /// Browse all marketplace plugins interactively and pick one to install
         #[arg(short = 'i', long)]
         interactive: bool,
+
+        /// When installing from a repo (owner/repo or git URL) with more than 5 Agent Skills,
+        /// confirm "install everything." Without this, large collections abort with a summary
+        /// so they don't silently flood ~/.claude/skills/.
+        #[arg(long)]
+        all: bool,
 
         /// Skills to install
         skills: Vec<String>,
@@ -229,7 +235,8 @@ impl Cli {
             Command::Install {
                 skills,
                 interactive,
-            } => crate::commands::install::run(skills, interactive),
+                all,
+            } => crate::commands::install::run(skills, interactive, all),
             Command::Remove {
                 skills,
                 interactive,

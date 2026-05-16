@@ -10,6 +10,8 @@ use tempfile::TempDir;
 fn zskills(home: &TempDir) -> Command {
     let mut cmd = Command::cargo_bin("zskills").unwrap();
     cmd.env("CLAUDE_HOME", home.path());
+    // Strip ANSI colors so `predicate::str::contains` assertions match raw text.
+    cmd.env("NO_COLOR", "1");
     cmd
 }
 
@@ -577,6 +579,7 @@ fn fake_home_nested() -> (TempDir, std::path::PathBuf) {
 fn zskills_nested(parent: &TempDir, claude_home: &std::path::Path) -> Command {
     let mut cmd = Command::cargo_bin("zskills").unwrap();
     cmd.env("CLAUDE_HOME", claude_home);
+    cmd.env("NO_COLOR", "1");
     // Make sure the managed-settings probe doesn't pick up a real system file in CI.
     cmd.env(
         "ZSKILLS_MANAGED_SETTINGS",
@@ -982,4 +985,245 @@ fn list_without_paths_omits_them() {
     let stdout = String::from_utf8_lossy(&out);
     // Default mode: install path should NOT appear next to the plugin entry.
     assert!(!stdout.contains("/tmp/foo"));
+}
+
+// ──── install <owner/repo> tests ────────────────────────────────────────────
+//
+// All of these stage a bare-ish local git repo and pass `file:///tmp/<id>` as
+// the install spec. `agent_skill::parse_source` accepts any URL containing
+// `://`, so `git clone file:///path` works without going to the network.
+
+use std::process::Command as StdCommand;
+
+/// Initialize a git repo at `dir` and commit whatever's in it. The commit is
+/// needed because `git clone` against an empty repo errors out.
+fn git_init_and_commit(dir: &std::path::Path) {
+    StdCommand::new("git")
+        .arg("-C")
+        .arg(dir)
+        .args(["init", "--quiet", "-b", "main"])
+        .status()
+        .unwrap();
+    StdCommand::new("git")
+        .arg("-C")
+        .arg(dir)
+        .args(["config", "user.email", "test@example.com"])
+        .status()
+        .unwrap();
+    StdCommand::new("git")
+        .arg("-C")
+        .arg(dir)
+        .args(["config", "user.name", "Test"])
+        .status()
+        .unwrap();
+    StdCommand::new("git")
+        .arg("-C")
+        .arg(dir)
+        .args(["add", "-A"])
+        .status()
+        .unwrap();
+    StdCommand::new("git")
+        .arg("-C")
+        .arg(dir)
+        .args(["commit", "--quiet", "-m", "init"])
+        .status()
+        .unwrap();
+}
+
+fn write_skill(repo: &std::path::Path, name: &str, description: &str) {
+    let dir = repo.join("skills").join(name);
+    fs::create_dir_all(&dir).unwrap();
+    fs::write(
+        dir.join("SKILL.md"),
+        format!(
+            "---\nname: {}\ndescription: {}\n---\n# {}\n",
+            name, description, name
+        ),
+    )
+    .unwrap();
+}
+
+fn file_url(p: &std::path::Path) -> String {
+    format!("file://{}", p.display())
+}
+
+#[test]
+fn install_repo_single_skill_auto_installs() {
+    let upstream = tempfile::tempdir().unwrap();
+    write_skill(upstream.path(), "alpha", "Alpha skill");
+    git_init_and_commit(upstream.path());
+
+    let home = fake_home();
+    zskills(&home)
+        .args(["install", &file_url(upstream.path())])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("alpha"));
+
+    assert!(home
+        .path()
+        .join("skills")
+        .join("alpha")
+        .join("SKILL.md")
+        .exists());
+}
+
+#[test]
+fn install_repo_small_multi_installs_all() {
+    let upstream = tempfile::tempdir().unwrap();
+    write_skill(upstream.path(), "alpha", "A");
+    write_skill(upstream.path(), "beta", "B");
+    write_skill(upstream.path(), "gamma", "C");
+    git_init_and_commit(upstream.path());
+
+    let home = fake_home();
+    zskills(&home)
+        .args(["install", &file_url(upstream.path())])
+        .assert()
+        .success();
+
+    for name in ["alpha", "beta", "gamma"] {
+        assert!(
+            home.path()
+                .join("skills")
+                .join(name)
+                .join("SKILL.md")
+                .exists(),
+            "{} should be installed",
+            name
+        );
+    }
+}
+
+#[test]
+fn install_repo_large_collection_aborts_without_all() {
+    let upstream = tempfile::tempdir().unwrap();
+    for i in 0..7 {
+        write_skill(upstream.path(), &format!("skill-{}", i), "x");
+    }
+    git_init_and_commit(upstream.path());
+
+    let home = fake_home();
+    zskills(&home)
+        .args(["install", &file_url(upstream.path())])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("won't install all"))
+        .stdout(predicate::str::contains("--all"));
+
+    // None of the skills should have been installed.
+    for i in 0..7 {
+        assert!(
+            !home
+                .path()
+                .join("skills")
+                .join(format!("skill-{}", i))
+                .exists(),
+            "large collection must not install silently"
+        );
+    }
+}
+
+#[test]
+fn install_repo_large_collection_with_all_installs_everything() {
+    let upstream = tempfile::tempdir().unwrap();
+    for i in 0..7 {
+        write_skill(upstream.path(), &format!("skill-{}", i), "x");
+    }
+    git_init_and_commit(upstream.path());
+
+    let home = fake_home();
+    zskills(&home)
+        .args(["install", &file_url(upstream.path()), "--all"])
+        .assert()
+        .success();
+
+    for i in 0..7 {
+        let p = home
+            .path()
+            .join("skills")
+            .join(format!("skill-{}", i))
+            .join("SKILL.md");
+        assert!(p.exists(), "skill-{} should be installed", i);
+    }
+}
+
+#[test]
+fn install_repo_marketplace_redirects() {
+    let upstream = tempfile::tempdir().unwrap();
+    let mp = upstream.path().join(".claude-plugin");
+    fs::create_dir_all(&mp).unwrap();
+    fs::write(
+        mp.join("marketplace.json"),
+        r#"{"name":"test","plugins":[]}"#,
+    )
+    .unwrap();
+    // Also put an Agent Skill — to prove marketplace detection wins and the skill is NOT installed.
+    write_skill(upstream.path(), "should-not-install", "x");
+    git_init_and_commit(upstream.path());
+
+    let home = fake_home();
+    zskills(&home)
+        .args(["install", &file_url(upstream.path())])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("marketplace"))
+        .stdout(predicate::str::contains("marketplace add"));
+
+    assert!(
+        !home
+            .path()
+            .join("skills")
+            .join("should-not-install")
+            .exists(),
+        "marketplace path must not install skills"
+    );
+}
+
+#[test]
+fn install_repo_mcp_hint_appears_alongside_skill_install() {
+    let upstream = tempfile::tempdir().unwrap();
+    write_skill(upstream.path(), "alpha", "A");
+    fs::write(
+        upstream.path().join(".mcp.json"),
+        r#"{"mcpServers":{"linear":{"type":"http","url":"https://x"}}}"#,
+    )
+    .unwrap();
+    git_init_and_commit(upstream.path());
+
+    let home = fake_home();
+    let out = zskills(&home)
+        .args(["install", &file_url(upstream.path())])
+        .assert()
+        .success()
+        .get_output()
+        .stderr
+        .clone();
+    let stderr = String::from_utf8_lossy(&out);
+    assert!(stderr.contains("MCP server"));
+    assert!(home
+        .path()
+        .join("skills")
+        .join("alpha")
+        .join("SKILL.md")
+        .exists());
+}
+
+#[test]
+fn install_repo_with_no_skills_errors() {
+    let upstream = tempfile::tempdir().unwrap();
+    // Empty repo — no skills/, no .claude-plugin/.
+    fs::write(upstream.path().join("README.md"), "# nothing here\n").unwrap();
+    git_init_and_commit(upstream.path());
+
+    let home = fake_home();
+    let out = zskills(&home)
+        .args(["install", &file_url(upstream.path())])
+        .assert()
+        .success() // emit error to stderr but exit 0; the partition-based dispatch logs and continues
+        .get_output()
+        .stderr
+        .clone();
+    let stderr = String::from_utf8_lossy(&out);
+    assert!(stderr.contains("no Agent Skills found"));
 }

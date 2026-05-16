@@ -35,18 +35,36 @@ Servers are grouped by scope (managed → local → project → user) and only t
 
 ## `install`
 
-Flip a plugin's `enabledPlugins` entry on. Claude Code fetches bytes on next start (or run `/plugin install <name>` inside Claude Code to materialize them immediately).
+Three accepted spec shapes:
 
 ```
-zskills install <name>...
-zskills install -i
+zskills install <name>                       # plugin from a registered marketplace
+zskills install <name>@<marketplace>         # qualified plugin
+zskills install <owner>/<repo>               # NEW: Agent Skill(s) directly from a git repo
+zskills install <git-url>                    # NEW: same, for arbitrary git URLs (https://, git@, file://)
+zskills install -i                           # interactive picker over marketplace plugins
 ```
 
-Accepts multiple names. Resolves unqualified names against your registered marketplaces; errors on ambiguity.
+**Plugin path (`<name>` / `<name>@<marketplace>`).** Resolves against registered marketplaces, flips `enabledPlugins` in `~/.claude/settings.json`. Claude Code materializes bytes on next launch.
+
+**Repo path (`<owner>/<repo>` or git URL).** Clones the repo via `git clone --depth 1` into `~/.cache/zskills/agent-skills/<owner>-<repo>/`, surveys the tree, and:
+- **Agent Skills** (any directory under `skills/<name>/SKILL.md`) — installed to `~/.claude/skills/<name>/`. Inventory tagged with the source.
+- **Marketplace** (`.claude-plugin/marketplace.json` at repo root) — prints a redirect: `use zskills marketplace add <owner/repo>` and installs nothing from this repo.
+- **MCP servers** (`.mcp.json` or `mcpServers` in `plugin.json`) — surfaced as a hint; not auto-installed (use `[[mcps]]` in `skills.toml` + `zskills sync`).
 
 | Flag | Default | Description |
 |------|---------|-------------|
-| `-i`, `--interactive` | off | When passed without any `<name>`, browse all plugins across registered marketplaces with a fuzzy picker and install the selection. |
+| `-i`, `--interactive` | off | For plugin specs: without any `<name>`, browse all marketplace plugins with a fuzzy picker. For repo specs: always opens a multi-select picker over the Agent Skills found in the repo. |
+| `--all` | off | For repo specs only: when the repo contains more than 5 Agent Skills, confirm "yes, install every one." Without `--all`, large collections abort with a sample summary so they don't silently flood `~/.claude/skills/`. Ignored for repos with ≤5 skills (those install everything by default). |
+
+**Repo-path count behavior**:
+
+| Skills in repo | Default (no flags) | With `-i` | With `--all` |
+|---|---|---|---|
+| 0 | error | error | error |
+| 1 | install it | install it | install it |
+| 2–5 | install all | picker | install all |
+| > 5 | **abort + summary + next-step hint** | picker | install all |
 
 ## `remove` / `purge`
 

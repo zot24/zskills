@@ -37,12 +37,18 @@ zskills list --paths               # also show on-disk location of every entry
 zskills list -v                    # expand grouped npm-bundle agent skills
 zskills list --json                # machine-readable for scripting
 
-# Search + install
+# Search + install (plugin path — via marketplaces)
 zskills search <query>             # substring-match across registered marketplaces
 zskills search <query> -i          # also opens an interactive picker; selection installs
 zskills install <name>             # name@marketplace if ambiguous
-zskills install -i                 # fuzzy-pick from all marketplaces (no <name> needed)
-zskills install -i                 # uses fzf if on $PATH; falls back to built-in picker
+zskills install <name>@<mp>        # explicitly qualified
+zskills install -i                 # fuzzy-pick from all marketplaces (uses fzf if available)
+
+# Install Agent Skills directly from a git repo (v0.8+)
+zskills install zot24/zskills      # owner/repo — clones, surveys, installs Agent Skills
+zskills install https://github.com/owner/repo.git    # full git URL works too
+zskills install owner/big-collection -i              # multi-select picker for many skills
+zskills install owner/big-collection --all           # confirm "install all" when >5 skills
 
 # Remove
 zskills remove <name>              # apt-style: disable + drop inventory, keep bytes
@@ -170,10 +176,29 @@ zskills sync
 
 ### Install one thing fast
 ```bash
+# Plugin from a registered marketplace
 zskills install firecrawl@zot24-skills
-# OR: open a picker
+
+# Agent Skill directly from any git repo (no manifest edit required)
+zskills install zot24/zskills
+
+# Browse marketplace plugins
 zskills install -i
 ```
+
+### Repo-install size policy
+When `zskills install <owner>/<repo>` discovers many skills, it doesn't silently flood `~/.claude/skills/`:
+
+| Skills in repo | Default behavior |
+|---|---|
+| 1 | install it |
+| 2–5 | install all (silent) |
+| > 5 | abort + print sample + suggest `-i` or `--all` |
+
+Pass `-i` for a picker or `--all` for explicit consent on large collections.
+
+### Marketplace repos vs skill repos
+If the repo is a Claude Code marketplace (has `.claude-plugin/marketplace.json`), `install <owner/repo>` redirects to `zskills marketplace add <owner/repo>` instead. That's the canonical path for plugins.
 
 ### See what's where
 ```bash

@@ -37,14 +37,24 @@ Requires `git` on `$PATH`.
 
 ### Companion Agent Skill
 
-This repo also ships an Agent Skill that teaches Claude how to use zskills. Add it to your `skills.toml`:
+This repo also ships an Agent Skill that teaches Claude how to use zskills. Install it directly:
+
+```bash
+zskills install zot24/zskills
+```
+
+zskills clones this repo, finds `skills/zskills/SKILL.md`, and drops it at `~/.claude/skills/zskills/`. If you'd rather declare it in the manifest for cross-machine reproducibility:
 
 ```toml
 [[agent_skills]]
 source = "zot24/zskills"
 ```
 
-Then `zskills sync`. Claude will reach for zskills with confidence for install / search / sync / doctor / MCP management.
+```bash
+zskills sync
+```
+
+Either way, Claude reaches for zskills with confidence for install / search / sync / doctor / MCP management on its next session.
 
 ## Why
 
