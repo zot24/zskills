@@ -14,12 +14,14 @@ Full reference for every `zskills` subcommand. Flags are shown with their defaul
 What's currently installed, with each item's enabled/disabled/orphaned status. Covers both Claude Code plugins and Agent Skills.
 
 ```
-zskills list [--json]
+zskills list [--json] [-v] [--paths]
 ```
 
 | Flag | Default | Description |
 |------|---------|-------------|
 | `--json` | off | Emit a machine-readable JSON document for scripting |
+| `-v`, `--verbose` | off | Expand grouped agent skills (show every skill name in each source group) |
+| `--paths` | off | Show the on-disk location of each entry: plugin install path under `~/.claude/plugins/cache/...`, agent skill directory under `~/.claude/skills/...`, or the settings file an MCP server is declared in |
 
 The non-JSON output groups results into four plugin buckets (active, installed-but-disabled, enabled-but-not-installed, installed-from-missing-marketplace) plus two Agent Skill buckets (managed by zskills, on-disk-but-untracked), plus a final **MCP Servers** section that aggregates every server visible to Claude Code from all of:
 

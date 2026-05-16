@@ -25,6 +25,11 @@ pub enum Command {
         /// Expand grouped agent skills (show every skill name in each source group)
         #[arg(long, short = 'v')]
         verbose: bool,
+
+        /// Show the on-disk location of each entry (plugin install path, agent skill
+        /// directory, or the settings file an MCP server is declared in)
+        #[arg(long)]
+        paths: bool,
     },
 
     /// Install + enable one or more skills (format: name or name@marketplace)
@@ -216,7 +221,11 @@ pub enum MarketplaceCmd {
 impl Cli {
     pub fn run(self) -> anyhow::Result<()> {
         match self.command {
-            Command::List { json, verbose } => crate::commands::list::run(json, verbose),
+            Command::List {
+                json,
+                verbose,
+                paths,
+            } => crate::commands::list::run(json, verbose, paths),
             Command::Install {
                 skills,
                 interactive,
