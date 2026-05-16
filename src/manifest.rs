@@ -25,6 +25,10 @@ pub struct Manifest {
     /// Agent Skills (the older raw-SKILL.md format, installed into ~/.claude/skills/).
     #[serde(default)]
     pub agent_skills: Vec<AgentSkillEntry>,
+
+    /// MCP servers — written into the runtime's `mcpServers` map at the chosen scope.
+    #[serde(default)]
+    pub mcps: Vec<McpEntry>,
 }
 
 #[derive(Debug, Deserialize, Serialize, Clone)]
@@ -41,6 +45,139 @@ impl SkillEntry {
         self.marketplace
             .as_ref()
             .map(|m| format!("{}@{}", self.name, m))
+    }
+}
+
+/// An MCP server declaration in `skills.toml`.
+///
+/// Exactly one of `command` (stdio) or `url` (http/sse) must be present.
+/// `transport` is optional and inferred: `command` → stdio, `url` → http
+/// (set `transport = "sse"` explicitly if you need the deprecated SSE shape).
+///
+/// `env` and `headers` values should use `${VAR}` references — the manifest
+/// is meant to be reproducible and shareable, so literal secrets land in the
+/// user's shell environment, not in the TOML.
+///
+/// `scope` controls which file zskills writes to:
+/// - `"user"` (default) → `~/.claude.json`
+/// - `"project"` → `<cwd>/.mcp.json`
+/// - `"local"` → `<cwd>/.claude.local/settings.json`
+///
+/// `"managed"` is not accepted — that scope is read-only (deployed by IT).
+#[derive(Debug, Deserialize, Serialize, Clone, Default)]
+pub struct McpEntry {
+    pub name: String,
+    /// `"stdio"` | `"http"` | `"sse"`. Inferred if absent.
+    #[serde(default)]
+    pub transport: Option<String>,
+    // stdio fields
+    #[serde(default)]
+    pub command: Option<String>,
+    #[serde(default)]
+    pub args: Vec<String>,
+    #[serde(default)]
+    pub env: std::collections::BTreeMap<String, String>,
+    // http / sse fields
+    #[serde(default)]
+    pub url: Option<String>,
+    #[serde(default)]
+    pub headers: std::collections::BTreeMap<String, String>,
+    /// `"user"` (default) | `"project"` | `"local"`.
+    #[serde(default)]
+    pub scope: Option<String>,
+}
+
+impl McpEntry {
+    /// Resolve the transport kind, preferring an explicit `transport` value
+    /// and falling back to inference from `command` (→ stdio) or `url` (→ http).
+    pub fn transport_kind(&self) -> &'static str {
+        match self.transport.as_deref() {
+            Some("stdio") => "stdio",
+            Some("http") => "http",
+            Some("sse") => "sse",
+            _ if self.command.is_some() => "stdio",
+            _ if self.url.is_some() => "http",
+            _ => "stdio", // fallback — validate() will catch the missing fields
+        }
+    }
+
+    /// Resolve the scope, defaulting to `"user"`. Returns an error if invalid.
+    pub fn scope_kind(&self) -> Result<&'static str> {
+        match self.scope.as_deref().unwrap_or("user") {
+            "user" => Ok("user"),
+            "project" => Ok("project"),
+            "local" => Ok("local"),
+            "managed" => anyhow::bail!(
+                "scope=managed is not writable — managed settings are deployed by IT, not zskills"
+            ),
+            other => anyhow::bail!(
+                "unknown scope {:?} (must be user, project, or local)",
+                other
+            ),
+        }
+    }
+
+    /// Validate that the entry has the required fields for its transport.
+    pub fn validate(&self) -> Result<()> {
+        if self.name.is_empty() {
+            anyhow::bail!("mcp entry missing required field `name`");
+        }
+        self.scope_kind()?;
+        match self.transport_kind() {
+            "stdio" => {
+                if self.command.is_none() {
+                    anyhow::bail!("mcp `{}`: stdio transport requires `command`", self.name);
+                }
+                if self.url.is_some() {
+                    anyhow::bail!(
+                        "mcp `{}`: stdio entry has stray `url` — pick one transport",
+                        self.name
+                    );
+                }
+            }
+            "http" | "sse" => {
+                if self.url.is_none() {
+                    anyhow::bail!("mcp `{}`: http/sse transport requires `url`", self.name);
+                }
+                if self.command.is_some() {
+                    anyhow::bail!(
+                        "mcp `{}`: http/sse entry has stray `command` — pick one transport",
+                        self.name
+                    );
+                }
+            }
+            _ => unreachable!(),
+        }
+        Ok(())
+    }
+
+    /// Convert to the JSON shape the runtime expects under `mcpServers["<name>"]`.
+    pub fn to_json_value(&self) -> serde_json::Value {
+        use serde_json::{json, Map, Value};
+        let mut obj = Map::new();
+        match self.transport_kind() {
+            "stdio" => {
+                obj.insert(
+                    "command".into(),
+                    json!(self.command.clone().unwrap_or_default()),
+                );
+                if !self.args.is_empty() {
+                    obj.insert("args".into(), json!(self.args));
+                }
+                if !self.env.is_empty() {
+                    obj.insert("env".into(), json!(self.env));
+                }
+            }
+            kind @ ("http" | "sse") => {
+                obj.insert("type".into(), json!(kind));
+                obj.insert("url".into(), json!(self.url.clone().unwrap_or_default()));
+                if !self.headers.is_empty() {
+                    obj.insert("headers".into(), json!(self.headers));
+                }
+            }
+            _ => unreachable!(),
+        }
+        Value::Object(obj)
     }
 }
 

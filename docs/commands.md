@@ -110,6 +110,69 @@ zskills upgrade [<name>...]
 
 Pass specific names to upgrade just those; empty = upgrade everything. The `name` filter matches against the manifest's `npm`, `source`, or `name` fields.
 
+## MCP servers manifest schema
+
+Add `[[mcps]]` tables to `skills.toml` to declaratively manage MCP servers. `sync` writes them to the appropriate runtime config file based on `scope`:
+
+```toml
+# Stdio: a process the runtime spawns directly.
+[[mcps]]
+name = "github"
+command = "npx"
+args = ["-y", "@modelcontextprotocol/server-github"]
+env = { GITHUB_TOKEN = "${GITHUB_TOKEN}" }
+scope = "user"  # default; also "project" or "local"
+
+# HTTP: a remote server reachable over HTTP.
+[[mcps]]
+name = "linear"
+url = "https://mcp.linear.app/mcp"
+transport = "http"  # optional; inferred from `url`
+scope = "user"
+
+# Stdio + mcp-remote proxy pattern (real-world): args reference ${VAR} too.
+[[mcps]]
+name = "honcho"
+command = "npx"
+args = [
+  "mcp-remote",
+  "https://mcp.honcho.dev",
+  "--header", "Authorization:${HONCHO_AUTH}",
+  "--header", "X-Honcho-User-Name:${USER_NAME}",
+]
+env = { HONCHO_AUTH = "${HONCHO_AUTH}", USER_NAME = "${USER}" }
+scope = "user"
+```
+
+| Field | Purpose |
+|---|---|
+| `name` (required) | MCP server name. Becomes the key under `mcpServers`. |
+| `command` | Stdio: the executable to run. Required for stdio transports. |
+| `args` | Stdio: list of args. `${VAR}` refs are allowed and recommended for credentials. |
+| `env` | Stdio: env-var map. Values should use `${VAR}` refs. |
+| `url` | HTTP/SSE: server URL. |
+| `headers` | HTTP/SSE: header map. Same `${VAR}` policy as `env`. |
+| `transport` | `"stdio"` \| `"http"` \| `"sse"`. Optional; inferred from `command` or `url`. SSE is the deprecated spec form — prefer http. |
+| `scope` | `"user"` (default) \| `"project"` \| `"local"`. `"managed"` is not accepted (read-only). |
+
+**Write targets per scope:**
+
+| Scope | File | Notes |
+|---|---|---|
+| `user` | `~/.claude.json` | The file `claude mcp add --scope user` writes to. Wrapped JSON (`{"mcpServers": {...}}`). |
+| `project` | `<cwd>/.mcp.json` | Spec-recommended team-shared file. Created wrapped; if it already exists with the legacy flat schema, the existing shape is preserved. |
+| `local` | `<cwd>/.claude.local/settings.json` | Gitignored personal+creds file. Wrapped. |
+
+**Sync semantics.**
+
+- `sync` installs every MCP from the manifest and overwrites overlapping entries (manifest is source of truth).
+- Without `--prune`, MCP entries currently in the runtime config but absent from the manifest are reported as `skip` — same safety pattern as `[[agent_skills]]`.
+- With `--prune`, those entries are removed from their settings file.
+- **Plugin-injected MCPs are never pruned.** If a server name matches one declared by an enabled plugin, it's owned by that plugin and zskills won't touch it.
+- **Managed scope is never written.** Entries appear in `list`/`doctor` but `sync` ignores them.
+
+**Secret handling.** Values in `env`/`headers` should be `${VAR}` references; the actual secret stays in your shell. Literal values are not blocked but they land in the JSON verbatim — which means they'd go straight into git-committed files at `project` scope. The recommendation is documentation, not enforcement.
+
 ## Agent skills manifest schema
 
 The `[[agent_skills]]` table supports four orthogonal fields, used in combination:
