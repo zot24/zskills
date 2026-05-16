@@ -2,6 +2,24 @@
 
 All notable changes to this project are documented here. The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html). Releases from this point forward are managed by [release-please](https://github.com/googleapis/release-please) based on [Conventional Commits](https://www.conventionalcommits.org/).
 
+## [0.7.0](https://github.com/zot24/zskills/compare/v0.6.0...v0.7.0) (2026-05-16)
+
+
+### Features
+
+* [[mcps]] manifest support + sync reconciliation ([#13](https://github.com/zot24/zskills/issues/13)) ([882bfe5](https://github.com/zot24/zskills/commit/882bfe5a5ff5de42632a7dabfe5b375534e49871))
+* add -i interactive mode to install, search, remove ([#8](https://github.com/zot24/zskills/issues/8)) ([33ae160](https://github.com/zot24/zskills/commit/33ae1601381b63d632725b16ac33d3accc3fe650))
+* doctor statically validates MCP servers ([#11](https://github.com/zot24/zskills/issues/11)) ([8295670](https://github.com/zot24/zskills/commit/8295670341d34342b91e77e851da96f5f9a5d1c6))
+* prefer fzf for interactive pickers, fall back to dialoguer ([#9](https://github.com/zot24/zskills/issues/9)) ([1e13340](https://github.com/zot24/zskills/commit/1e133407e22c532a294501e53eba7aef2c301a51))
+* zskills list --paths shows on-disk location for each entry ([#15](https://github.com/zot24/zskills/issues/15)) ([d1dcc04](https://github.com/zot24/zskills/commit/d1dcc0458871bf32b973a238d2ab30913baef479))
+* zskills list aggregates MCP servers across all scopes ([#10](https://github.com/zot24/zskills/issues/10)) ([b13ca45](https://github.com/zot24/zskills/commit/b13ca45fb49a04572a311c1aeecb577e3312f7c8))
+
+
+### Documentation
+
+* reposition as multi-runtime, not Claude-only ([#12](https://github.com/zot24/zskills/issues/12)) ([b8429ac](https://github.com/zot24/zskills/commit/b8429ac985fdc7a39ddc158d8e392a4b1300dcd2))
+* **site:** add OG/Twitter card image for social previews ([#6](https://github.com/zot24/zskills/issues/6)) ([631a426](https://github.com/zot24/zskills/commit/631a426cfcff8306de759298a4bea22060316e2c))
+
 ## [0.6.0](https://github.com/zot24/zskills/compare/v0.5.0...v0.6.0) (2026-05-13)
 
 

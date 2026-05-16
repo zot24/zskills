@@ -1,6 +1,6 @@
 [package]
 name = "zskills"
-version = "0.6.0"
+version = "0.7.0"
 edition = "2021"
 rust-version = "1.88"
 description = "Declarative package manager for agentic coding CLI skills, plugins, and MCP servers. Claude Code supported today; multi-runtime by design."
