@@ -12,7 +12,8 @@ git-repository-url = "https://github.com/zot24/zskills"
 edit-url-template = "https://github.com/zot24/zskills/edit/main/{path}"
 site-url = "/zskills/"
 additional-js = ["theme/zot24-home.js"]
-additional-css = ["theme/zot24-home.css"]
+# theme/zot24-home.css is now consolidated into theme/custom.css.
+additional-css = ["theme/custom.css"]
 
 [output.html.fold]
 enable = true
