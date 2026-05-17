@@ -2,6 +2,20 @@
 
 All notable changes to this project are documented here. The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html). Releases from this point forward are managed by [release-please](https://github.com/googleapis/release-please) based on [Conventional Commits](https://www.conventionalcommits.org/).
 
+## [0.8.0](https://github.com/zot24/zskills/compare/v0.7.0...v0.8.0) (2026-05-17)
+
+
+### Features
+
+* install from repo + cross-client skill path + sync --adopt ([#21](https://github.com/zot24/zskills/issues/21)) ([64274b2](https://github.com/zot24/zskills/commit/64274b2ee8be7a3363d66e10f98adeb859616ef7))
+* zskills install &lt;owner/repo&gt; — direct install from a git repo ([#18](https://github.com/zot24/zskills/issues/18)) ([2756dc0](https://github.com/zot24/zskills/commit/2756dc037aa815bab80fc62ca57555a70ed71067))
+
+
+### Documentation
+
+* ship Agent Skill + MCP-aware docs for v0.7.0 ([#16](https://github.com/zot24/zskills/issues/16)) ([66ad32f](https://github.com/zot24/zskills/commit/66ad32f478692d13d6dd2eb6f7842984d33aad2b))
+* update for ~/.agents/skills/ path + sync --adopt + quieter npm ([#22](https://github.com/zot24/zskills/issues/22)) ([38a5c58](https://github.com/zot24/zskills/commit/38a5c584c7d7c8234057e91066c71e6499c66d54))
+
 ## [0.7.0](https://github.com/zot24/zskills/compare/v0.6.0...v0.7.0) (2026-05-16)
 
 
