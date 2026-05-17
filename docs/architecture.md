@@ -7,7 +7,7 @@ How zskills models the three sources of truth in your Claude Code install — ac
 | State | Lives at | Authoritative for |
 |---|---|---|
 | **Intent** | `skills.toml` | What you *want* installed and enabled |
-| **Inventory** | `~/.claude/plugins/installed_plugins.json` + `~/.claude/skills/.zskills.json` | What *exists* on disk |
+| **Inventory** | `~/.claude/plugins/installed_plugins.json` + `~/.agents/skills/.zskills.json` | What *exists* on disk |
 | **Activation** | `~/.claude/settings.json` → `enabledPlugins`; `~/.claude.json` + per-scope MCP files → `mcpServers` | What's currently *running* in a Claude Code session |
 
 The first is what zskills writes from. The second and third are what Claude Code reads. zskills' job is to keep all three consistent across all three primitives.
@@ -23,11 +23,13 @@ zskills models a single manifest over three first-class types of artifact, each 
 - Inventory: `~/.claude/plugins/installed_plugins.json`
 - Qualified name: `<plugin>@<marketplace>` (matches Claude Code's syntax)
 
-### Agent Skills (the older raw-`SKILL.md` format)
+### Agent Skills (raw `SKILL.md` format)
 - No marketplace — direct from any Git repo with `skills/<name>/SKILL.md`
-- Installed under `~/.claude/skills/<name>/`
+- Installed under `~/.agents/skills/<name>/` — the cross-client convention from
+  [agentskills.io](https://agentskills.io/integrate-skills), visible to Claude Code,
+  Grok CLI, and any other compliant client. Override with `AGENTS_HOME` for tests.
 - No "enabled" flag — files-on-disk *is* the activation
-- Inventory: `~/.claude/skills/.zskills.json` (we own this; Claude Code doesn't write it)
+- Inventory: `~/.agents/skills/.zskills.json` (we own this; clients don't write it)
 
 ### MCP servers
 - No "installed bytes" of zskills's own — the MCP server is just a process to spawn (stdio) or a URL to call (http/sse). Inventory and activation collapse into the same record.
@@ -198,7 +200,7 @@ Agent skill inventory entries carry a `source` field that's *typed* by prefix:
 | `npm:<pkg>` | npm-installed | `npm install -g <pkg>` |
 | `local` | Local-only, never refreshed | (manual) |
 
-The manifest entry's `claims` glob list bridges the gap when an npm package overwrites files in-place: after the install command runs, every `~/.claude/skills/<name>/` directory matching any glob in `claims` is tagged with the entry's source. This is the only way to claim "I own these 66 pre-existing directories" without re-installing fresh.
+The manifest entry's `claims` glob list bridges the gap when an npm package overwrites files in-place: after the install command runs, every `~/.agents/skills/<name>/` directory matching any glob in `claims` is tagged with the entry's source. This is the only way to claim "I own these 66 pre-existing directories" without re-installing fresh.
 
 `sync` uses the same ownership signals (source match + npm tag + claims glob) when deciding whether a skill not in the desired set should be removed — preventing accidental deletion of skills owned by a `[[agent_skills]]` entry.
 

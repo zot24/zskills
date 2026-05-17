@@ -21,7 +21,7 @@ zskills list [--json] [-v] [--paths]
 |------|---------|-------------|
 | `--json` | off | Emit a machine-readable JSON document for scripting |
 | `-v`, `--verbose` | off | Expand grouped agent skills (show every skill name in each source group) |
-| `--paths` | off | Show the on-disk location of each entry: plugin install path under `~/.claude/plugins/cache/...`, agent skill directory under `~/.claude/skills/...`, or the settings file an MCP server is declared in |
+| `--paths` | off | Show the on-disk location of each entry: plugin install path under `~/.claude/plugins/cache/...`, agent skill directory under `~/.agents/skills/...`, or the settings file an MCP server is declared in |
 
 The non-JSON output groups results into four plugin buckets (active, installed-but-disabled, enabled-but-not-installed, installed-from-missing-marketplace) plus two Agent Skill buckets (managed by zskills, on-disk-but-untracked), plus a final **MCP Servers** section that aggregates every server visible to Claude Code from all of:
 
@@ -48,14 +48,14 @@ zskills install -i                           # interactive picker over marketpla
 **Plugin path (`<name>` / `<name>@<marketplace>`).** Resolves against registered marketplaces, flips `enabledPlugins` in `~/.claude/settings.json`. Claude Code materializes bytes on next launch.
 
 **Repo path (`<owner>/<repo>` or git URL).** Clones the repo via `git clone --depth 1` into `~/.cache/zskills/agent-skills/<owner>-<repo>/`, surveys the tree, and:
-- **Agent Skills** (any directory under `skills/<name>/SKILL.md`) — installed to `~/.claude/skills/<name>/`. Inventory tagged with the source.
+- **Agent Skills** (any directory under `skills/<name>/SKILL.md`) — installed to `~/.agents/skills/<name>/` (the cross-client convention; visible to Claude Code, Grok CLI, and any other compliant client). Inventory tagged with the source.
 - **Marketplace** (`.claude-plugin/marketplace.json` at repo root) — prints a redirect: `use zskills marketplace add <owner/repo>` and installs nothing from this repo.
 - **MCP servers** (`.mcp.json` or `mcpServers` in `plugin.json`) — surfaced as a hint; not auto-installed (use `[[mcps]]` in `skills.toml` + `zskills sync`).
 
 | Flag | Default | Description |
 |------|---------|-------------|
 | `-i`, `--interactive` | off | For plugin specs: without any `<name>`, browse all marketplace plugins with a fuzzy picker. For repo specs: always opens a multi-select picker over the Agent Skills found in the repo. |
-| `--all` | off | For repo specs only: when the repo contains more than 5 Agent Skills, confirm "yes, install every one." Without `--all`, large collections abort with a sample summary so they don't silently flood `~/.claude/skills/`. Ignored for repos with ≤5 skills (those install everything by default). |
+| `--all` | off | For repo specs only: when the repo contains more than 5 Agent Skills, confirm "yes, install every one." Without `--all`, large collections abort with a sample summary so they don't silently flood `~/.agents/skills/`. Ignored for repos with ≤5 skills (those install everything by default). |
 
 **Repo-path count behavior**:
 
@@ -96,19 +96,30 @@ zskills disable <name>...
 Apply a declarative `skills.toml` manifest. Diffs intent against current state, then atomically writes the necessary settings.json and inventory changes.
 
 ```
-zskills sync [--file <path>] [--dry-run] [--prune]
+zskills sync [--file <path>] [--dry-run] [--prune | --adopt]
 ```
 
 | Flag | Default | Description |
 |------|---------|-------------|
 | `--file <path>` | `$XDG_CONFIG_HOME/zskills/skills.toml` (then `~/.config/zskills/skills.toml`) | Path to `skills.toml`. **`./skills.toml` is NOT auto-loaded** — pass `--file ./skills.toml` to use a project-local manifest. (This caused destructive surprises in v0.5; the v0.5.1 default is safer.) |
 | `--dry-run` | off | Print the plan; do not write |
-| `--prune` | off | Allow destructive removals. Without `--prune`, agent skills present on disk but absent from the manifest are reported as `skip` and left untouched. With `--prune`, their bytes are deleted from `~/.claude/skills/`. |
+| `--prune` | off | Allow destructive removals. Without `--prune`, agent skills present on disk but absent from the manifest are reported as `skip` and left untouched. With `--prune`, their bytes are deleted from `~/.agents/skills/`. |
+| `--adopt` | off | Inverse of `--prune`. Append every orphan (installed agent skill, enabled plugin, configured MCP that isn't yet in the manifest) to `skills.toml` and exit. Useful for capturing a hand-curated environment into your manifest in one shot. Mutually exclusive with `--prune`. |
 
 What sync does:
 1. For each `[[skills]]` entry: resolve `name@marketplace`, write to `enabledPlugins`. Entries currently enabled but not in the manifest get flipped off.
-2. For each `[[agent_skills]]` entry: if `source` is present, clone/pull and copy `skills/<name>/` to `~/.claude/skills/`. If `npm` is present, run `npm install -g <pkg>` (or `install_cmd`), then claim all matching `claims` globs. If neither is present (just `name`), register the existing on-disk skill in inventory without fetching anything.
-3. Agent skills tracked in inventory but missing from the manifest are reported. With `--prune` they're deleted; without, they're skipped.
+2. For each `[[agent_skills]]` entry: if `source` is present, clone/pull and copy `skills/<name>/` to `~/.agents/skills/`. If `npm` is present, run `npm install -g --no-fund --no-audit <pkg>` (or `install_cmd`), then claim all matching `claims` globs. If neither is present (just `name`), register the existing on-disk skill in inventory without fetching anything.
+3. Agent skills tracked in inventory but missing from the manifest are reported. With `--prune` they're deleted; with `--adopt` they're appended to the manifest; otherwise they're skipped.
+
+### `--adopt` details
+
+When you pass `--adopt`, sync writes new entries to `skills.toml` instead of removing anything:
+
+- **Enabled plugin** not in manifest → new `[[skills]]` row with `name` + `marketplace`.
+- **Agent skill** in inventory but not in manifest → new `[[agent_skills]]` row. The `source` / `npm` / `name` fields are reconstructed from the inventory tag (`local` becomes a name-only entry, `npm:pkg` becomes `npm = "pkg"`, anything else becomes `source = "..."`).
+- **MCP server** configured but not in manifest → new `[[mcps]]` row with full transport details (`command`/`args`/`env` for stdio, `url`/`headers` for http/sse), `scope` preserved. **Env and header values are copied verbatim** — if any contain literal secrets, eyeball the resulting manifest and replace them with `${VAR}` references before committing.
+
+Adoption is idempotent and de-duplicates against existing entries, so re-running `sync --adopt` after editing the manifest is safe.
 
 Sync is idempotent. Run it on every fresh machine to reproduce your global state from a single file.
 
@@ -210,7 +221,7 @@ name = "specific-skill"
 # npm-distributed package
 [[agent_skills]]
 npm = "get-shit-done-cc"
-claims = ["gsd-*"]              # glob patterns; every match in ~/.claude/skills/ is owned by this entry
+claims = ["gsd-*"]              # glob patterns; every match in ~/.agents/skills/ is owned by this entry
 
 # npm with custom installer command
 [[agent_skills]]
@@ -228,7 +239,7 @@ name = "my-internal-tool"
 | `npm` | npm package name. `sync`/`upgrade` runs `npm install -g <pkg>`. |
 | `install_cmd` | Custom installer command — overrides the default `npm install -g`. Used for packages with their own setup CLI. |
 | `name` | Optional. For source entries, pick a single skill out of a multi-skill repo. For local-only entries, required — names the on-disk skill to track. |
-| `claims` | Glob patterns (e.g., `["gsd-*"]`) matched against `~/.claude/skills/`. After install, every match is tagged with this entry's source. Used for npm packages whose installer touches pre-existing directories — so the diff-after-install discovers nothing, but `claims` retroactively claims ownership. |
+| `claims` | Glob patterns (e.g., `["gsd-*"]`) matched against `~/.agents/skills/`. After install, every match is tagged with this entry's source. Used for npm packages whose installer touches pre-existing directories — so the diff-after-install discovers nothing, but `claims` retroactively claims ownership. |
 
 ## `update`
 
@@ -246,7 +257,7 @@ Reconcile disk ↔ inventory ↔ settings, and statically validate every configu
 
 1. Plugins enabled in `enabledPlugins` but not present in `installed_plugins.json` (broken references — Claude Code will fetch on next start).
 2. Plugins in inventory whose marketplace tap is no longer registered.
-3. Agent skills tracked in inventory but missing from `~/.claude/skills/` on disk.
+3. Agent skills tracked in inventory but missing from `~/.agents/skills/` on disk.
 4. **MCP server issues** — static checks against every server returned by `list`:
    - **stdio**: `command` must resolve on `$PATH` (uses `which`-style lookup).
    - **any transport**: every `${VAR}` reference in `env` (stdio) or `headers` (http/sse) must be set in the user's environment.
@@ -288,7 +299,7 @@ Promote ONE project's enabled plugins and project-scope Agent Skills to user sco
 zskills migrate <project> [--remove-from-project] [--dry-run]
 ```
 
-Reads `<project>/.claude/settings.json` (or `settings.local.json`) and `<project>/.claude/skills/<name>/`. Writes promoted plugin enables into `~/.claude/settings.json`'s `enabledPlugins` and copies Agent Skill directories into `~/.claude/skills/`.
+Reads `<project>/.claude/settings.json` (or `settings.local.json`) and `<project>/.claude/skills/<name>/`. Writes promoted plugin enables into `~/.claude/settings.json`'s `enabledPlugins` and copies Agent Skill directories into `~/.agents/skills/`.
 
 `--remove-from-project` clears `enabledPlugins`, `extraKnownMarketplaces`, and `.claude/skills/` from the project after a successful promote.
 
@@ -382,4 +393,4 @@ Without the feature, `zskills marketplace add skills.sh` returns *"unrecognized 
 
 ### `install` fallback (skills.sh feature only)
 
-When `skills-sh` is built in and a remote index is registered with a valid key, `install <name>` will fall through to skills.sh if the spec doesn't resolve in any local plugin marketplace. It performs an exact-slug match against the skills.sh search API and, on hit, routes through the existing Agent Skill install path (`git clone source/repo` → drop `SKILL.md` into `~/.claude/skills/<name>/`). No `enabledPlugins` flip — agent skills don't use that gate.
+When `skills-sh` is built in and a remote index is registered with a valid key, `install <name>` will fall through to skills.sh if the spec doesn't resolve in any local plugin marketplace. It performs an exact-slug match against the skills.sh search API and, on hit, routes through the existing Agent Skill install path (`git clone source/repo` → drop `SKILL.md` into `~/.agents/skills/<name>/`). No `enabledPlugins` flip — agent skills don't use that gate.
