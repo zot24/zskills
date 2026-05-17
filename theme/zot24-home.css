@@ -1,0 +1,28 @@
+/* "← zot24.com" link injected into the mdbook topbar. */
+.zot24-home-link {
+  display: inline-flex !important;
+  align-items: center;
+  gap: 0.35rem;
+  padding: 0 0.6rem !important;
+  font-size: 0.85rem;
+  color: var(--icons) !important;
+  text-decoration: none !important;
+  border-radius: 4px;
+  transition: color 0.15s ease;
+}
+
+.zot24-home-link:hover {
+  color: var(--icons-hover) !important;
+  background: var(--theme-hover);
+}
+
+.zot24-home-label {
+  font-weight: 500;
+}
+
+/* Hide the label on narrow screens — arrow + tooltip carry the meaning. */
+@media (max-width: 480px) {
+  .zot24-home-label {
+    display: none;
+  }
+}

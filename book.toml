@@ -11,6 +11,9 @@ preferred-dark-theme = "navy"
 git-repository-url = "https://github.com/zot24/zskills"
 edit-url-template = "https://github.com/zot24/zskills/edit/main/{path}"
 site-url = "/zskills/"
+additional-js = ["theme/zot24-home.js"]
+# theme/zot24-home.css is now consolidated into theme/custom.css.
+additional-css = ["theme/custom.css"]
 
 [output.html.fold]
 enable = true
