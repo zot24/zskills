@@ -483,7 +483,9 @@ pub fn read_raw(scope: &Scope, name: &str) -> Option<Value> {
         Scope::Managed => managed_settings_path().into_iter().collect(),
     };
     for path in candidates {
-        let Some(val) = read_json(&path) else { continue };
+        let Some(val) = read_json(&path) else {
+            continue;
+        };
         let map = val
             .get("mcpServers")
             .and_then(|v| v.as_object())

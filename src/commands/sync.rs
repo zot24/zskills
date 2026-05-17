@@ -552,10 +552,7 @@ fn mcp_entry_from_raw(
     match obj.get("type").and_then(|v| v.as_str()) {
         Some("http") => {
             e.transport = Some("http".into());
-            e.url = obj
-                .get("url")
-                .and_then(|v| v.as_str())
-                .map(str::to_string);
+            e.url = obj.get("url").and_then(|v| v.as_str()).map(str::to_string);
             if let Some(h) = obj.get("headers").and_then(|v| v.as_object()) {
                 for (k, v) in h {
                     if let Some(s) = v.as_str() {
@@ -566,10 +563,7 @@ fn mcp_entry_from_raw(
         }
         Some("sse") => {
             e.transport = Some("sse".into());
-            e.url = obj
-                .get("url")
-                .and_then(|v| v.as_str())
-                .map(str::to_string);
+            e.url = obj.get("url").and_then(|v| v.as_str()).map(str::to_string);
             if let Some(h) = obj.get("headers").and_then(|v| v.as_object()) {
                 for (k, v) in h {
                     if let Some(s) = v.as_str() {
