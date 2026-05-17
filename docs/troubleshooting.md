@@ -49,7 +49,7 @@ for p in ~/Desktop/code/*; do
 done
 ```
 
-Then restore via `git checkout <sha> -- .claude/skills/<name>/` in the relevant project and `cp -R` to `~/.claude/skills/`.
+Then restore via `git checkout <sha> -- .claude/skills/<name>/` in the relevant project and `cp -R` to `~/.agents/skills/` (the cross-client user-scope location).
 
 ## Sync wants to disable plugins I want to keep
 
@@ -84,13 +84,13 @@ Different projects have edited their copy of the same-named skill, so the bytes 
 The first project (alphabetical) wins as canonical. If you want a *different* project's version to win, either:
 
 - Re-run `migrate-skill` from inside that project first, OR
-- Manually copy the desired version to `~/.claude/skills/<name>/` before `migrate-skill` (which will detect it as "already at user scope" and overwrite with canonical only if you proceed — so cancel first).
+- Manually copy the desired version to `~/.agents/skills/<name>/` before `migrate-skill` (which will detect it as "already at user scope" and overwrite with canonical only if you proceed — so cancel first).
 
 A `--canonical <project-path>` flag is reasonable for v0.4 if this becomes common pain.
 
 ## npm agent skill says "no new skills discovered"
 
-Some npm packages place their skill files via a separate setup CLI (e.g., `npx <pkg> install`), not via npm's own postinstall hook. If `npm install -g <pkg>` alone doesn't write to `~/.claude/skills/`, the diff-before-after returns empty and zskills sees nothing to claim.
+Some npm packages place their skill files via a separate setup CLI (e.g., `npx <pkg> install`), not via npm's own postinstall hook. If `npm install -g <pkg>` alone doesn't write to `~/.agents/skills/`, the diff-before-after returns empty and zskills sees nothing to claim.
 
 Two fixes:
 
@@ -107,7 +107,7 @@ Two fixes:
    install_cmd = "npx some-tool install"
    ```
 
-If you're not sure where a package writes its skills, run it once manually, then check `~/.claude/skills/` and pick a `claims` pattern that covers them.
+If you're not sure where a package writes its skills, run it once manually, then check `~/.agents/skills/` (or `~/.claude/skills/` if the package targets the legacy Claude-specific path) and pick a `claims` pattern that covers them.
 
 ## `sync` clones repeatedly / is slow on Agent Skills
 
@@ -145,7 +145,7 @@ zskills writes via `toml_edit` and never deletes user content. If entries are go
 
 ## "agent skill in inventory, missing on disk"
 
-You deleted `~/.claude/skills/<name>/` manually. Two ways to recover:
+You deleted `~/.agents/skills/<name>/` manually. Two ways to recover:
 
 ```bash
 # Re-fetch from upstream (if there's a source in the manifest)
@@ -252,7 +252,7 @@ rm ~/.config/zskills/skills.toml
 # Agent skill inventory stays too — Claude Code itself doesn't read it, but if
 # you reinstall zskills later it'll resume from this state. Delete if you want
 # a clean slate:
-rm ~/.claude/skills/.zskills.json
+rm ~/.agents/skills/.zskills.json
 ```
 
-Plugins and Agent Skills installed via zskills remain in `~/.claude/` — they're managed by Claude Code's own machinery, not zskills. Uninstall those via Claude Code's `/plugin uninstall` or by deleting the relevant directories.
+Plugins remain in `~/.claude/plugins/` and Agent Skills remain in `~/.agents/skills/` — they're managed by Claude Code / the agent runtime, not zskills. Uninstall plugins via Claude Code's `/plugin uninstall` or by deleting the relevant directories under `~/.claude/plugins/`; Agent Skills are just directories — `rm -rf` removes them.
