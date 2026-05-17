@@ -6,7 +6,7 @@ use serde_json::Value;
 use std::collections::BTreeSet;
 use std::path::PathBuf;
 
-pub fn run(file: Option<PathBuf>, dry_run: bool, prune: bool) -> Result<()> {
+pub fn run(file: Option<PathBuf>, dry_run: bool, prune: bool, adopt: bool) -> Result<()> {
     // Warn loudly if a `./skills.toml` exists and the user didn't pass --file.
     if file.is_none() {
         if let Some(cwd_path) = crate::manifest::cwd_skills_toml() {
@@ -208,12 +208,21 @@ pub fn run(file: Option<PathBuf>, dry_run: bool, prune: bool) -> Result<()> {
         println!("  {} enable  plugin  {}", "+".green(), k);
     }
     for k in &plugins_to_disable {
-        println!(
-            "  {} disable plugin  {} {}",
-            "-".yellow(),
-            k,
-            "(in settings but not in manifest)".dimmed()
-        );
+        if adopt {
+            println!(
+                "  {} adopt   plugin  {} {}",
+                "+".cyan(),
+                k,
+                "(enabled but not in manifest — adding)".dimmed()
+            );
+        } else {
+            println!(
+                "  {} disable plugin  {} {}",
+                "-".yellow(),
+                k,
+                "(in settings but not in manifest)".dimmed()
+            );
+        }
     }
     for n in &agent_to_install_named {
         println!("  {} install agent   {}", "+".green(), n);
@@ -229,7 +238,14 @@ pub fn run(file: Option<PathBuf>, dry_run: bool, prune: bool) -> Result<()> {
         }
     }
     for n in &agent_to_remove {
-        if prune {
+        if adopt {
+            println!(
+                "  {} adopt   agent   {} {}",
+                "+".cyan(),
+                n,
+                "(in inventory but not in manifest — adding)".dimmed()
+            );
+        } else if prune {
             println!(
                 "  {} remove  agent   {} {}",
                 "-".red(),
@@ -241,7 +257,7 @@ pub fn run(file: Option<PathBuf>, dry_run: bool, prune: bool) -> Result<()> {
                 "  {} skip    agent   {} {}",
                 "·".dimmed(),
                 n,
-                "(in inventory but not in manifest — pass --prune to delete)".dimmed()
+                "(in inventory but not in manifest — pass --prune to delete, or --adopt to add to manifest)".dimmed()
             );
         }
     }
@@ -262,7 +278,14 @@ pub fn run(file: Option<PathBuf>, dry_run: bool, prune: bool) -> Result<()> {
         );
     }
     for (scope, name) in &mcps_to_remove {
-        if prune {
+        if adopt {
+            println!(
+                "  {} adopt   mcp     {} {}",
+                "+".cyan(),
+                name,
+                format!("({}) — adding to manifest", scope.label()).dimmed()
+            );
+        } else if prune {
             println!(
                 "  {} remove  mcp     {} {}",
                 "-".red(),
@@ -275,7 +298,7 @@ pub fn run(file: Option<PathBuf>, dry_run: bool, prune: bool) -> Result<()> {
                 "·".dimmed(),
                 name,
                 format!(
-                    "({}) — in {} but not in manifest, pass --prune to delete",
+                    "({}) — in {} but not in manifest, pass --prune to delete, or --adopt to add to manifest",
                     scope.label(),
                     scope.label()
                 )
@@ -286,6 +309,83 @@ pub fn run(file: Option<PathBuf>, dry_run: bool, prune: bool) -> Result<()> {
 
     if dry_run {
         println!("\n(dry-run; no changes written)");
+        return Ok(());
+    }
+
+    // -------- 3.5) Adopt (optional) --------
+    // When --adopt is passed, append every orphan to the manifest BEFORE the
+    // reconciliation pass. After this the manifest contains the orphans, so
+    // they're no longer "to remove" / "to disable" and the apply phase skips them.
+    if adopt {
+        let mut adopted = 0usize;
+        for k in &plugins_to_disable {
+            let (name, mp) = k
+                .split_once('@')
+                .map(|(n, m)| (n.to_string(), Some(m.to_string())))
+                .unwrap_or_else(|| ((*k).clone(), None));
+            let entry = crate::manifest::SkillEntry {
+                name,
+                marketplace: mp,
+                version: None,
+            };
+            if crate::manifest::append_skill(&path, &entry)? {
+                adopted += 1;
+            }
+        }
+        for n in &agent_to_remove {
+            let inv_entry = inv.agent_skills.get(n);
+            let src = inv_entry.map(|e| e.source.as_str());
+            let manifest_entry = match src {
+                Some("local") | None => crate::manifest::AgentSkillEntry {
+                    name: Some(n.clone()),
+                    ..Default::default()
+                },
+                Some(s) if s.starts_with("npm:") => crate::manifest::AgentSkillEntry {
+                    npm: Some(s.trim_start_matches("npm:").to_string()),
+                    name: Some(n.clone()),
+                    ..Default::default()
+                },
+                Some(s) => crate::manifest::AgentSkillEntry {
+                    source: Some(s.to_string()),
+                    name: Some(n.clone()),
+                    ..Default::default()
+                },
+            };
+            if crate::manifest::append_agent_skill(&path, &manifest_entry)? {
+                adopted += 1;
+            }
+        }
+        for (scope, name) in &mcps_to_remove {
+            let raw = match crate::mcp::read_raw(scope, name) {
+                Some(v) => v,
+                None => {
+                    eprintln!(
+                        "{} mcp `{}` ({}): could not re-read config — skipping adoption",
+                        "!".yellow(),
+                        name,
+                        scope.label()
+                    );
+                    continue;
+                }
+            };
+            let mcp_entry = mcp_entry_from_raw(name, scope, &raw);
+            if crate::manifest::append_mcp(&path, &mcp_entry)? {
+                adopted += 1;
+            }
+        }
+        println!(
+            "\n{} adopted {} orphan(s) into {}",
+            "✓".green(),
+            adopted,
+            path.display()
+        );
+        if adopted == 0 {
+            return Ok(());
+        }
+        println!(
+            "  {}",
+            "re-run `zskills sync` to confirm the manifest now matches state".dimmed()
+        );
         return Ok(());
     }
 
@@ -431,4 +531,73 @@ pub fn run(file: Option<PathBuf>, dry_run: bool, prune: bool) -> Result<()> {
 
     println!("\n{} applied.", "✓".green());
     Ok(())
+}
+
+/// Convert a raw `mcpServers["<name>"]` JSON value (as it lives in
+/// settings.json / .mcp.json / .claude.json) into a manifest `McpEntry`.
+/// Preserves env / header *values* verbatim — these may be literal secrets,
+/// `${VAR}` references, or both. The user can sanitise after adoption.
+fn mcp_entry_from_raw(
+    name: &str,
+    scope: &crate::mcp::Scope,
+    raw: &serde_json::Value,
+) -> crate::manifest::McpEntry {
+    let mut e = crate::manifest::McpEntry {
+        name: name.to_string(),
+        scope: Some(scope.label().to_string()),
+        ..Default::default()
+    };
+    let Some(obj) = raw.as_object() else { return e };
+
+    match obj.get("type").and_then(|v| v.as_str()) {
+        Some("http") => {
+            e.transport = Some("http".into());
+            e.url = obj
+                .get("url")
+                .and_then(|v| v.as_str())
+                .map(str::to_string);
+            if let Some(h) = obj.get("headers").and_then(|v| v.as_object()) {
+                for (k, v) in h {
+                    if let Some(s) = v.as_str() {
+                        e.headers.insert(k.clone(), s.to_string());
+                    }
+                }
+            }
+        }
+        Some("sse") => {
+            e.transport = Some("sse".into());
+            e.url = obj
+                .get("url")
+                .and_then(|v| v.as_str())
+                .map(str::to_string);
+            if let Some(h) = obj.get("headers").and_then(|v| v.as_object()) {
+                for (k, v) in h {
+                    if let Some(s) = v.as_str() {
+                        e.headers.insert(k.clone(), s.to_string());
+                    }
+                }
+            }
+        }
+        _ => {
+            // stdio (Claude's default when `type` is absent)
+            e.command = obj
+                .get("command")
+                .and_then(|v| v.as_str())
+                .map(str::to_string);
+            if let Some(args) = obj.get("args").and_then(|v| v.as_array()) {
+                e.args = args
+                    .iter()
+                    .filter_map(|x| x.as_str().map(str::to_string))
+                    .collect();
+            }
+            if let Some(env) = obj.get("env").and_then(|v| v.as_object()) {
+                for (k, v) in env {
+                    if let Some(s) = v.as_str() {
+                        e.env.insert(k.clone(), s.to_string());
+                    }
+                }
+            }
+        }
+    }
+    e
 }

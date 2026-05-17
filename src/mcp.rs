@@ -451,6 +451,52 @@ pub fn write_target(scope: &Scope) -> Result<(PathBuf, bool)> {
     }
 }
 
+/// Read back the raw JSON entry for `name` at `scope` from whichever file
+/// currently declares it. Used by `sync --adopt` to copy a server's full
+/// config (including env/header values) into skills.toml without re-asking
+/// the user for transport details.
+pub fn read_raw(scope: &Scope, name: &str) -> Option<Value> {
+    let candidates: Vec<PathBuf> = match scope {
+        Scope::User => {
+            let mut v = vec![];
+            if let Ok(p) = crate::paths::claude_json() {
+                v.push(p);
+            }
+            if let Ok(p) = crate::paths::settings_json() {
+                v.push(p);
+            }
+            v
+        }
+        Scope::Project => std::env::current_dir()
+            .ok()
+            .map(|cwd| {
+                vec![
+                    cwd.join(".mcp.json"),
+                    cwd.join(".claude").join("settings.json"),
+                ]
+            })
+            .unwrap_or_default(),
+        Scope::Local => std::env::current_dir()
+            .ok()
+            .map(|cwd| vec![cwd.join(".claude.local").join("settings.json")])
+            .unwrap_or_default(),
+        Scope::Managed => managed_settings_path().into_iter().collect(),
+    };
+    for path in candidates {
+        let Some(val) = read_json(&path) else { continue };
+        let map = val
+            .get("mcpServers")
+            .and_then(|v| v.as_object())
+            .or_else(|| val.as_object());
+        if let Some(obj) = map {
+            if let Some(entry) = obj.get(name) {
+                return Some(entry.clone());
+            }
+        }
+    }
+    None
+}
+
 /// Set or replace one MCP server entry in the target file for `scope`. Atomic.
 /// `name` is the server name; `entry` is the JSON value to store under it.
 pub fn upsert(scope: &Scope, name: &str, entry: serde_json::Value) -> Result<()> {

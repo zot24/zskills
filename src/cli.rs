@@ -40,7 +40,7 @@ pub enum Command {
 
         /// When installing from a repo (owner/repo or git URL) with more than 5 Agent Skills,
         /// confirm "install everything." Without this, large collections abort with a summary
-        /// so they don't silently flood ~/.claude/skills/.
+        /// so they don't silently flood ~/.agents/skills/.
         #[arg(long)]
         all: bool,
 
@@ -102,6 +102,12 @@ pub enum Command {
         /// in the manifest). Without this, sync only enables/disables — it never deletes.
         #[arg(long)]
         prune: bool,
+
+        /// Adopt orphans into the manifest instead of skipping/pruning them. Every
+        /// installed agent skill, enabled plugin, and configured MCP that isn't yet
+        /// listed gets appended to the manifest. Inverse of `--prune`.
+        #[arg(long, conflicts_with = "prune")]
+        adopt: bool,
     },
 
     /// Reconcile disk ↔ inventory ↔ settings; report orphans + mismatches
@@ -250,7 +256,8 @@ impl Cli {
                 file,
                 dry_run,
                 prune,
-            } => crate::commands::sync::run(file, dry_run, prune),
+                adopt,
+            } => crate::commands::sync::run(file, dry_run, prune, adopt),
             Command::Doctor { fix } => crate::commands::doctor::run(fix),
             Command::Scan { path, depth, json } => crate::commands::scan::run(path, depth, json),
             Command::Migrate {

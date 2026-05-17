@@ -1,9 +1,11 @@
-//! Agent Skills (the older raw-SKILL.md format).
+//! Agent Skills (the raw-SKILL.md format).
 //!
 //! Install model:
 //! - source repos live at $XDG_CACHE_HOME/zskills/agent-skills/<owner>-<repo>/
-//! - installed skill trees live at ~/.claude/skills/<name>/
-//! - our inventory lives at ~/.claude/skills/.zskills.json
+//! - installed skill trees live at ~/.agents/skills/<name>/ (cross-client convention
+//!   from <https://agentskills.io/integrate-skills>; visible to Claude Code, Grok CLI,
+//!   and any other compliant client)
+//! - our inventory lives at ~/.agents/skills/.zskills.json
 //!
 //! Repo convention we recognize: `skills/<skill-name>/SKILL.md` under the source repo.
 
@@ -120,7 +122,7 @@ pub fn skills_in_cache(cache: &Path) -> Vec<(String, PathBuf)> {
     out
 }
 
-/// Copy a skill directory into ~/.claude/skills/<name>/ (deletes existing first).
+/// Copy a skill directory into ~/.agents/skills/<name>/ (deletes existing first).
 pub fn install_to_user_dir(skill_name: &str, src_dir: &Path) -> Result<()> {
     let dest = crate::paths::user_skills_dir()?.join(skill_name);
     if dest.exists() {
@@ -148,7 +150,7 @@ fn copy_dir_recursive(src: &Path, dst: &Path) -> Result<()> {
     Ok(())
 }
 
-/// Remove an installed agent skill from ~/.claude/skills/<name>/.
+/// Remove an installed agent skill from ~/.agents/skills/<name>/.
 pub fn remove_from_user_dir(skill_name: &str) -> Result<()> {
     let dest = crate::paths::user_skills_dir()?.join(skill_name);
     if dest.exists() {
@@ -160,7 +162,7 @@ pub fn remove_from_user_dir(skill_name: &str) -> Result<()> {
 /// Install an npm-based agent skill. Runs `npm install -g <pkg>` (or `install_cmd`),
 /// then determines ownership of on-disk skills via:
 ///
-/// 1. diff `~/.claude/skills/` before/after (catches packages that place new files)
+/// 1. diff `~/.agents/skills/` before/after (catches packages that place new files)
 /// 2. glob-match `claims` patterns (catches packages that update pre-existing files)
 /// 3. preserve existing inventory tags for this source
 ///
@@ -288,8 +290,10 @@ fn run_install_command(package: &str, install_cmd: Option<&str>) -> Result<()> {
         return Ok(());
     }
 
+    // `--no-fund --no-audit` silences npm's footer chatter so zskills's own
+    // output stays signal-only; we don't manage funding info or audit advice.
     let status = std::process::Command::new("npm")
-        .args(["install", "-g", package])
+        .args(["install", "-g", "--no-fund", "--no-audit", package])
         .status()
         .with_context(|| format!("running npm install -g {}", package))?;
     anyhow::ensure!(status.success(), "npm install -g {} failed", package);
@@ -310,7 +314,7 @@ fn npm_installed_version(package: &str) -> Result<String> {
     Ok(ver)
 }
 
-/// What's currently present in ~/.claude/skills/ (directories with SKILL.md).
+/// What's currently present in ~/.agents/skills/ (directories with SKILL.md).
 pub fn installed_on_disk() -> Result<Vec<String>> {
     let dir = crate::paths::user_skills_dir()?;
     if !dir.exists() {

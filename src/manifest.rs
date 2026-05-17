@@ -22,7 +22,8 @@ pub struct Manifest {
     #[serde(default)]
     pub skills: Vec<SkillEntry>,
 
-    /// Agent Skills (the older raw-SKILL.md format, installed into ~/.claude/skills/).
+    /// Agent Skills (raw SKILL.md trees, installed into ~/.agents/skills/ per the
+    /// cross-client convention — visible to Claude Code, Grok CLI, etc.).
     #[serde(default)]
     pub agent_skills: Vec<AgentSkillEntry>,
 
@@ -186,9 +187,9 @@ impl McpEntry {
 /// Exactly one of `source`, `npm`, or (for local-only entries) `name` should be set.
 ///
 /// - `source`: `owner/repo` (GitHub) or a git URL. `sync` clones/pulls and copies
-///   skills under `skills/<name>/` into `~/.claude/skills/<name>/`.
+///   skills under `skills/<name>/` into `~/.agents/skills/<name>/`.
 /// - `npm`: npm package name. `sync` runs `npm install -g <pkg>` and trusts the
-///   package's post-install to place files under `~/.claude/skills/`. After install,
+///   package's post-install to place files under `~/.agents/skills/`. After install,
 ///   zskills diffs the directory and tags every new skill with `source: "npm:<pkg>"`.
 /// - `install_cmd`: optional override for npm packages with custom setup (e.g.,
 ///   `"npx some-tool install"`).
@@ -204,7 +205,7 @@ pub struct AgentSkillEntry {
     pub install_cmd: Option<String>,
     #[serde(default)]
     pub name: Option<String>,
-    /// Optional glob patterns matching skill directory names in `~/.claude/skills/`.
+    /// Optional glob patterns matching skill directory names in `~/.agents/skills/`.
     /// After install, every match gets tagged with this entry's source — useful when
     /// the install command updates pre-existing files (no diff) but you want zskills
     /// to take ownership of them. Example: `claims = ["gsd-*"]`.
@@ -300,6 +301,154 @@ pub fn append_agent_skill(path: &Path, entry: &AgentSkillEntry) -> Result<bool> 
         t["name"] = value(n);
     }
     let _ = Array::new(); // unused; placate compiler if toml_edit changes shape
+    aot.push(t);
+
+    std::fs::write(path, doc.to_string())
+        .with_context(|| format!("writing manifest {}", path.display()))?;
+    Ok(true)
+}
+
+/// Append a `[[skills]]` entry. Skips if `name@marketplace` already present.
+pub fn append_skill(path: &Path, entry: &SkillEntry) -> Result<bool> {
+    use toml_edit::{value, ArrayOfTables, DocumentMut, Item, Table};
+
+    let raw = if path.exists() {
+        std::fs::read_to_string(path)
+            .with_context(|| format!("reading manifest {}", path.display()))?
+    } else {
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent).ok();
+        }
+        String::new()
+    };
+    let mut doc: DocumentMut = raw
+        .parse()
+        .with_context(|| format!("parsing manifest {} as TOML", path.display()))?;
+
+    if let Some(Item::ArrayOfTables(existing)) = doc.get("skills") {
+        for t in existing.iter() {
+            let name = t.get("name").and_then(|v| v.as_str()).map(str::to_string);
+            let mp = t
+                .get("marketplace")
+                .and_then(|v| v.as_str())
+                .map(str::to_string);
+            if name.as_deref() == Some(&entry.name) && mp == entry.marketplace {
+                return Ok(false);
+            }
+        }
+    }
+
+    let aot = match doc
+        .entry("skills")
+        .or_insert(Item::ArrayOfTables(ArrayOfTables::new()))
+    {
+        Item::ArrayOfTables(a) => a,
+        slot => {
+            *slot = Item::ArrayOfTables(ArrayOfTables::new());
+            match slot {
+                Item::ArrayOfTables(a) => a,
+                _ => unreachable!(),
+            }
+        }
+    };
+    let mut t = Table::new();
+    t["name"] = value(&entry.name);
+    if let Some(mp) = &entry.marketplace {
+        t["marketplace"] = value(mp);
+    }
+    if let Some(v) = &entry.version {
+        t["version"] = value(v);
+    }
+    aot.push(t);
+
+    std::fs::write(path, doc.to_string())
+        .with_context(|| format!("writing manifest {}", path.display()))?;
+    Ok(true)
+}
+
+/// Append an `[[mcps]]` entry. Skips if (name, scope) already present.
+pub fn append_mcp(path: &Path, entry: &McpEntry) -> Result<bool> {
+    use toml_edit::{value, Array, ArrayOfTables, DocumentMut, InlineTable, Item, Table};
+
+    let raw = if path.exists() {
+        std::fs::read_to_string(path)
+            .with_context(|| format!("reading manifest {}", path.display()))?
+    } else {
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent).ok();
+        }
+        String::new()
+    };
+    let mut doc: DocumentMut = raw
+        .parse()
+        .with_context(|| format!("parsing manifest {} as TOML", path.display()))?;
+
+    let new_scope = entry.scope.clone().unwrap_or_else(|| "user".into());
+    if let Some(Item::ArrayOfTables(existing)) = doc.get("mcps") {
+        for t in existing.iter() {
+            let name = t.get("name").and_then(|v| v.as_str()).map(str::to_string);
+            let scope = t
+                .get("scope")
+                .and_then(|v| v.as_str())
+                .map(str::to_string)
+                .unwrap_or_else(|| "user".into());
+            if name.as_deref() == Some(&entry.name) && scope == new_scope {
+                return Ok(false);
+            }
+        }
+    }
+
+    let aot = match doc
+        .entry("mcps")
+        .or_insert(Item::ArrayOfTables(ArrayOfTables::new()))
+    {
+        Item::ArrayOfTables(a) => a,
+        slot => {
+            *slot = Item::ArrayOfTables(ArrayOfTables::new());
+            match slot {
+                Item::ArrayOfTables(a) => a,
+                _ => unreachable!(),
+            }
+        }
+    };
+
+    let mut t = Table::new();
+    t["name"] = value(&entry.name);
+    if let Some(s) = &entry.scope {
+        if s != "user" {
+            t["scope"] = value(s);
+        }
+    }
+    if let Some(transport) = &entry.transport {
+        t["transport"] = value(transport);
+    }
+    if let Some(c) = &entry.command {
+        t["command"] = value(c);
+    }
+    if !entry.args.is_empty() {
+        let mut arr = Array::new();
+        for a in &entry.args {
+            arr.push(a.as_str());
+        }
+        t["args"] = value(arr);
+    }
+    if !entry.env.is_empty() {
+        let mut tbl = InlineTable::new();
+        for (k, v) in &entry.env {
+            tbl.insert(k, v.as_str().into());
+        }
+        t["env"] = value(tbl);
+    }
+    if let Some(u) = &entry.url {
+        t["url"] = value(u);
+    }
+    if !entry.headers.is_empty() {
+        let mut tbl = InlineTable::new();
+        for (k, v) in &entry.headers {
+            tbl.insert(k, v.as_str().into());
+        }
+        t["headers"] = value(tbl);
+    }
     aot.push(t);
 
     std::fs::write(path, doc.to_string())

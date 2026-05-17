@@ -47,12 +47,24 @@ pub fn marketplace_manifest(name: &str) -> Result<PathBuf> {
         .join("marketplace.json"))
 }
 
-/// ~/.claude/skills/ — where Agent Skills (the older format, raw SKILL.md trees) live.
-pub fn user_skills_dir() -> Result<PathBuf> {
-    Ok(claude_home()?.join("skills"))
+/// `~/.agents/` — the cross-client agent home from the Agent Skills spec,
+/// sibling of `~/.claude/`. Override with `AGENTS_HOME` (mirrors `CLAUDE_HOME`).
+pub fn agents_home() -> Result<PathBuf> {
+    if let Ok(p) = std::env::var("AGENTS_HOME") {
+        return Ok(PathBuf::from(p));
+    }
+    let home = dirs::home_dir().context("could not determine home directory")?;
+    Ok(home.join(".agents"))
 }
 
-/// ~/.claude/skills/.zskills.json — our inventory of which Agent Skills we manage and where they came from.
+/// ~/.agents/skills/ — the cross-client Agent Skills location per the
+/// [Agent Skills spec](https://agentskills.io/integrate-skills). Skills installed here are
+/// visible to any compliant client (Claude Code, Grok CLI, …), not just Claude.
+pub fn user_skills_dir() -> Result<PathBuf> {
+    Ok(agents_home()?.join("skills"))
+}
+
+/// ~/.agents/skills/.zskills.json — our inventory of which Agent Skills we manage and where they came from.
 pub fn agent_skills_inventory() -> Result<PathBuf> {
     Ok(user_skills_dir()?.join(".zskills.json"))
 }

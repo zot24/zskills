@@ -1,5 +1,6 @@
-//! End-to-end CLI tests. We point CLAUDE_HOME at a tempdir so the binary
-//! cannot touch the real `~/.claude/`.
+//! End-to-end CLI tests. We point CLAUDE_HOME and AGENTS_HOME at the same
+//! tempdir so the binary cannot touch the real `~/.claude/` or `~/.agents/`,
+//! and so `<tempdir>/skills/` is the install target for Agent Skills.
 
 use assert_cmd::Command;
 use predicates::prelude::*;
@@ -10,6 +11,10 @@ use tempfile::TempDir;
 fn zskills(home: &TempDir) -> Command {
     let mut cmd = Command::cargo_bin("zskills").unwrap();
     cmd.env("CLAUDE_HOME", home.path());
+    // Sandbox the cross-client Agent Skills home to the same tempdir so
+    // `<tempdir>/skills/` is the install target (mirrors the production layout
+    // where ~/.agents/skills/ lives alongside ~/.claude/).
+    cmd.env("AGENTS_HOME", home.path());
     // Strip ANSI colors so `predicate::str::contains` assertions match raw text.
     cmd.env("NO_COLOR", "1");
     cmd
@@ -579,6 +584,8 @@ fn fake_home_nested() -> (TempDir, std::path::PathBuf) {
 fn zskills_nested(parent: &TempDir, claude_home: &std::path::Path) -> Command {
     let mut cmd = Command::cargo_bin("zskills").unwrap();
     cmd.env("CLAUDE_HOME", claude_home);
+    // Pin the cross-client Agent Skills home next to CLAUDE_HOME so tests stay sandboxed.
+    cmd.env("AGENTS_HOME", parent.path().join(".agents"));
     cmd.env("NO_COLOR", "1");
     // Make sure the managed-settings probe doesn't pick up a real system file in CI.
     cmd.env(

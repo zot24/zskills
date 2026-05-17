@@ -9,7 +9,7 @@
 //!    are mentioned but not auto-installed in this mode.
 //! 3. `skills.sh` remote index (cargo feature `skills-sh`): when local resolution fails
 //!    AND the index is registered AND `ZSKILLS_SKILLS_SH_API_KEY` is set, falls through
-//!    to clone the source repo and drop SKILL.md into `~/.claude/skills/<name>/`.
+//!    to clone the source repo and drop SKILL.md into `~/.agents/skills/<name>/`.
 
 use anyhow::Result;
 use owo_colors::OwoColorize;
