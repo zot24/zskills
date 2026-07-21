@@ -55,6 +55,26 @@ pub fn run(fix: bool) -> Result<()> {
         }
     }
 
+    // Agent skills: legacy full-repo installs. Before sparse installs
+    // (v0.8), a root-level skill was a verbatim copy of the whole clone —
+    // reliably detectable by the `.git/` directory it dragged along.
+    let full_repo_installs = find_full_repo_installs(&inv)?;
+    if !full_repo_installs.is_empty() {
+        issues += full_repo_installs.len();
+        println!(
+            "{} {} agent skill(s) are full-repo installs (whole source tree, not just the skill):",
+            "✗".red(),
+            full_repo_installs.len()
+        );
+        for (name, source) in &full_repo_installs {
+            println!("  - {} {}", name, format!("[from {}]", source).dimmed());
+        }
+        println!(
+            "  {}",
+            "run `zskills upgrade <name>` or `zskills doctor --fix` to re-install slim".dimmed()
+        );
+    }
+
     if issues == 0 {
         println!(
             "{} All good — disk, inventory, and settings are in sync.",
@@ -82,12 +102,41 @@ pub fn run(fix: bool) -> Result<()> {
         }
         crate::agent_skill::save_inventory(&inv)?;
 
+        // Full-repo installs: re-run the install from the recorded source,
+        // which re-materializes sparsely (delete + slim copy).
+        for (name, source) in &full_repo_installs {
+            match crate::agent_skill::install(source, Some(name)) {
+                Ok(_) => println!("  re-installed {} slim from {}", name, source),
+                Err(e) => println!("  {} could not re-install {}: {}", "✗".red(), name, e),
+            }
+        }
+
         println!("{} Fixed {} issue(s).", "✓".green(), issues);
     } else {
         println!("\nRun {} to clean up.", "zskills doctor --fix".bold());
     }
 
     Ok(())
+}
+
+/// Managed agent skills whose installed dir contains a `.git/` directory —
+/// the signature of a pre-sparse full-repo install. Returns `(name, source)`
+/// pairs, only for entries with a git-fetchable source (npm installs and
+/// local-only skills are never full-repo copies).
+fn find_full_repo_installs(
+    inv: &crate::agent_skill::Inventory,
+) -> Result<Vec<(String, String)>> {
+    let skills_dir = crate::paths::user_skills_dir()?;
+    let mut out = Vec::new();
+    for (name, entry) in &inv.agent_skills {
+        if entry.source.starts_with("npm:") {
+            continue;
+        }
+        if skills_dir.join(name).join(".git").exists() {
+            out.push((name.clone(), entry.source.clone()));
+        }
+    }
+    Ok(out)
 }
 
 /// Static MCP server checks. Returns the number of warnings emitted.
