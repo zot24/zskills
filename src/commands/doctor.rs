@@ -123,9 +123,7 @@ pub fn run(fix: bool) -> Result<()> {
 /// the signature of a pre-sparse full-repo install. Returns `(name, source)`
 /// pairs, only for entries with a git-fetchable source (npm installs and
 /// local-only skills are never full-repo copies).
-fn find_full_repo_installs(
-    inv: &crate::agent_skill::Inventory,
-) -> Result<Vec<(String, String)>> {
+fn find_full_repo_installs(inv: &crate::agent_skill::Inventory) -> Result<Vec<(String, String)>> {
     let skills_dir = crate::paths::user_skills_dir()?;
     let mut out = Vec::new();
     for (name, entry) in &inv.agent_skills {

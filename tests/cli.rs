@@ -15,6 +15,8 @@ fn zskills(home: &TempDir) -> Command {
     // `<tempdir>/skills/` is the install target (mirrors the production layout
     // where ~/.agents/skills/ lives alongside ~/.claude/).
     cmd.env("AGENTS_HOME", home.path());
+    // Sandbox the clone cache too, so repo-install tests never touch ~/.cache.
+    cmd.env("XDG_CACHE_HOME", home.path().join("cache"));
     // Strip ANSI colors so `predicate::str::contains` assertions match raw text.
     cmd.env("NO_COLOR", "1");
     cmd
@@ -1052,6 +1054,181 @@ fn write_skill(repo: &std::path::Path, name: &str, description: &str) {
 
 fn file_url(p: &std::path::Path) -> String {
     format!("file://{}", p.display())
+}
+
+/// A repo that ships a root-level SKILL.md inside a larger source project
+/// (the `ogulcancelik/herdr` shape). Returns the repo path — a named subdir
+/// so the derived skill name is stable (tempdir basenames start with `.`).
+fn write_root_skill_project(parent: &std::path::Path) -> std::path::PathBuf {
+    let repo = parent.join("herdr-repo");
+    fs::create_dir_all(repo.join("references")).unwrap();
+    fs::create_dir_all(repo.join("docs")).unwrap();
+    fs::create_dir_all(repo.join("src")).unwrap();
+    fs::create_dir_all(repo.join("vendor")).unwrap();
+    fs::write(
+        repo.join("SKILL.md"),
+        "---\nname: herdr\ndescription: Control herdr\n---\n\
+         See [usage](docs/usage.md) for details.\n",
+    )
+    .unwrap();
+    fs::write(repo.join("references/guide.md"), "guide").unwrap();
+    fs::write(repo.join("docs/usage.md"), "usage").unwrap();
+    fs::write(repo.join("src/main.rs"), "fn main() {}").unwrap();
+    fs::write(repo.join("vendor/blob.bin"), "blob").unwrap();
+    fs::write(repo.join("Cargo.toml"), "[package]\nname = \"herdr\"\n").unwrap();
+    git_init_and_commit(&repo);
+    repo
+}
+
+#[test]
+fn install_repo_root_skill_is_sparse() {
+    let upstream = tempfile::tempdir().unwrap();
+    let repo = write_root_skill_project(upstream.path());
+
+    let home = fake_home();
+    zskills(&home)
+        .args(["install", &file_url(&repo)])
+        .assert()
+        .success();
+
+    let dest = home.path().join("skills").join("herdr-repo");
+    // What the skill needs: SKILL.md, referenced paths, conventional dirs.
+    assert!(dest.join("SKILL.md").exists());
+    assert!(
+        dest.join("docs/usage.md").exists(),
+        "referenced path copied"
+    );
+    assert!(
+        dest.join("references/guide.md").exists(),
+        "conventional dir copied"
+    );
+    // What it doesn't: the source tree.
+    assert!(!dest.join("src").exists(), "src/ must not be installed");
+    assert!(
+        !dest.join("vendor").exists(),
+        "vendor/ must not be installed"
+    );
+    assert!(!dest.join("Cargo.toml").exists());
+    assert!(!dest.join(".git").exists(), ".git must never be installed");
+}
+
+#[test]
+fn install_skill_flag_selects_single_skill() {
+    let upstream = tempfile::tempdir().unwrap();
+    write_skill(upstream.path(), "alpha", "A");
+    write_skill(upstream.path(), "beta", "B");
+    git_init_and_commit(upstream.path());
+
+    let home = fake_home();
+    zskills(&home)
+        .args(["install", &file_url(upstream.path()), "--skill", "beta"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("beta"));
+
+    assert!(home.path().join("skills/beta/SKILL.md").exists());
+    assert!(!home.path().join("skills/alpha").exists());
+}
+
+#[test]
+fn install_skill_flag_unknown_name_errors() {
+    let upstream = tempfile::tempdir().unwrap();
+    write_skill(upstream.path(), "alpha", "A");
+    write_skill(upstream.path(), "beta", "B");
+    git_init_and_commit(upstream.path());
+
+    let home = fake_home();
+    let out = zskills(&home)
+        .args(["install", &file_url(upstream.path()), "--skill", "nope"])
+        .assert()
+        .success() // partition-based dispatch logs to stderr and continues
+        .get_output()
+        .stderr
+        .clone();
+    let stderr = String::from_utf8_lossy(&out);
+    assert!(stderr.contains("'nope' not found"));
+    assert!(
+        stderr.contains("alpha"),
+        "error should list available skills"
+    );
+    assert!(!home.path().join("skills/alpha").exists());
+}
+
+#[test]
+fn install_skill_flag_conflicts_with_all() {
+    let home = fake_home();
+    zskills(&home)
+        .args(["install", "owner/repo", "--skill", "x", "--all"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("cannot be used with"));
+}
+
+#[test]
+fn install_skill_flag_bypasses_large_collection_policy() {
+    let upstream = tempfile::tempdir().unwrap();
+    for i in 0..7 {
+        write_skill(upstream.path(), &format!("skill-{}", i), "x");
+    }
+    git_init_and_commit(upstream.path());
+
+    let home = fake_home();
+    zskills(&home)
+        .args(["install", &file_url(upstream.path()), "--skill", "skill-3"])
+        .assert()
+        .success();
+
+    assert!(home.path().join("skills/skill-3/SKILL.md").exists());
+    assert!(!home.path().join("skills/skill-0").exists());
+}
+
+#[test]
+fn doctor_flags_full_repo_install_and_fix_slims_it() {
+    let upstream = tempfile::tempdir().unwrap();
+    let repo = write_root_skill_project(upstream.path());
+
+    // Simulate a pre-sparse install: a verbatim copy of the clone, .git and all.
+    let home = fake_home();
+    let dest = home.path().join("skills").join("herdr-repo");
+    fs::create_dir_all(dest.join(".git")).unwrap();
+    fs::create_dir_all(dest.join("src")).unwrap();
+    fs::write(dest.join("SKILL.md"), "---\nname: herdr\n---\n").unwrap();
+    fs::write(dest.join("src/main.rs"), "fn main() {}").unwrap();
+    fs::write(dest.join("Cargo.toml"), "[package]\n").unwrap();
+    fs::write(
+        home.path().join("skills/.zskills.json"),
+        json!({
+            "version": 1,
+            "agent_skills": {
+                "herdr-repo": {
+                    "source": file_url(&repo),
+                    "installed_at": "@0",
+                    "head_sha": "legacy"
+                }
+            }
+        })
+        .to_string(),
+    )
+    .unwrap();
+
+    zskills(&home)
+        .arg("doctor")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("full-repo install"))
+        .stdout(predicate::str::contains("herdr-repo"));
+
+    zskills(&home)
+        .args(["doctor", "--fix"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("re-installed herdr-repo slim"));
+
+    assert!(dest.join("SKILL.md").exists());
+    assert!(dest.join("docs/usage.md").exists());
+    assert!(!dest.join(".git").exists(), "slim re-install drops .git");
+    assert!(!dest.join("src").exists(), "slim re-install drops src/");
+    assert!(!dest.join("Cargo.toml").exists());
 }
 
 #[test]
