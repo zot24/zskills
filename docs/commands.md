@@ -56,15 +56,18 @@ zskills install -i                           # interactive picker over marketpla
 |------|---------|-------------|
 | `-i`, `--interactive` | off | For plugin specs: without any `<name>`, browse all marketplace plugins with a fuzzy picker. For repo specs: always opens a multi-select picker over the Agent Skills found in the repo. |
 | `--all` | off | For repo specs only: when the repo contains more than 5 Agent Skills, confirm "yes, install every one." Without `--all`, large collections abort with a sample summary so they don't silently flood `~/.agents/skills/`. Ignored for repos with ≤5 skills (those install everything by default). |
+| `--skill <name>` | none | For repo specs only: install exactly one skill by name (the manifest `name` field) — the non-interactive counterpart to `-i` for multi-skill repos. Bypasses the >5-skill size policy (the selection is explicit) and conflicts with `--all`. |
 
 **Repo-path count behavior**:
 
-| Skills in repo | Default (no flags) | With `-i` | With `--all` |
-|---|---|---|---|
-| 0 | error | error | error |
-| 1 | install it | install it | install it |
-| 2–5 | install all | picker | install all |
-| > 5 | **abort + summary + next-step hint** | picker | install all |
+| Skills in repo | Default (no flags) | With `-i` | With `--all` | With `--skill <name>` |
+|---|---|---|---|---|
+| 0 | error | error | error | error |
+| 1 | install it | install it | install it | install if it matches |
+| 2–5 | install all | picker | install all | install just that one |
+| > 5 | **abort + summary + next-step hint** | picker | install all | install just that one |
+
+**Sparse installs (root-level SKILL.md).** A repo whose `SKILL.md` sits at the repo root inside a larger project (source code, lockfiles, websites…) is installed *sparsely*: only `SKILL.md`, the conventional skill dirs (`references/`, `assets/`, `scripts/`), and relative paths that `SKILL.md` links to are copied out — never the whole source tree, and never `.git/`. Installs from the `skills/<name>/SKILL.md` layout copy the skill subdirectory as before. Legacy full-repo installs are flagged by `zskills doctor` and slimmed on the next `zskills upgrade` (or `doctor --fix`).
 
 ## `remove` / `purge`
 
