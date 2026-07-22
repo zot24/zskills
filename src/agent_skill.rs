@@ -133,8 +133,124 @@ pub fn install_to_user_dir(skill_name: &str, src_dir: &Path) -> Result<()> {
     Ok(())
 }
 
+/// Skill dirs that are copied wholesale for a root-level skill even when
+/// SKILL.md doesn't link to them — the conventional layout from the spec.
+const CONVENTIONAL_SKILL_DIRS: &[&str] = &["references", "assets", "scripts"];
+
+/// Sparse-install a **root-level** skill (SKILL.md at the repo root of a larger
+/// project): materialize only SKILL.md, the conventional skill dirs, and the
+/// relative paths SKILL.md references — never the whole source tree.
+pub fn install_root_skill_sparse(skill_name: &str, cache: &Path) -> Result<()> {
+    let dest = crate::paths::user_skills_dir()?.join(skill_name);
+    if dest.exists() {
+        std::fs::remove_dir_all(&dest)?;
+    }
+    std::fs::create_dir_all(&dest)?;
+    for rel in sparse_root_paths(cache) {
+        let src = cache.join(&rel);
+        let target = dest.join(&rel);
+        if src.is_dir() {
+            copy_dir_recursive(&src, &target)?;
+        } else {
+            if let Some(parent) = target.parent() {
+                std::fs::create_dir_all(parent)?;
+            }
+            std::fs::copy(&src, &target)?;
+        }
+    }
+    Ok(())
+}
+
+/// Relative paths (against the repo root) to materialize for a root-level
+/// skill: SKILL.md, present conventional dirs, and referenced paths that
+/// actually exist in the clone.
+pub(crate) fn sparse_root_paths(cache: &Path) -> Vec<PathBuf> {
+    let mut set: std::collections::BTreeSet<PathBuf> = std::collections::BTreeSet::new();
+    set.insert(PathBuf::from("SKILL.md"));
+    for dir in CONVENTIONAL_SKILL_DIRS {
+        if cache.join(dir).is_dir() {
+            set.insert(PathBuf::from(dir));
+        }
+    }
+    if let Ok(md) = std::fs::read_to_string(cache.join("SKILL.md")) {
+        for rel in referenced_relative_paths(&md) {
+            if cache.join(&rel).exists() {
+                set.insert(PathBuf::from(rel));
+            }
+        }
+    }
+    set.into_iter().collect()
+}
+
+/// Extract candidate relative paths from SKILL.md: markdown link targets and
+/// inline-code spans. Liberal by design — callers filter candidates through
+/// "does this path exist in the clone?" — but rejects anything unsafe or
+/// clearly not a repo path (URLs, absolute paths, `..` escapes, anchors).
+pub(crate) fn referenced_relative_paths(skill_md: &str) -> Vec<String> {
+    fn accept(candidate: &str) -> Option<String> {
+        let c = candidate.trim().trim_start_matches("./");
+        let c = c.split('#').next().unwrap_or("");
+        let c = c.trim_end_matches('/');
+        if c.is_empty()
+            || c.contains("://")
+            || c.starts_with('/')
+            || c.starts_with("mailto:")
+            || c.contains(char::is_whitespace)
+        {
+            return None;
+        }
+        let escapes = Path::new(c)
+            .components()
+            .any(|comp| matches!(comp, std::path::Component::ParentDir));
+        if escapes {
+            return None;
+        }
+        Some(c.to_string())
+    }
+
+    let mut out = Vec::new();
+
+    // Markdown link targets: `](target)`.
+    let mut rest = skill_md;
+    while let Some(i) = rest.find("](") {
+        rest = &rest[i + 2..];
+        let Some(j) = rest.find(')') else { break };
+        if let Some(p) = accept(&rest[..j]) {
+            out.push(p);
+        }
+        rest = &rest[j + 1..];
+    }
+
+    // Inline code spans on prose lines: `path/to/thing`. Skip fenced blocks,
+    // and require the span to look path-like (a `/` or an extension dot) so
+    // bare words like `install` don't become candidates.
+    let mut in_fence = false;
+    for line in skill_md.lines() {
+        if line.trim_start().starts_with("```") {
+            in_fence = !in_fence;
+            continue;
+        }
+        if in_fence {
+            continue;
+        }
+        for (idx, span) in line.split('`').enumerate() {
+            if idx % 2 == 1 && (span.contains('/') || span.contains('.')) {
+                if let Some(p) = accept(span) {
+                    out.push(p);
+                }
+            }
+        }
+    }
+
+    out
+}
+
 fn copy_dir_recursive(src: &Path, dst: &Path) -> Result<()> {
-    for entry in walkdir::WalkDir::new(src).follow_links(false) {
+    let walker = walkdir::WalkDir::new(src)
+        .follow_links(false)
+        .into_iter()
+        .filter_entry(|e| e.depth() == 0 || e.file_name() != ".git");
+    for entry in walker {
         let entry = entry?;
         let rel = entry.path().strip_prefix(src)?;
         let target = dst.join(rel);
@@ -370,7 +486,13 @@ pub fn install(source: &str, name: Option<&str>) -> Result<Vec<String>> {
     let mut inv = load_inventory()?;
     let mut installed_names = Vec::new();
     for (skill_name, src_dir) in &chosen {
-        install_to_user_dir(skill_name, src_dir)?;
+        if src_dir == &cache {
+            // Root-level SKILL.md in a larger project — materialize sparsely
+            // instead of copying the whole source tree.
+            install_root_skill_sparse(skill_name, &cache)?;
+        } else {
+            install_to_user_dir(skill_name, src_dir)?;
+        }
         inv.agent_skills.insert(
             skill_name.clone(),
             Entry {
@@ -404,7 +526,72 @@ fn chrono_now_iso() -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::glob_match;
+    use super::{glob_match, referenced_relative_paths, sparse_root_paths};
+    use std::fs;
+    use std::path::PathBuf;
+
+    #[test]
+    fn referenced_paths_from_markdown_links() {
+        let md = "See [the guide](references/guide.md) and [docs](docs/setup.md).\n";
+        let got = referenced_relative_paths(md);
+        assert!(got.contains(&"references/guide.md".to_string()));
+        assert!(got.contains(&"docs/setup.md".to_string()));
+    }
+
+    #[test]
+    fn referenced_paths_from_inline_code_spans() {
+        let md = "Run `scripts/setup.sh` first, then read `NOTES.md`.\n";
+        let got = referenced_relative_paths(md);
+        assert!(got.contains(&"scripts/setup.sh".to_string()));
+        assert!(got.contains(&"NOTES.md".to_string()));
+    }
+
+    #[test]
+    fn referenced_paths_reject_urls_absolute_and_escapes() {
+        let md = "[web](https://example.com/x.md) [abs](/etc/passwd) \
+                  [up](../secrets.md) [anchor](#section) `run --all`\n";
+        assert!(referenced_relative_paths(md).is_empty());
+    }
+
+    #[test]
+    fn referenced_paths_strip_anchor_and_leading_dot_slash() {
+        let md = "[a](./references/a.md#top)\n";
+        assert_eq!(referenced_relative_paths(md), vec!["references/a.md"]);
+    }
+
+    #[test]
+    fn referenced_paths_skip_fenced_code_blocks() {
+        let md = "```\n`vendor/blob.bin`\n```\n`assets/logo.png`\n";
+        assert_eq!(referenced_relative_paths(md), vec!["assets/logo.png"]);
+    }
+
+    #[test]
+    fn referenced_paths_ignore_bare_words_in_code_spans() {
+        let md = "Use `install` and `skills` commands.\n";
+        assert!(referenced_relative_paths(md).is_empty());
+    }
+
+    #[test]
+    fn sparse_root_paths_picks_skill_md_conventional_dirs_and_referenced() {
+        let tmp = tempfile::tempdir().unwrap();
+        fs::write(
+            tmp.path().join("SKILL.md"),
+            "---\nname: x\n---\nSee [guide](docs/guide.md) and [gone](docs/missing.md).\n",
+        )
+        .unwrap();
+        fs::create_dir_all(tmp.path().join("references")).unwrap();
+        fs::create_dir_all(tmp.path().join("docs")).unwrap();
+        fs::write(tmp.path().join("docs/guide.md"), "g").unwrap();
+        fs::create_dir_all(tmp.path().join("src")).unwrap();
+        fs::write(tmp.path().join("src/main.rs"), "fn main(){}").unwrap();
+
+        let got = sparse_root_paths(tmp.path());
+        assert!(got.contains(&PathBuf::from("SKILL.md")));
+        assert!(got.contains(&PathBuf::from("references")));
+        assert!(got.contains(&PathBuf::from("docs/guide.md")));
+        assert!(!got.contains(&PathBuf::from("docs/missing.md")));
+        assert!(!got.iter().any(|p| p.starts_with("src")));
+    }
 
     #[test]
     fn glob_prefix() {

@@ -250,7 +250,7 @@ fn print_mcp_section(mcps: &[crate::mcp::McpServer], paths: bool) {
 
     let name_w = mcps.iter().map(|m| m.name.len()).max().unwrap_or(0).max(8);
 
-    for (_, (scope, servers)) in by_scope.iter_mut() {
+    for (scope, servers) in by_scope.values_mut() {
         servers.sort_by(|a, b| a.name.cmp(&b.name));
         println!(
             "  {} {}",

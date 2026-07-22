@@ -44,6 +44,12 @@ pub enum Command {
         #[arg(long)]
         all: bool,
 
+        /// When installing from a repo, install only the named skill (the manifest
+        /// `name` field / the name shown by the survey). Non-interactive alternative
+        /// to `-i` for multi-skill repos.
+        #[arg(long, conflicts_with = "all", value_name = "NAME")]
+        skill: Option<String>,
+
         /// Skills to install
         skills: Vec<String>,
     },
@@ -242,7 +248,8 @@ impl Cli {
                 skills,
                 interactive,
                 all,
-            } => crate::commands::install::run(skills, interactive, all),
+                skill,
+            } => crate::commands::install::run(skills, interactive, all, skill),
             Command::Remove {
                 skills,
                 interactive,

@@ -15,7 +15,7 @@ use anyhow::Result;
 use owo_colors::OwoColorize;
 use serde_json::Value;
 
-pub fn run(specs: Vec<String>, interactive: bool, all: bool) -> Result<()> {
+pub fn run(specs: Vec<String>, interactive: bool, all: bool, skill: Option<String>) -> Result<()> {
     if interactive && specs.is_empty() {
         return run_interactive_browse_marketplaces();
     }
@@ -29,8 +29,12 @@ pub fn run(specs: Vec<String>, interactive: bool, all: bool) -> Result<()> {
     let (repo_specs, plugin_specs): (Vec<String>, Vec<String>) =
         specs.into_iter().partition(|s| is_repo_spec(s));
 
+    if skill.is_some() && repo_specs.is_empty() {
+        anyhow::bail!("--skill only applies to repo installs (owner/repo or git URL)");
+    }
+
     for spec in &repo_specs {
-        if let Err(e) = install_from_repo(spec, interactive, all) {
+        if let Err(e) = install_from_repo(spec, interactive, all, skill.as_deref()) {
             eprintln!("{} {}: {}", "✗".red(), spec, e);
         }
     }
@@ -57,7 +61,7 @@ pub(crate) fn is_repo_spec(spec: &str) -> bool {
     spec.contains("://") || spec.starts_with("git@") || spec.contains('/')
 }
 
-fn install_from_repo(spec: &str, interactive: bool, all: bool) -> Result<()> {
+fn install_from_repo(spec: &str, interactive: bool, all: bool, skill: Option<&str>) -> Result<()> {
     println!("{} {}", "Surveying".dimmed(), spec.to_string().bold());
     let cache = crate::agent_skill::ensure_cache(spec)?;
     let survey = crate::repo_scanner::survey(&cache)?;
@@ -90,6 +94,24 @@ fn install_from_repo(spec: &str, interactive: bool, all: bool) -> Result<()> {
         );
     }
 
+    // Explicit single-skill selection bypasses the size policy — the user
+    // already told us exactly what to install.
+    if let Some(name) = skill {
+        anyhow::ensure!(
+            survey.agent_skills.iter().any(|s| s.name == name),
+            "skill '{}' not found in {} (available: {})",
+            name,
+            spec,
+            survey
+                .agent_skills
+                .iter()
+                .map(|s| s.name.as_str())
+                .collect::<Vec<_>>()
+                .join(", ")
+        );
+        return install_chosen(spec, &[name.to_string()]);
+    }
+
     const AUTO_INSTALL_MAX: usize = 5;
     let n = survey.agent_skills.len();
     let chosen: Vec<String> = match (n, interactive, all) {
@@ -114,7 +136,11 @@ fn install_from_repo(spec: &str, interactive: bool, all: bool) -> Result<()> {
         return Ok(());
     }
 
-    for name in &chosen {
+    install_chosen(spec, &chosen)
+}
+
+fn install_chosen(spec: &str, chosen: &[String]) -> Result<()> {
+    for name in chosen {
         match crate::agent_skill::install(spec, Some(name)) {
             Ok(installed) => {
                 for n in installed {
@@ -281,7 +307,7 @@ fn run_interactive_browse_marketplaces() -> Result<()> {
 
     match crate::interactive::pick_one("Install plugin", &items)? {
         None => println!("Aborted."),
-        Some(idx) => run(vec![qualified_names[idx].clone()], false, false)?,
+        Some(idx) => run(vec![qualified_names[idx].clone()], false, false, None)?,
     }
     Ok(())
 }
