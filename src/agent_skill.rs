@@ -98,10 +98,22 @@ pub fn ensure_cache(source: &str) -> Result<PathBuf> {
 }
 
 /// List the skill directories present under <cache>/skills/.
-/// Returns `(name, source_dir)` pairs.
+/// Returns `(name, source_dir)` pairs, sorted by name.
+///
+/// Two layouts are supported:
+/// - flat:   `skills/<name>/SKILL.md`
+/// - nested: `skills/<category>/<name>/SKILL.md`
+///
+/// Nested is what larger collections use to group skills (e.g. `engineering/`,
+/// `productivity/`). A directory holding its own `SKILL.md` is always treated as
+/// a skill and is never descended into, so a skill containing helper
+/// subdirectories cannot be mistaken for a category.
+///
+/// Names are unique in the result: if two categories expose the same skill name,
+/// the first by sorted path wins and the other is dropped.
 pub fn skills_in_cache(cache: &Path) -> Vec<(String, PathBuf)> {
     let skills_root = cache.join("skills");
-    let mut out = Vec::new();
+    let mut out: Vec<(String, PathBuf)> = Vec::new();
     let Ok(entries) = std::fs::read_dir(&skills_root) else {
         // Fallback: single-skill repo at root level
         if cache.join("SKILL.md").exists() {
@@ -111,14 +123,43 @@ pub fn skills_in_cache(cache: &Path) -> Vec<(String, PathBuf)> {
         }
         return out;
     };
-    for entry in entries.flatten() {
-        let p = entry.path();
-        if p.is_dir() && p.join("SKILL.md").exists() {
-            if let Some(name) = p.file_name().and_then(|n| n.to_str()) {
-                out.push((name.to_string(), p));
-            }
+
+    fn push_skill(out: &mut Vec<(String, PathBuf)>, dir: &Path) {
+        if let Some(name) = dir.file_name().and_then(|n| n.to_str()) {
+            out.push((name.to_string(), dir.to_path_buf()));
         }
     }
+
+    // Sort the top level so category traversal is deterministic across platforms.
+    let mut top: Vec<PathBuf> = entries
+        .flatten()
+        .map(|e| e.path())
+        .filter(|p| p.is_dir())
+        .collect();
+    top.sort();
+
+    for p in top {
+        if p.join("SKILL.md").exists() {
+            push_skill(&mut out, &p);
+            continue;
+        }
+        // Category directory: look one level deeper for <category>/<name>/SKILL.md.
+        let Ok(inner) = std::fs::read_dir(&p) else {
+            continue;
+        };
+        let mut nested: Vec<PathBuf> = inner
+            .flatten()
+            .map(|e| e.path())
+            .filter(|q| q.is_dir() && q.join("SKILL.md").exists())
+            .collect();
+        nested.sort();
+        for q in nested {
+            push_skill(&mut out, &q);
+        }
+    }
+
+    out.sort_by(|a, b| a.0.cmp(&b.0).then_with(|| a.1.cmp(&b.1)));
+    out.dedup_by(|a, b| a.0 == b.0);
     out
 }
 

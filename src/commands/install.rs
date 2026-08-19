@@ -66,7 +66,12 @@ fn install_from_repo(spec: &str, interactive: bool, all: bool, skill: Option<&st
     let cache = crate::agent_skill::ensure_cache(spec)?;
     let survey = crate::repo_scanner::survey(&cache)?;
 
-    if survey.marketplace {
+    // A repo can be *both* a plugin marketplace and a collection of Agent Skills.
+    // Redirecting to the marketplace is the right default for a bare
+    // `zskills install owner/repo`, but `--skill NAME` / `-i` are explicit sparse
+    // Agent Skill requests: the user already said what they want, so honour it.
+    let sparse_intent = skill.is_some() || interactive;
+    if survey.marketplace && !sparse_intent {
         println!(
             "{}",
             "This repo is a plugin marketplace. To register and install plugins from it:".yellow()
@@ -76,7 +81,25 @@ fn install_from_repo(spec: &str, interactive: bool, all: bool, skill: Option<&st
             "  zskills install <plugin>@<marketplace>   {}",
             "(or `zskills install -i` to browse)".dimmed()
         );
+        if !survey.agent_skills.is_empty() {
+            println!(
+                "  {}",
+                format!(
+                    "it also carries {} Agent Skill(s); `--skill <name>` installs one without the plugin bundle",
+                    survey.agent_skills.len()
+                )
+                .dimmed()
+            );
+        }
         return Ok(());
+    }
+    if survey.marketplace && sparse_intent {
+        eprintln!(
+            "{} {}",
+            "·".dimmed(),
+            "this repo is also a plugin marketplace; installing the selected Agent Skill(s) only"
+                .dimmed()
+        );
     }
 
     if survey.plugin {

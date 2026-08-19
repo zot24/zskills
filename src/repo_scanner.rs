@@ -205,6 +205,84 @@ mod tests {
     }
 
     #[test]
+    fn survey_discovers_nested_category_skills() {
+        // skills/<category>/<name>/SKILL.md — the layout larger collections use.
+        let tmp = tempfile::tempdir().unwrap();
+        for (cat, name) in [
+            ("engineering", "research"),
+            ("engineering", "prototype"),
+            ("productivity", "grilling"),
+        ] {
+            let d = tmp.path().join("skills").join(cat).join(name);
+            fs::create_dir_all(&d).unwrap();
+            fs::write(d.join("SKILL.md"), skill_md(Some("desc"))).unwrap();
+        }
+        let s = survey(tmp.path()).unwrap();
+        let names: Vec<&str> = s.agent_skills.iter().map(|k| k.name.as_str()).collect();
+        assert_eq!(names, vec!["grilling", "prototype", "research"]);
+    }
+
+    #[test]
+    fn survey_mixes_flat_and_nested_layouts() {
+        let tmp = tempfile::tempdir().unwrap();
+        let flat = tmp.path().join("skills").join("zskills");
+        fs::create_dir_all(&flat).unwrap();
+        fs::write(flat.join("SKILL.md"), skill_md(None)).unwrap();
+        let nested = tmp.path().join("skills").join("engineering").join("tdd");
+        fs::create_dir_all(&nested).unwrap();
+        fs::write(nested.join("SKILL.md"), skill_md(None)).unwrap();
+        let s = survey(tmp.path()).unwrap();
+        let names: Vec<&str> = s.agent_skills.iter().map(|k| k.name.as_str()).collect();
+        assert_eq!(names, vec!["tdd", "zskills"]);
+    }
+
+    #[test]
+    fn survey_does_not_descend_into_a_skill_with_subdirs() {
+        // A skill that owns helper subdirectories must not be read as a category.
+        let tmp = tempfile::tempdir().unwrap();
+        let skill = tmp.path().join("skills").join("wayfinder");
+        fs::create_dir_all(skill.join("agents")).unwrap();
+        fs::write(skill.join("SKILL.md"), skill_md(None)).unwrap();
+        fs::write(skill.join("agents").join("SKILL.md"), skill_md(None)).unwrap();
+        let s = survey(tmp.path()).unwrap();
+        let names: Vec<&str> = s.agent_skills.iter().map(|k| k.name.as_str()).collect();
+        assert_eq!(names, vec!["wayfinder"]);
+    }
+
+    #[test]
+    fn survey_dedupes_same_skill_name_across_categories() {
+        let tmp = tempfile::tempdir().unwrap();
+        for cat in ["engineering", "deprecated"] {
+            let d = tmp.path().join("skills").join(cat).join("grilling");
+            fs::create_dir_all(&d).unwrap();
+            fs::write(d.join("SKILL.md"), skill_md(None)).unwrap();
+        }
+        let s = survey(tmp.path()).unwrap();
+        assert_eq!(s.agent_skills.len(), 1);
+        assert_eq!(s.agent_skills[0].name, "grilling");
+    }
+
+    #[test]
+    fn survey_finds_skills_in_a_marketplace_repo() {
+        // Both flags true at once: the redirect must not imply "no Agent Skills".
+        let tmp = tempfile::tempdir().unwrap();
+        let mp_dir = tmp.path().join(".claude-plugin");
+        fs::create_dir_all(&mp_dir).unwrap();
+        fs::write(mp_dir.join("marketplace.json"), "{}").unwrap();
+        let d = tmp
+            .path()
+            .join("skills")
+            .join("engineering")
+            .join("research");
+        fs::create_dir_all(&d).unwrap();
+        fs::write(d.join("SKILL.md"), skill_md(None)).unwrap();
+        let s = survey(tmp.path()).unwrap();
+        assert!(s.marketplace);
+        assert_eq!(s.agent_skills.len(), 1);
+        assert_eq!(s.agent_skills[0].name, "research");
+    }
+
+    #[test]
     fn survey_detects_marketplace() {
         let tmp = tempfile::tempdir().unwrap();
         let mp_dir = tmp.path().join(".claude-plugin");
