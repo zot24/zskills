@@ -2,6 +2,28 @@
 
 All notable changes to this project are documented here. The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html). Releases from this point forward are managed by [release-please](https://github.com/googleapis/release-please) based on [Conventional Commits](https://www.conventionalcommits.org/).
 
+## [0.8.0](https://github.com/zot24/zskills/compare/v0.7.0...v0.8.0) (2026-08-20)
+
+
+### Features
+
+* install from repo + cross-client skill path + sync --adopt ([#21](https://github.com/zot24/zskills/issues/21)) ([64274b2](https://github.com/zot24/zskills/commit/64274b2ee8be7a3363d66e10f98adeb859616ef7))
+* sparse Agent Skill installs from git repos + install --skill flag ([#24](https://github.com/zot24/zskills/issues/24)) ([9623646](https://github.com/zot24/zskills/commit/96236466cd5de7bf9f2607451520de9a6f2c007e))
+* zskills install &lt;owner/repo&gt; — direct install from a git repo ([#18](https://github.com/zot24/zskills/issues/18)) ([2756dc0](https://github.com/zot24/zskills/commit/2756dc037aa815bab80fc62ca57555a70ed71067))
+
+
+### Bug Fixes
+
+* sparse installs work on marketplace repos and nested skill layouts ([#25](https://github.com/zot24/zskills/issues/25)) ([7dcd9a5](https://github.com/zot24/zskills/commit/7dcd9a566eac1ccad13cf3b657c5c810ad937fa7))
+
+
+### Documentation
+
+* adopt the house PR standard — template, STE100 card, labels ([#27](https://github.com/zot24/zskills/issues/27)) ([80a6b59](https://github.com/zot24/zskills/commit/80a6b599d3a50a349cb0c894129bc38ee5b2e186))
+* ship Agent Skill + MCP-aware docs for v0.7.0 ([#16](https://github.com/zot24/zskills/issues/16)) ([66ad32f](https://github.com/zot24/zskills/commit/66ad32f478692d13d6dd2eb6f7842984d33aad2b))
+* **theme:** terminal aesthetic + readability tune + ← zot24.com link ([#23](https://github.com/zot24/zskills/issues/23)) ([a34aeae](https://github.com/zot24/zskills/commit/a34aeae682d760d36f029ef3d53e1265c5fe963d))
+* update for ~/.agents/skills/ path + sync --adopt + quieter npm ([#22](https://github.com/zot24/zskills/issues/22)) ([38a5c58](https://github.com/zot24/zskills/commit/38a5c584c7d7c8234057e91066c71e6499c66d54))
+
 ## [0.7.0](https://github.com/zot24/zskills/compare/v0.6.0...v0.7.0) (2026-05-16)
 
 
