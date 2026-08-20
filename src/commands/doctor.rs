@@ -3,20 +3,106 @@ use owo_colors::OwoColorize;
 
 pub fn run(fix: bool) -> Result<()> {
     let report = crate::reconcile::run()?;
+    // Two counters, deliberately. `issues` is everything worth telling the user
+    // about; `fixable` is the subset `--fix` has code for. Comparing repairs against
+    // the first is how `--fix` ends up reporting failure forever over a finding it
+    // was never going to touch — one deprecated MCP server was enough.
     let mut issues = 0;
+    let mut fixable = 0;
 
     issues += check_mcps();
 
-    if !report.enabled_orphan.is_empty() {
-        issues += report.enabled_orphan.len();
+    // A marketplace entry with no `lastUpdated` string makes Claude Code reject the
+    // *whole* known_marketplaces.json, which breaks every `claude plugin install`.
+    // Reporting "All good" while that is true is the single most expensive lie doctor
+    // can tell, so it is checked first.
+    let known_path = crate::paths::known_marketplaces_json()?;
+    let known = crate::marketplace::load_known(&known_path)?;
+    let stale_taps: Vec<String> = known
+        .iter()
+        .filter(|(_, entry)| crate::marketplace::missing_last_updated(entry))
+        .map(|(name, _)| name.clone())
+        .collect();
+    if !stale_taps.is_empty() {
+        issues += stale_taps.len();
+        fixable += stale_taps.len();
         println!(
-            "{} {} plugins enabled but not installed:",
+            "{} {} marketplace(s) missing a `lastUpdated` string in {}:",
             "✗".red(),
-            report.enabled_orphan.len()
+            stale_taps.len(),
+            known_path.display()
         );
-        for k in &report.enabled_orphan {
+        for name in &stale_taps {
+            println!("  - {}", name);
+        }
+        println!(
+            "  {}",
+            "Claude Code rejects the whole file over this — every `claude plugin install` fails with \"Marketplace configuration file is corrupted\"".dimmed()
+        );
+    }
+
+    // "Enabled but not installed" splits three ways, and the three want different fixes:
+    // install it, drop it, or — when we genuinely cannot tell — touch nothing.
+    use crate::marketplace::Offer;
+    let mut fetchable: Vec<String> = Vec::new();
+    let mut dangling: Vec<String> = Vec::new();
+    let mut unverifiable: Vec<String> = Vec::new();
+    for k in &report.enabled_orphan {
+        match crate::marketplace::plugin_offer(&known, k) {
+            Offer::Yes => fetchable.push(k.clone()),
+            Offer::No => dangling.push(k.clone()),
+            Offer::Unknown => unverifiable.push(k.clone()),
+        }
+    }
+
+    if !fetchable.is_empty() {
+        issues += fetchable.len();
+        fixable += fetchable.len();
+        println!(
+            "{} {} plugin(s) enabled but not installed (bytes never fetched):",
+            "✗".red(),
+            fetchable.len()
+        );
+        for k in &fetchable {
             println!("  - {}", k);
         }
+        println!(
+            "  {}",
+            "these are real plugins in a registered marketplace — `--fix` installs them".dimmed()
+        );
+    }
+
+    if !dangling.is_empty() {
+        issues += dangling.len();
+        fixable += dangling.len();
+        println!(
+            "{} {} plugin(s) enabled but offered by no registered marketplace:",
+            "✗".red(),
+            dangling.len()
+        );
+        for k in &dangling {
+            println!("  - {}", k);
+        }
+        println!(
+            "  {}",
+            "no tap carries these — `--fix` drops the dangling enable".dimmed()
+        );
+    }
+
+    if !unverifiable.is_empty() {
+        issues += unverifiable.len();
+        println!(
+            "{} {} plugin(s) enabled but unverifiable — the marketplace manifest could not be read:",
+            "✗".red(),
+            unverifiable.len()
+        );
+        for k in &unverifiable {
+            println!("  - {}", k);
+        }
+        println!(
+            "  {}",
+            "`--fix` will not touch these: an unreadable manifest is not evidence the plugin is bogus. Run `zskills marketplace update` first.".dimmed()
+        );
     }
 
     if !report.installed_orphan.is_empty() {
@@ -45,6 +131,7 @@ pub fn run(fix: bool) -> Result<()> {
         .collect();
     if !agent_inventory_missing.is_empty() {
         issues += agent_inventory_missing.len();
+        fixable += agent_inventory_missing.len();
         println!(
             "{} {} agent skills tracked in inventory but missing on disk:",
             "✗".red(),
@@ -61,6 +148,7 @@ pub fn run(fix: bool) -> Result<()> {
     let full_repo_installs = find_full_repo_installs(&inv)?;
     if !full_repo_installs.is_empty() {
         issues += full_repo_installs.len();
+        fixable += full_repo_installs.len();
         println!(
             "{} {} agent skill(s) are full-repo installs (whole source tree, not just the skill):",
             "✗".red(),
@@ -84,21 +172,51 @@ pub fn run(fix: bool) -> Result<()> {
     }
 
     if fix {
-        // Plugins: remove orphan enabledPlugins entries.
-        let settings_path = crate::paths::settings_json()?;
-        let mut settings = crate::settings::load(&settings_path)?;
-        let ep = crate::settings::enabled_plugins_mut(&mut settings);
-        for k in &report.enabled_orphan {
-            ep.remove(k);
-            println!("  removed {} from enabledPlugins", k);
+        // Count what we actually repaired, not what we noticed. A fix summary that
+        // reports the issue count is the same class of lie as "All good".
+        let mut fixed = 0usize;
+
+        // Marketplaces: write the timestamp. Never drop the tap — the user asked for it,
+        // and a missing field is our bug to repair, not their registration to revoke.
+        if !stale_taps.is_empty() {
+            let mut known = crate::marketplace::load_known(&known_path)?;
+            for name in &stale_taps {
+                if crate::marketplace::stamp_last_updated(&mut known, name) {
+                    println!("  stamped lastUpdated on marketplace {}", name);
+                    fixed += 1;
+                }
+            }
+            crate::marketplace::save_known(&known_path, &known)?;
         }
-        crate::settings::save(&settings_path, &settings)?;
+
+        // Plugins that a marketplace really offers: finish the install. Removing the
+        // enable here would silently undo whatever the user (or `zskills install`) just
+        // asked for — the exact failure this check exists to prevent.
+        if !fetchable.is_empty() {
+            fixed += crate::commands::install::materialize_plugins(&fetchable)?;
+        }
+
+        // Plugins nothing offers: the enable is a dangling reference. Drop it.
+        // Load *after* materialize_plugins so we build on whatever `claude` just
+        // wrote, and skip the write entirely when there is nothing to remove.
+        if !dangling.is_empty() {
+            let settings_path = crate::paths::settings_json()?;
+            let mut settings = crate::settings::load(&settings_path)?;
+            let ep = crate::settings::enabled_plugins_mut(&mut settings);
+            for k in &dangling {
+                ep.remove(k);
+                println!("  removed {} from enabledPlugins", k);
+                fixed += 1;
+            }
+            crate::settings::save(&settings_path, &settings)?;
+        }
 
         // Agent skills: drop inventory entries with no bytes.
         let mut inv = crate::agent_skill::load_inventory()?;
         for k in &agent_inventory_missing {
             inv.agent_skills.remove(k);
             println!("  removed {} from agent-skill inventory", k);
+            fixed += 1;
         }
         crate::agent_skill::save_inventory(&inv)?;
 
@@ -106,14 +224,44 @@ pub fn run(fix: bool) -> Result<()> {
         // which re-materializes sparsely (delete + slim copy).
         for (name, source) in &full_repo_installs {
             match crate::agent_skill::install(source, Some(name)) {
-                Ok(_) => println!("  re-installed {} slim from {}", name, source),
+                Ok(_) => {
+                    println!("  re-installed {} slim from {}", name, source);
+                    fixed += 1;
+                }
                 Err(e) => println!("  {} could not re-install {}: {}", "✗".red(), name, e),
             }
         }
 
-        println!("{} Fixed {} issue(s).", "✓".green(), issues);
-    } else {
+        let informational = issues.saturating_sub(fixable);
+        if fixed >= fixable {
+            println!("{} Fixed {} issue(s).", "✓".green(), fixed);
+        } else {
+            println!(
+                "{} Fixed {} of {} fixable issue(s); {} still open — re-run {} for the current state.",
+                "!".yellow(),
+                fixed,
+                fixable,
+                fixable - fixed,
+                "zskills doctor".bold()
+            );
+        }
+        if informational > 0 {
+            println!(
+                "  {}",
+                format!(
+                    "{} further finding(s) need a human — `--fix` has no repair for them.",
+                    informational
+                )
+                .dimmed()
+            );
+        }
+    } else if fixable > 0 {
         println!("\nRun {} to clean up.", "zskills doctor --fix".bold());
+    } else {
+        println!(
+            "\n{}",
+            "Nothing here is auto-fixable; see the notes above.".dimmed()
+        );
     }
 
     Ok(())

@@ -55,6 +55,14 @@ fn add(source: String) -> Result<()> {
         Value::String(install_location.to_string_lossy().to_string()),
     );
     entry.insert("autoUpdate".into(), Value::Bool(true));
+    // Claude Code validates `lastUpdated` as a *string* when it loads
+    // known_marketplaces.json. Omit it and every `claude plugin install` fails with
+    // "Marketplace configuration file is corrupted: <name>.lastUpdated: Invalid
+    // input: expected string, received undefined". This field is not optional.
+    entry.insert(
+        "lastUpdated".into(),
+        Value::String(crate::timestamp::utc_now_iso8601()),
+    );
     known.insert(name.clone(), Value::Object(entry));
 
     crate::marketplace::save_known(&path, &known)?;
@@ -102,6 +110,11 @@ fn add_remote_index(name: &str, url: &str) -> Result<()> {
         json!({ "source": "remote-index", "url": url }),
     );
     entry.insert("autoUpdate".into(), Value::Bool(false));
+    // Same file, same validator — see `add()`.
+    entry.insert(
+        "lastUpdated".into(),
+        Value::String(crate::timestamp::utc_now_iso8601()),
+    );
     known.insert(name.to_string(), Value::Object(entry));
     crate::marketplace::save_known(&path, &known)?;
 
@@ -216,11 +229,13 @@ fn list(as_json: bool) -> Result<()> {
 }
 
 fn update(name: Option<String>) -> Result<()> {
-    let known = crate::marketplace::load_known(&crate::paths::known_marketplaces_json()?)?;
+    let known_path = crate::paths::known_marketplaces_json()?;
+    let mut known = crate::marketplace::load_known(&known_path)?;
     let targets: Vec<String> = match name {
         Some(n) => vec![n],
         None => known.keys().cloned().collect(),
     };
+    let mut dirty = false;
     for n in &targets {
         if known.get(n).is_some_and(is_remote_index) {
             continue;
@@ -236,9 +251,19 @@ fn update(name: Option<String>) -> Result<()> {
             crate::marketplace::update_via_tarball(n, &repo)
         };
         match result {
-            Ok(()) => println!("{}", "ok".green()),
+            Ok(()) => {
+                println!("{}", "ok".green());
+                // The tap really did move — record when, so the field means
+                // something instead of just satisfying the schema.
+                if crate::marketplace::stamp_last_updated(&mut known, n) {
+                    dirty = true;
+                }
+            }
             Err(e) => println!("{} ({})", "fail".red(), e),
         }
+    }
+    if dirty {
+        crate::marketplace::save_known(&known_path, &known)?;
     }
     Ok(())
 }

@@ -54,6 +54,38 @@ pub fn save_known(path: &Path, map: &Map<String, Value>) -> Result<()> {
     crate::settings::save(path, map)
 }
 
+/// True when a `known_marketplaces.json` entry is missing a usable `lastUpdated`.
+///
+/// Claude Code validates the field as a non-empty **string**. A missing key, a `null`,
+/// a number (epoch millis is the tempting-but-wrong encoding) or an empty string all
+/// make it refuse the whole file with:
+///
+/// > Marketplace configuration file is corrupted: `<name>`.lastUpdated:
+/// > Invalid input: expected string, received undefined
+///
+/// which takes down *every* `claude plugin install`, not just the offending tap.
+pub fn missing_last_updated(entry: &Value) -> bool {
+    match entry.get("lastUpdated") {
+        Some(Value::String(s)) => s.trim().is_empty(),
+        _ => true,
+    }
+}
+
+/// Write `lastUpdated` on `name`'s entry, preserving every other field.
+/// Returns whether anything changed (false if `name` isn't a known object entry).
+pub fn stamp_last_updated(known: &mut Map<String, Value>, name: &str) -> bool {
+    match known.get_mut(name).and_then(|e| e.as_object_mut()) {
+        Some(entry) => {
+            entry.insert(
+                "lastUpdated".into(),
+                Value::String(crate::timestamp::utc_now_iso8601()),
+            );
+            true
+        }
+        None => false,
+    }
+}
+
 /// Resolve a marketplace's source into a GitHub `owner/repo`, if its `known_marketplaces.json`
 /// entry encodes one. Used to update non-git marketplaces via tarball.
 pub fn github_owner_repo(known: &Map<String, Value>, name: &str) -> Option<String> {
@@ -184,11 +216,90 @@ pub fn load_manifest(path: &Path) -> Result<MarketplaceManifest> {
     Ok(m)
 }
 
+/// What a registered marketplace can tell us about an enabled plugin.
+///
+/// The three states matter because `doctor --fix` acts differently on each, and
+/// collapsing them is how you delete a user's plugin by accident.
+#[derive(Debug, PartialEq, Eq)]
+pub enum Offer {
+    /// A registered marketplace's manifest lists this plugin. The enable is legitimate;
+    /// it just has no bytes yet. Fix by installing.
+    Yes,
+    /// A registered marketplace's manifest was read successfully and does *not* list it,
+    /// or no marketplace by that name is registered at all. The enable is dangling.
+    /// Fix by removing.
+    No,
+    /// We could not read the marketplace manifest — the clone was never fetched, was
+    /// deleted, or is corrupt. This is ignorance, not evidence. Fix nothing.
+    Unknown,
+}
+
+/// Is `mp` declared in `settings.json -> extraKnownMarketplaces`?
+///
+/// A marketplace can be registered in either place: `zskills marketplace add` writes
+/// both, but Claude Code also honours a settings-only declaration (how team and
+/// enterprise configs ship a tap). Consulting only `known_marketplaces.json` would
+/// classify every enable from such a tap as dangling — and `--fix` would delete them.
+fn is_extra_marketplace(mp: &str) -> bool {
+    let Ok(path) = crate::paths::settings_json() else {
+        return false;
+    };
+    let Ok(settings) = crate::settings::load(&path) else {
+        return false;
+    };
+    settings
+        .get("extraKnownMarketplaces")
+        .and_then(|v| v.as_object())
+        .is_some_and(|m| m.contains_key(mp))
+}
+
+/// Classify an enabled `name@marketplace` key against the registered marketplaces.
+///
+/// The distinction between [`Offer::No`] and [`Offer::Unknown`] is the whole point:
+/// a plugin `zskills install` just enabled resolves through a *readable* manifest, so an
+/// unreadable one can never be grounds for revoking an enable. Destroying user intent
+/// because we failed to read a file is worse than leaving a stale flag in place.
+pub fn plugin_offer(known: &Map<String, Value>, qualified: &str) -> Offer {
+    let Some((name, mp)) = qualified.rsplit_once('@') else {
+        // Not a qualified key at all. We have no idea what it refers to.
+        return Offer::Unknown;
+    };
+    if !known.contains_key(mp) && !is_extra_marketplace(mp) {
+        return Offer::No;
+    }
+    let Ok(manifest_path) = crate::paths::marketplace_manifest(mp) else {
+        return Offer::Unknown;
+    };
+    match load_manifest(&manifest_path) {
+        Ok(m) if m.plugins.iter().any(|p| p.name == name) => Offer::Yes,
+        Ok(_) => Offer::No,
+        Err(_) => Offer::Unknown,
+    }
+}
+
 /// Resolve a possibly-unqualified spec ("foo" or "foo@bar") against known marketplaces.
 /// Returns the qualified form "name@marketplace".
 pub fn resolve_spec(spec: &str, known: &Map<String, Value>) -> Result<String> {
     if let Some((name, mp)) = spec.split_once('@') {
-        return Ok(format!("{}@{}", name, mp));
+        let qualified = format!("{}@{}", name, mp);
+        // Accepting any string with an `@` in it meant `install bogus@no-such-mp`
+        // happily wrote a dangling enable that the next `doctor --fix` then deleted:
+        // zskills damaging the file and repairing its own damage. Verify first.
+        return match plugin_offer(known, &qualified) {
+            Offer::Yes => Ok(qualified),
+            Offer::No if !known.contains_key(mp) => {
+                anyhow::bail!(
+                    "marketplace '{}' is not registered (try `zskills marketplace add <owner/repo>`)",
+                    mp
+                )
+            }
+            Offer::No => anyhow::bail!("marketplace '{}' does not offer a plugin '{}'", mp, name),
+            Offer::Unknown => anyhow::bail!(
+                "could not read the manifest for marketplace '{}' — run `zskills marketplace update {}` first",
+                mp,
+                mp
+            ),
+        };
     }
     let mut matches: Vec<String> = Vec::new();
     for mp_name in known.keys() {
@@ -202,5 +313,69 @@ pub fn resolve_spec(spec: &str, known: &Map<String, Value>) -> Result<String> {
         0 => anyhow::bail!("skill '{}' not found in any registered marketplace", spec),
         1 => Ok(matches.remove(0)),
         _ => Err(crate::error::Error::AmbiguousSkill(spec.to_string(), matches.join(", ")).into()),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn missing_last_updated_flags_absent_null_and_non_string() {
+        assert!(missing_last_updated(&json!({ "autoUpdate": true })));
+        assert!(missing_last_updated(&json!({ "lastUpdated": null })));
+        // Epoch millis is a string-typed field in Claude Code's schema, so a
+        // number is just as corrupt as a missing key.
+        assert!(missing_last_updated(
+            &json!({ "lastUpdated": 1755648000000i64 })
+        ));
+        assert!(missing_last_updated(&json!({ "lastUpdated": "" })));
+        assert!(missing_last_updated(&json!({ "lastUpdated": "   " })));
+    }
+
+    #[test]
+    fn missing_last_updated_accepts_a_string() {
+        assert!(!missing_last_updated(
+            &json!({ "lastUpdated": "2026-08-20T00:00:00.000Z" })
+        ));
+    }
+
+    #[test]
+    fn stamp_last_updated_preserves_other_fields() {
+        let mut known = Map::new();
+        known.insert(
+            "mp".into(),
+            json!({
+                "source": { "source": "github", "repo": "owner/mp" },
+                "installLocation": "/tmp/mp",
+                "autoUpdate": true
+            }),
+        );
+        assert!(stamp_last_updated(&mut known, "mp"));
+        let entry = &known["mp"];
+        assert!(!missing_last_updated(entry));
+        assert_eq!(entry["installLocation"], json!("/tmp/mp"));
+        assert_eq!(entry["autoUpdate"], json!(true));
+        assert_eq!(entry["source"]["repo"], json!("owner/mp"));
+    }
+
+    #[test]
+    fn plugin_offer_says_no_when_no_marketplace_is_registered() {
+        let known = Map::new();
+        assert_eq!(plugin_offer(&known, "ghost@nowhere"), Offer::No);
+    }
+
+    #[test]
+    fn plugin_offer_says_unknown_for_an_unqualified_key() {
+        let known = Map::new();
+        assert_eq!(plugin_offer(&known, "bare-name"), Offer::Unknown);
+    }
+
+    #[test]
+    fn stamp_last_updated_is_a_noop_for_unknown_names() {
+        let mut known = Map::new();
+        assert!(!stamp_last_updated(&mut known, "nope"));
+        assert!(known.is_empty());
     }
 }
