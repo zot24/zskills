@@ -17,8 +17,14 @@ fn zskills(home: &TempDir) -> Command {
     cmd.env("AGENTS_HOME", home.path());
     // Sandbox the clone cache too, so repo-install tests never touch ~/.cache.
     cmd.env("XDG_CACHE_HOME", home.path().join("cache"));
-    // Strip ANSI colors so `predicate::str::contains` assertions match raw text.
+    // Set for readability of failure dumps. Note: zskills does not currently honour
+    // NO_COLOR (owo-colors' override needs its `supports-colors` feature), so the
+    // assertions below match the text *inside* the escapes rather than raw output.
     cmd.env("NO_COLOR", "1");
+    // Never shell out to the developer's real `claude` binary: it does not honour
+    // CLAUDE_HOME, so a stray `plugin install` would mutate the actual ~/.claude.
+    // Tests that exercise the delegation set ZSKILLS_CLAUDE_BIN to a stub instead.
+    cmd.env("ZSKILLS_NO_CLAUDE_CLI", "1");
     cmd
 }
 
@@ -496,6 +502,27 @@ fn upgrade_runs_without_marketplaces_or_manifest() {
 #[test]
 fn doctor_detects_orphan_and_fixes_it() {
     let home = fake_home();
+    // Give test-mp a readable manifest that lists `foo` but not `ghost`, so
+    // "ghost is not offered" is a fact rather than a guess. Without this, doctor
+    // deliberately declines to remove the enable — see
+    // `doctor_fix_leaves_an_unverifiable_enable_alone`.
+    let mp_dir = home
+        .path()
+        .join("plugins")
+        .join("marketplaces")
+        .join("test-mp")
+        .join(".claude-plugin");
+    fs::create_dir_all(&mp_dir).unwrap();
+    fs::write(
+        mp_dir.join("marketplace.json"),
+        serde_json::to_string_pretty(&json!({
+            "name": "test-mp",
+            "plugins": [{ "name": "foo", "description": "the real one" }]
+        }))
+        .unwrap(),
+    )
+    .unwrap();
+
     // Add an orphan: in enabledPlugins but not in inventory.
     let settings_path = home.path().join("settings.json");
     let mut s: serde_json::Value =
@@ -589,6 +616,7 @@ fn zskills_nested(parent: &TempDir, claude_home: &std::path::Path) -> Command {
     // Pin the cross-client Agent Skills home next to CLAUDE_HOME so tests stay sandboxed.
     cmd.env("AGENTS_HOME", parent.path().join(".agents"));
     cmd.env("NO_COLOR", "1");
+    cmd.env("ZSKILLS_NO_CLAUDE_CLI", "1");
     // Make sure the managed-settings probe doesn't pick up a real system file in CI.
     cmd.env(
         "ZSKILLS_MANAGED_SETTINGS",
@@ -1141,7 +1169,7 @@ fn install_skill_flag_unknown_name_errors() {
     let out = zskills(&home)
         .args(["install", &file_url(upstream.path()), "--skill", "nope"])
         .assert()
-        .success() // partition-based dispatch logs to stderr and continues
+        .failure()
         .get_output()
         .stderr
         .clone();
@@ -1404,10 +1432,609 @@ fn install_repo_with_no_skills_errors() {
     let out = zskills(&home)
         .args(["install", &file_url(upstream.path())])
         .assert()
-        .success() // emit error to stderr but exit 0; the partition-based dispatch logs and continues
+        // A failed install exits non-zero: the error is on stderr *and* in $?.
+        .failure()
         .get_output()
         .stderr
         .clone();
     let stderr = String::from_utf8_lossy(&out);
     assert!(stderr.contains("no Agent Skills found"));
+}
+
+// ---------------------------------------------------------------------------
+// Honest install: marketplace `lastUpdated`, and enable-vs-install.
+//
+// Background (reproduced 2026-08-20): `zskills marketplace add` wrote a
+// known_marketplaces.json entry with no `lastUpdated`, and Claude Code then
+// refused the whole file — "Marketplace configuration file is corrupted:
+// <name>.lastUpdated: Invalid input: expected string, received undefined" —
+// which broke every `claude plugin install`. Meanwhile `zskills doctor` reported
+// "All good", and `doctor --fix` would have *deleted* the enable for a plugin
+// that had just been requested.
+// ---------------------------------------------------------------------------
+
+/// A local git repo shaped like a plugin marketplace, carrying one plugin.
+fn write_marketplace_repo(parent: &std::path::Path, mp: &str, plugin: &str) -> std::path::PathBuf {
+    let repo = parent.join(mp);
+    fs::create_dir_all(repo.join(".claude-plugin")).unwrap();
+    fs::write(
+        repo.join(".claude-plugin").join("marketplace.json"),
+        serde_json::to_string_pretty(&json!({
+            "name": mp,
+            "description": "test marketplace",
+            "plugins": [{ "name": plugin, "description": "a real plugin", "source": "./p" }]
+        }))
+        .unwrap(),
+    )
+    .unwrap();
+    fs::create_dir_all(repo.join("p")).unwrap();
+    fs::write(repo.join("p").join("plugin.json"), r#"{"name":"p"}"#).unwrap();
+    git_init_and_commit(&repo);
+    repo
+}
+
+/// Install a marketplace cache directly into CLAUDE_HOME, bypassing `marketplace add`,
+/// and register it in known_marketplaces.json with the given `lastUpdated` (or none).
+fn register_marketplace(home: &TempDir, mp: &str, plugin: &str, last_updated: Option<&str>) {
+    let dir = home.path().join("plugins").join("marketplaces").join(mp);
+    fs::create_dir_all(dir.join(".claude-plugin")).unwrap();
+    fs::write(
+        dir.join(".claude-plugin").join("marketplace.json"),
+        serde_json::to_string_pretty(&json!({
+            "name": mp,
+            "plugins": [{ "name": plugin, "description": "a real plugin" }]
+        }))
+        .unwrap(),
+    )
+    .unwrap();
+
+    let known_path = home.path().join("plugins").join("known_marketplaces.json");
+    let mut known: serde_json::Value =
+        serde_json::from_slice(&fs::read(&known_path).unwrap()).unwrap();
+    let mut entry = json!({
+        "source": { "source": "github", "repo": format!("owner/{}", mp) },
+        "installLocation": dir.to_string_lossy(),
+        "autoUpdate": true
+    });
+    if let Some(ts) = last_updated {
+        entry["lastUpdated"] = json!(ts);
+    }
+    known[mp] = entry;
+    fs::write(&known_path, serde_json::to_string_pretty(&known).unwrap()).unwrap();
+}
+
+fn read_known(home: &TempDir) -> serde_json::Value {
+    serde_json::from_slice(
+        &fs::read(home.path().join("plugins").join("known_marketplaces.json")).unwrap(),
+    )
+    .unwrap()
+}
+
+fn read_settings(home: &TempDir) -> serde_json::Value {
+    serde_json::from_slice(&fs::read(home.path().join("settings.json")).unwrap()).unwrap()
+}
+
+/// A stand-in for the `claude` binary that records its argv and *actually*
+/// materializes the plugin, the way the real CLI does — it writes the entry into
+/// `installed_plugins.json` under `$CLAUDE_CONFIG_DIR`.
+///
+/// Writing through `$CLAUDE_CONFIG_DIR` is deliberate: zskills locates state via
+/// `CLAUDE_HOME` but Claude Code reads `CLAUDE_CONFIG_DIR`, so if zskills ever stops
+/// propagating it, the stub writes to the wrong place (or nowhere) and the success
+/// assertions fail. Returns (stub path, log path).
+fn claude_stub(dir: &std::path::Path) -> (std::path::PathBuf, std::path::PathBuf) {
+    let stub = dir.join("claude-stub.sh");
+    let log = dir.join("claude-invocations.log");
+    fs::write(
+        &stub,
+        format!(
+            r#"#!/bin/sh
+echo "$@" >> {log}
+echo "CLAUDE_CONFIG_DIR=$CLAUDE_CONFIG_DIR" >> {log}
+[ -n "$CLAUDE_CONFIG_DIR" ] || exit 9
+command -v python3 >/dev/null || {{ echo "test stub requires python3" >&2; exit 97; }}
+python3 -c '
+import json, sys
+path, qualified = sys.argv[1], sys.argv[2]
+d = json.load(open(path))
+d.setdefault("plugins", {{}})[qualified] = [
+    {{"scope": "user", "installPath": "/tmp/x", "version": "1.0.0"}}
+]
+json.dump(d, open(path, "w"))
+' "$CLAUDE_CONFIG_DIR/plugins/installed_plugins.json" "$3"
+exit 0
+"#,
+            log = log.display()
+        ),
+    )
+    .unwrap();
+    make_executable(&stub);
+    (stub, log)
+}
+
+/// A stand-in that always fails, so we can assert we don't claim success.
+fn claude_stub_failing(dir: &std::path::Path) -> std::path::PathBuf {
+    let stub = dir.join("claude-fail.sh");
+    fs::write(
+        &stub,
+        "#!/bin/sh\necho 'marketplace not found' >&2\nexit 1\n",
+    )
+    .unwrap();
+    make_executable(&stub);
+    stub
+}
+
+/// A stand-in that exits 0 while doing nothing at all — the dangerous case, because
+/// a successful exit code is a *claim* that bytes landed, not proof of it.
+fn claude_stub_lying(dir: &std::path::Path) -> std::path::PathBuf {
+    let stub = dir.join("claude-lie.sh");
+    fs::write(&stub, "#!/bin/sh\nexit 0\n").unwrap();
+    make_executable(&stub);
+    stub
+}
+
+/// A stand-in that hangs, to exercise the subprocess timeout.
+fn claude_stub_hanging(dir: &std::path::Path) -> std::path::PathBuf {
+    let stub = dir.join("claude-hang.sh");
+    fs::write(&stub, "#!/bin/sh\nsleep 30\n").unwrap();
+    make_executable(&stub);
+    stub
+}
+
+fn make_executable(p: &std::path::Path) {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(p, fs::Permissions::from_mode(0o755)).unwrap();
+    }
+    #[cfg(not(unix))]
+    let _ = p;
+}
+
+// --- Fix 1: `marketplace add` always writes a string `lastUpdated` -----------
+
+#[test]
+fn marketplace_add_writes_last_updated_as_a_string() {
+    let upstream = tempfile::tempdir().unwrap();
+    let repo = write_marketplace_repo(upstream.path(), "vercel-plugin", "vercel");
+
+    let home = fake_home();
+    zskills(&home)
+        .args(["marketplace", "add", &file_url(&repo)])
+        .assert()
+        .success();
+
+    // The file must still be valid JSON, and the field must be a *string* —
+    // this is exactly what Claude Code's schema validates.
+    let known = read_known(&home);
+    let entry = &known["vercel-plugin"];
+    assert!(entry.is_object(), "marketplace not registered: {:#}", known);
+    let ts = entry
+        .get("lastUpdated")
+        .unwrap_or_else(|| panic!("lastUpdated missing from {:#}", entry));
+    assert!(ts.is_string(), "lastUpdated must be a string, got {:?}", ts);
+    let ts = ts.as_str().unwrap();
+    assert_eq!(ts.len(), 24, "expected toISOString() shape, got {:?}", ts);
+    assert!(
+        ts.ends_with('Z') && ts.contains('T'),
+        "not ISO-8601: {}",
+        ts
+    );
+    // Sibling fields survive.
+    assert_eq!(entry["autoUpdate"], json!(true));
+    assert!(entry["installLocation"].is_string());
+}
+
+// --- Fix 2: doctor reports a missing `lastUpdated`, and --fix stamps it ------
+
+#[test]
+fn doctor_flags_marketplace_missing_last_updated_instead_of_all_good() {
+    let home = fake_home();
+    // fake_home()'s `test-mp` entry has no lastUpdated — the exact broken state.
+    zskills(&home)
+        .arg("doctor")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("lastUpdated"))
+        .stdout(predicate::str::contains("test-mp"))
+        .stdout(predicate::str::contains("All good").not());
+}
+
+#[test]
+fn doctor_fix_stamps_last_updated_and_keeps_the_tap() {
+    let home = fake_home();
+    zskills(&home).args(["doctor", "--fix"]).assert().success();
+
+    let known = read_known(&home);
+    assert!(
+        known.get("test-mp").is_some(),
+        "--fix must not drop the marketplace: {:#}",
+        known
+    );
+    assert!(
+        known["test-mp"]["lastUpdated"].is_string(),
+        "--fix must write a string timestamp: {:#}",
+        known["test-mp"]
+    );
+    // Everything else about the tap is untouched.
+    assert_eq!(known["test-mp"]["autoUpdate"], json!(true));
+    assert_eq!(known["test-mp"]["source"]["repo"], json!("owner/test-mp"));
+}
+
+#[test]
+fn doctor_is_quiet_when_last_updated_is_present() {
+    let home = fake_home();
+    let known_path = home.path().join("plugins").join("known_marketplaces.json");
+    let mut known: serde_json::Value =
+        serde_json::from_slice(&fs::read(&known_path).unwrap()).unwrap();
+    known["test-mp"]["lastUpdated"] = json!("2026-08-20T00:00:00.000Z");
+    fs::write(&known_path, serde_json::to_string_pretty(&known).unwrap()).unwrap();
+
+    zskills(&home)
+        .arg("doctor")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("lastUpdated").not());
+}
+
+// --- Fix 3: `install` materializes bytes rather than only enabling ----------
+
+#[test]
+fn install_plugin_invokes_claude_to_fetch_the_bytes() {
+    let home = fake_home();
+    register_marketplace(
+        &home,
+        "vercel-plugin",
+        "vercel",
+        Some("2026-08-20T00:00:00.000Z"),
+    );
+    let stub_dir = tempfile::tempdir().unwrap();
+    let (stub, log) = claude_stub(stub_dir.path());
+
+    zskills(&home)
+        .env_remove("ZSKILLS_NO_CLAUDE_CLI")
+        .env("ZSKILLS_CLAUDE_BIN", &stub)
+        .args(["install", "vercel@vercel-plugin"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("fetched vercel@vercel-plugin"));
+
+    // The enable is recorded...
+    let settings = read_settings(&home);
+    assert_eq!(
+        settings["enabledPlugins"]["vercel@vercel-plugin"],
+        json!(true)
+    );
+    // ...and the fetch was actually delegated, fully qualified and user-scoped.
+    let invocations = fs::read_to_string(&log).unwrap();
+    assert!(
+        invocations.contains("plugin install vercel@vercel-plugin -s user"),
+        "expected a qualified user-scope install, got: {:?}",
+        invocations
+    );
+}
+
+#[test]
+fn install_plugin_reports_pending_when_claude_cli_is_missing() {
+    let home = fake_home();
+    register_marketplace(
+        &home,
+        "vercel-plugin",
+        "vercel",
+        Some("2026-08-20T00:00:00.000Z"),
+    );
+
+    // ZSKILLS_NO_CLAUDE_CLI=1 is already set by the helper.
+    zskills(&home)
+        .args(["install", "vercel@vercel-plugin"])
+        .assert()
+        // The plugin genuinely is not installed, so the exit code says so too.
+        .failure()
+        // Honest: it says what did *not* happen instead of claiming success.
+        .stdout(predicate::str::contains("enabled but not installed"))
+        .stdout(predicate::str::contains("`claude` CLI was not found"))
+        .stdout(predicate::str::contains("Restart Claude Code").not());
+
+    // The intent is still recorded, so a later `doctor --fix` can finish the job.
+    let settings = read_settings(&home);
+    assert_eq!(
+        settings["enabledPlugins"]["vercel@vercel-plugin"],
+        json!(true)
+    );
+}
+
+#[test]
+fn install_plugin_does_not_claim_success_when_the_fetch_fails() {
+    let home = fake_home();
+    register_marketplace(
+        &home,
+        "vercel-plugin",
+        "vercel",
+        Some("2026-08-20T00:00:00.000Z"),
+    );
+    let stub_dir = tempfile::tempdir().unwrap();
+    let stub = claude_stub_failing(stub_dir.path());
+
+    zskills(&home)
+        .env_remove("ZSKILLS_NO_CLAUDE_CLI")
+        .env("ZSKILLS_CLAUDE_BIN", &stub)
+        .args(["install", "vercel@vercel-plugin"])
+        .assert()
+        .failure()
+        .stdout(predicate::str::contains("enabled but not installed"))
+        .stdout(predicate::str::contains("fetched vercel@vercel-plugin").not());
+}
+
+// --- Fix 4: doctor --fix must not delete an enable it can satisfy -----------
+
+#[test]
+fn doctor_fix_installs_a_real_plugin_instead_of_removing_the_enable() {
+    let home = fake_home();
+    register_marketplace(
+        &home,
+        "vercel-plugin",
+        "vercel",
+        Some("2026-08-20T00:00:00.000Z"),
+    );
+
+    // The regression state: enabled, present in a registered marketplace, no bytes.
+    let settings_path = home.path().join("settings.json");
+    let mut s: serde_json::Value =
+        serde_json::from_slice(&fs::read(&settings_path).unwrap()).unwrap();
+    s["enabledPlugins"]["vercel@vercel-plugin"] = json!(true);
+    fs::write(&settings_path, serde_json::to_string_pretty(&s).unwrap()).unwrap();
+
+    zskills(&home)
+        .arg("doctor")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("enabled but not installed"))
+        .stdout(predicate::str::contains("vercel@vercel-plugin"));
+
+    let stub_dir = tempfile::tempdir().unwrap();
+    let (stub, log) = claude_stub(stub_dir.path());
+    zskills(&home)
+        .env_remove("ZSKILLS_NO_CLAUDE_CLI")
+        .env("ZSKILLS_CLAUDE_BIN", &stub)
+        .args(["doctor", "--fix"])
+        .assert()
+        .success();
+
+    // THE regression assertion: the enable survives.
+    let settings = read_settings(&home);
+    assert_eq!(
+        settings["enabledPlugins"]["vercel@vercel-plugin"],
+        json!(true),
+        "doctor --fix deleted an enable it should have satisfied: {:#}",
+        settings["enabledPlugins"]
+    );
+    assert!(
+        fs::read_to_string(&log)
+            .unwrap()
+            .contains("plugin install vercel@vercel-plugin -s user"),
+        "doctor --fix should have fetched the bytes"
+    );
+}
+
+#[test]
+fn doctor_fix_still_drops_an_enable_no_marketplace_offers() {
+    let home = fake_home();
+    register_marketplace(
+        &home,
+        "vercel-plugin",
+        "vercel",
+        Some("2026-08-20T00:00:00.000Z"),
+    );
+
+    let settings_path = home.path().join("settings.json");
+    let mut s: serde_json::Value =
+        serde_json::from_slice(&fs::read(&settings_path).unwrap()).unwrap();
+    s["enabledPlugins"]["ghost@vercel-plugin"] = json!(true);
+    // A real, offered plugin sitting in the same broken state, so the assertion
+    // below discriminates: it too is enabled-but-not-installed, and the only thing
+    // separating it from `ghost` is that the manifest lists it.
+    s["enabledPlugins"]["vercel@vercel-plugin"] = json!(true);
+    fs::write(&settings_path, serde_json::to_string_pretty(&s).unwrap()).unwrap();
+
+    zskills(&home)
+        .arg("doctor")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains(
+            "offered by no registered marketplace",
+        ))
+        .stdout(predicate::str::contains("ghost@vercel-plugin"));
+
+    zskills(&home).args(["doctor", "--fix"]).assert().success();
+
+    let settings = read_settings(&home);
+    assert!(
+        settings["enabledPlugins"]
+            .get("ghost@vercel-plugin")
+            .is_none(),
+        "a dangling enable should still be cleaned up"
+    );
+    // The plugin the marketplace *does* offer survives the cleanup.
+    assert_eq!(
+        settings["enabledPlugins"]["vercel@vercel-plugin"],
+        json!(true)
+    );
+}
+
+#[test]
+fn doctor_fix_reports_partial_repair_honestly() {
+    let home = fake_home();
+    register_marketplace(
+        &home,
+        "vercel-plugin",
+        "vercel",
+        Some("2026-08-20T00:00:00.000Z"),
+    );
+
+    let settings_path = home.path().join("settings.json");
+    let mut s: serde_json::Value =
+        serde_json::from_slice(&fs::read(&settings_path).unwrap()).unwrap();
+    s["enabledPlugins"]["vercel@vercel-plugin"] = json!(true);
+    fs::write(&settings_path, serde_json::to_string_pretty(&s).unwrap()).unwrap();
+
+    // No `claude` available, so the fetch cannot happen. `--fix` must not print
+    // "Fixed N issue(s)" for work it did not do.
+    zskills(&home)
+        .args(["doctor", "--fix"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("still open"));
+
+    // And the enable is still there for the next attempt.
+    let settings = read_settings(&home);
+    assert_eq!(
+        settings["enabledPlugins"]["vercel@vercel-plugin"],
+        json!(true)
+    );
+}
+
+#[test]
+fn doctor_fix_leaves_an_unverifiable_enable_alone() {
+    // A registered marketplace whose clone was never fetched (or was deleted):
+    // its manifest is unreadable, so we cannot tell whether `mystery` is real.
+    // Deleting the user's enable on the strength of a failed file read is exactly
+    // the destructive-on-ignorance behaviour this check exists to prevent.
+    let home = fake_home();
+    let settings_path = home.path().join("settings.json");
+    let mut s: serde_json::Value =
+        serde_json::from_slice(&fs::read(&settings_path).unwrap()).unwrap();
+    s["enabledPlugins"]["mystery@test-mp"] = json!(true);
+    fs::write(&settings_path, serde_json::to_string_pretty(&s).unwrap()).unwrap();
+
+    zskills(&home)
+        .arg("doctor")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("unverifiable"))
+        .stdout(predicate::str::contains("mystery@test-mp"));
+
+    zskills(&home).args(["doctor", "--fix"]).assert().success();
+
+    let settings = read_settings(&home);
+    assert_eq!(
+        settings["enabledPlugins"]["mystery@test-mp"],
+        json!(true),
+        "--fix must not revoke an enable it could not verify: {:#}",
+        settings["enabledPlugins"]
+    );
+}
+
+#[test]
+fn install_does_not_trust_a_zero_exit_without_bytes() {
+    // The dangerous case: `claude` exits 0 but nothing lands in the inventory.
+    // Treating exit 0 as proof would recreate "enabled but not installed" one layer
+    // down — and report it as success.
+    let home = fake_home();
+    register_marketplace(
+        &home,
+        "vercel-plugin",
+        "vercel",
+        Some("2026-08-20T00:00:00.000Z"),
+    );
+    let stub_dir = tempfile::tempdir().unwrap();
+    let stub = claude_stub_lying(stub_dir.path());
+
+    zskills(&home)
+        .env_remove("ZSKILLS_NO_CLAUDE_CLI")
+        .env("ZSKILLS_CLAUDE_BIN", &stub)
+        .args(["install", "vercel@vercel-plugin"])
+        .assert()
+        .stdout(predicate::str::contains("fetched vercel@vercel-plugin").not())
+        .stdout(predicate::str::contains("installed and ready").not())
+        .stdout(predicate::str::contains("enabled but not installed"))
+        .stderr(predicate::str::contains("no entry appeared"));
+}
+
+#[test]
+fn install_kills_a_hanging_claude_instead_of_waiting_forever() {
+    let home = fake_home();
+    register_marketplace(
+        &home,
+        "vercel-plugin",
+        "vercel",
+        Some("2026-08-20T00:00:00.000Z"),
+    );
+    let stub_dir = tempfile::tempdir().unwrap();
+    let stub = claude_stub_hanging(stub_dir.path());
+
+    let started = std::time::Instant::now();
+    zskills(&home)
+        .env_remove("ZSKILLS_NO_CLAUDE_CLI")
+        .env("ZSKILLS_CLAUDE_BIN", &stub)
+        .env("ZSKILLS_CLAUDE_TIMEOUT_SECS", "1")
+        .args(["install", "vercel@vercel-plugin"])
+        .assert()
+        .stderr(predicate::str::contains("timed out"));
+    assert!(
+        started.elapsed() < std::time::Duration::from_secs(20),
+        "the hanging child should have been killed, not waited out"
+    );
+}
+
+#[test]
+fn install_rejects_a_plugin_no_marketplace_offers_instead_of_writing_a_bogus_enable() {
+    // Previously: `install bogus@no-such-mp` printed `+ bogus@no-such-mp`, persisted
+    // it, and exited 0 — then the next `doctor --fix` deleted it. zskills damaged the
+    // file and then repaired its own damage.
+    let home = fake_home();
+    register_marketplace(
+        &home,
+        "vercel-plugin",
+        "vercel",
+        Some("2026-08-20T00:00:00.000Z"),
+    );
+
+    zskills(&home)
+        .args(["install", "bogus@no-such-mp"])
+        .assert()
+        .failure()
+        .stdout(predicate::str::contains("+ bogus@no-such-mp").not());
+
+    let settings = read_settings(&home);
+    assert!(
+        settings["enabledPlugins"].get("bogus@no-such-mp").is_none(),
+        "a spec no marketplace offers must not be written: {:#}",
+        settings["enabledPlugins"]
+    );
+}
+
+#[test]
+fn install_exits_non_zero_when_the_fetch_fails() {
+    let home = fake_home();
+    register_marketplace(
+        &home,
+        "vercel-plugin",
+        "vercel",
+        Some("2026-08-20T00:00:00.000Z"),
+    );
+    let stub_dir = tempfile::tempdir().unwrap();
+    let stub = claude_stub_failing(stub_dir.path());
+
+    // A CLI that prints an error and exits 0 is unreadable to `&&`, `set -e`, and CI.
+    zskills(&home)
+        .env_remove("ZSKILLS_NO_CLAUDE_CLI")
+        .env("ZSKILLS_CLAUDE_BIN", &stub)
+        .args(["install", "vercel@vercel-plugin"])
+        .assert()
+        .failure();
+}
+
+#[test]
+fn doctor_fix_converges_and_does_not_count_unfixable_findings_as_failures() {
+    // `--fix` used to compare repairs against *every* finding, including ones it has
+    // no code to fix, so a single deprecated MCP server made it report failure and
+    // invite a re-run that changed nothing, forever.
+    let home = fake_home();
+    zskills(&home).args(["doctor", "--fix"]).assert().success();
+    // Second run: the fixable issue (test-mp's missing lastUpdated) is gone.
+    zskills(&home)
+        .args(["doctor", "--fix"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("still open").not());
 }

@@ -1,4 +1,5 @@
 mod agent_skill;
+mod claude_cli;
 mod cli;
 mod commands;
 mod error;
@@ -15,6 +16,7 @@ mod repo_scanner;
 mod settings;
 #[cfg(feature = "skills-sh")]
 mod skills_sh;
+mod timestamp;
 
 use clap::Parser;
 

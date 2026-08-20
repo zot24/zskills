@@ -1,8 +1,10 @@
 //! `install <spec>...` — three accepted spec shapes:
 //!
 //! 1. `<name>` or `<name>@<marketplace>` — plugin path. Resolves against registered
-//!    marketplace caches, flips `enabledPlugins` in settings.json. Claude Code fetches
-//!    bytes on next launch.
+//!    marketplace caches, flips `enabledPlugins` in settings.json, then fetches the bytes
+//!    via `claude plugin install -s user` so the plugin is genuinely installed rather than
+//!    merely enabled. If the `claude` CLI is absent the plugin is reported as pending, not
+//!    as installed.
 //! 2. `<owner>/<repo>` or `git@…` / `https://…/<repo>.git` URL — **repo path** (v0.8+).
 //!    Clones the repo, surveys it via `repo_scanner`, and installs Agent Skills found
 //!    under `skills/<name>/SKILL.md`. Marketplaces are detected and redirected; MCPs
@@ -33,16 +35,21 @@ pub fn run(specs: Vec<String>, interactive: bool, all: bool, skill: Option<Strin
         anyhow::bail!("--skill only applies to repo installs (owner/repo or git URL)");
     }
 
+    let mut failures = 0usize;
     for spec in &repo_specs {
         if let Err(e) = install_from_repo(spec, interactive, all, skill.as_deref()) {
             eprintln!("{} {}: {}", "✗".red(), spec, e);
+            failures += 1;
         }
     }
 
     if !plugin_specs.is_empty() {
-        install_plugin_specs(plugin_specs)?;
+        failures += install_plugin_specs(plugin_specs)?;
     }
 
+    // Printing an error and exiting 0 makes every failure invisible to `set -e`,
+    // `&&`, and CI. The exit code is the one part of "honest" that machines read.
+    anyhow::ensure!(failures == 0, "{} install(s) failed", failures);
     Ok(())
 }
 
@@ -66,7 +73,12 @@ fn install_from_repo(spec: &str, interactive: bool, all: bool, skill: Option<&st
     let cache = crate::agent_skill::ensure_cache(spec)?;
     let survey = crate::repo_scanner::survey(&cache)?;
 
-    if survey.marketplace {
+    // A repo can be *both* a plugin marketplace and a collection of Agent Skills.
+    // Redirecting to the marketplace is the right default for a bare
+    // `zskills install owner/repo`, but `--skill NAME` / `-i` are explicit sparse
+    // Agent Skill requests: the user already said what they want, so honour it.
+    let sparse_intent = skill.is_some() || interactive;
+    if survey.marketplace && !sparse_intent {
         println!(
             "{}",
             "This repo is a plugin marketplace. To register and install plugins from it:".yellow()
@@ -76,7 +88,25 @@ fn install_from_repo(spec: &str, interactive: bool, all: bool, skill: Option<&st
             "  zskills install <plugin>@<marketplace>   {}",
             "(or `zskills install -i` to browse)".dimmed()
         );
+        if !survey.agent_skills.is_empty() {
+            println!(
+                "  {}",
+                format!(
+                    "it also carries {} Agent Skill(s); `--skill <name>` installs one without the plugin bundle",
+                    survey.agent_skills.len()
+                )
+                .dimmed()
+            );
+        }
         return Ok(());
+    }
+    if survey.marketplace && sparse_intent {
+        eprintln!(
+            "{} {}",
+            "·".dimmed(),
+            "this repo is also a plugin marketplace; installing the selected Agent Skill(s) only"
+                .dimmed()
+        );
     }
 
     if survey.plugin {
@@ -205,34 +235,35 @@ fn print_large_collection_summary(
     );
 }
 
-fn install_plugin_specs(specs: Vec<String>) -> Result<()> {
+fn install_plugin_specs(specs: Vec<String>) -> Result<usize> {
     let known = crate::marketplace::load_known(&crate::paths::known_marketplaces_json()?)?;
     if known.is_empty() {
         println!(
             "{}",
             "No marketplaces registered. Run `zskills marketplace add-recommended` first.".yellow()
         );
-        return Ok(());
+        return Ok(specs.len());
     }
 
     let settings_path = crate::paths::settings_json()?;
     let mut settings = crate::settings::load(&settings_path)?;
-    let mut settings_dirty = false;
-    let mut count = 0;
+    let mut resolved: Vec<String> = Vec::new();
+    let mut skill_count = 0;
+    let mut failures = 0usize;
 
     for spec in &specs {
         match crate::marketplace::resolve_spec(spec, &known) {
             Ok(qualified) => {
                 let ep = crate::settings::enabled_plugins_mut(&mut settings);
                 ep.insert(qualified.clone(), Value::Bool(true));
-                settings_dirty = true;
                 println!("{} {}", "+".green(), qualified);
-                count += 1;
+                resolved.push(qualified);
             }
             Err(plugin_err) => match try_install_from_remote(spec, &known) {
-                Ok(true) => count += 1,
+                Ok(true) => skill_count += 1,
                 Ok(false) => {
                     eprintln!("{} {}: {}", "✗".red(), spec, plugin_err);
+                    failures += 1;
                 }
                 Err(remote_err) => {
                     eprintln!(
@@ -242,26 +273,92 @@ fn install_plugin_specs(specs: Vec<String>) -> Result<()> {
                         plugin_err,
                         remote_err
                     );
+                    failures += 1;
                 }
             },
         }
     }
 
-    if settings_dirty {
+    if !resolved.is_empty() {
+        // Record intent first, so it survives even if the fetch below fails.
         crate::settings::save(&settings_path, &settings)?;
         println!(
-            "\nWrote {} plugin entry/entries to {}.\nRestart Claude Code (or run `/plugin marketplace update` and `/plugin install ...`) to fetch the bytes.",
-            count,
+            "\nWrote {} plugin entry/entries to {}.",
+            resolved.len(),
             settings_path.display()
         );
-    } else if count > 0 {
+        failures += resolved.len() - materialize_plugins(&resolved)?;
+    } else if skill_count > 0 {
         println!(
             "\nInstalled {} agent skill(s) into {}.",
-            count,
+            skill_count,
             crate::paths::user_skills_dir()?.display()
         );
     }
-    Ok(())
+    Ok(failures)
+}
+
+/// Fetch the bytes for plugins we just enabled, and report honestly which ones landed.
+///
+/// Enabling without installing is exactly the "enabled but not installed" state that
+/// `zskills doctor` flags — so `install` finishes the job rather than telling the user to
+/// restart Claude Code and hope. Where `claude` is unavailable we say so plainly instead
+/// of printing a success line for work that did not happen.
+pub(crate) fn materialize_plugins(qualified: &[String]) -> Result<usize> {
+    let mut installed = 0;
+    let mut pending: Vec<String> = Vec::new();
+    let mut no_cli = false;
+
+    for q in qualified {
+        if crate::claude_cli::is_materialized(q).unwrap_or(false) {
+            installed += 1;
+            continue;
+        }
+        match crate::claude_cli::install_plugin(q, "user") {
+            crate::claude_cli::Outcome::Installed => {
+                println!("  {} fetched {}", "✓".green(), q);
+                installed += 1;
+            }
+            crate::claude_cli::Outcome::NoClaudeCli => {
+                no_cli = true;
+                pending.push(q.clone());
+            }
+            crate::claude_cli::Outcome::Failed(msg) => {
+                eprintln!("  {} could not fetch {}: {}", "✗".red(), q, msg);
+                pending.push(q.clone());
+            }
+        }
+    }
+
+    if installed > 0 {
+        println!(
+            "{} {} of {} installed and ready.",
+            "✓".green(),
+            installed,
+            qualified.len()
+        );
+    }
+    if !pending.is_empty() {
+        println!(
+            "{} {} enabled but not installed: {}",
+            "!".yellow(),
+            pending.len(),
+            pending.join(", ")
+        );
+        if no_cli {
+            println!(
+                "  {}",
+                "the `claude` CLI was not found on $PATH, so the bytes could not be fetched"
+                    .dimmed()
+            );
+        }
+        println!(
+            "  {}",
+            "run `zskills doctor --fix` once `claude` is available, or `/plugin install` inside Claude Code"
+                .dimmed()
+        );
+    }
+    Ok(installed)
 }
 
 fn run_interactive_browse_marketplaces() -> Result<()> {
