@@ -2,6 +2,19 @@
 
 All notable changes to this project are documented here. The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html). Releases from this point forward are managed by [release-please](https://github.com/googleapis/release-please) based on [Conventional Commits](https://www.conventionalcommits.org/).
 
+## [0.9.0](https://github.com/zot24/zskills/compare/v0.8.0...v0.9.0) (2026-08-22)
+
+
+### Features
+
+* pin a marketplace so update and upgrade cannot float it ([#28](https://github.com/zot24/zskills/issues/28)) ([b604aca](https://github.com/zot24/zskills/commit/b604aca4546d93206da24035b2619cbe3dadc037))
+
+
+### Bug Fixes
+
+* discover Agent Skills under .agents/skills/, not only skills/ ([#31](https://github.com/zot24/zskills/issues/31)) ([37334fb](https://github.com/zot24/zskills/commit/37334fb3921678ed2f222a51803350170732bfa9))
+* stop reporting owned skills as unmanaged, and stop faking inventory ([#30](https://github.com/zot24/zskills/issues/30)) ([bfdf5ca](https://github.com/zot24/zskills/commit/bfdf5cae05b599698d9a684ca4dfa5e9bd1c6fa1))
+
 ## [0.8.0](https://github.com/zot24/zskills/compare/v0.7.0...v0.8.0) (2026-08-20)
 
 
