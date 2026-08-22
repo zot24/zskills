@@ -292,4 +292,80 @@ mod tests {
         assert!(s.marketplace);
         assert!(!s.plugin); // marketplace shadows the plugin flag
     }
+    #[test]
+    fn survey_finds_skills_under_dot_agents_skills() {
+        // The cross-client layout from the Agent Skills spec, and what
+        // `warpdotdev/common-skills` uses. Before this was walked, the survey came back
+        // empty and `--skill <name>` reported "not found (available: )".
+        let tmp = tempfile::tempdir().unwrap();
+        let d = tmp
+            .path()
+            .join(".agents")
+            .join("skills")
+            .join("skill-doctor");
+        fs::create_dir_all(&d).unwrap();
+        fs::write(d.join("SKILL.md"), skill_md(Some("Grade your skills"))).unwrap();
+
+        let s = survey(tmp.path()).unwrap();
+        assert_eq!(s.agent_skills.len(), 1);
+        assert_eq!(s.agent_skills[0].name, "skill-doctor");
+        assert_eq!(
+            s.agent_skills[0].description.as_deref(),
+            Some("Grade your skills")
+        );
+    }
+
+    #[test]
+    fn survey_finds_both_roots_and_prefers_dot_agents_on_a_name_clash() {
+        let tmp = tempfile::tempdir().unwrap();
+        for (root, name) in [
+            (".agents/skills", "shared"),
+            (".agents/skills", "only-agents"),
+            ("skills", "shared"),
+            ("skills", "only-skills"),
+        ] {
+            let d = tmp.path().join(root).join(name);
+            fs::create_dir_all(&d).unwrap();
+            fs::write(d.join("SKILL.md"), skill_md(Some(root))).unwrap();
+        }
+
+        let s = survey(tmp.path()).unwrap();
+        let names: Vec<&str> = s.agent_skills.iter().map(|k| k.name.as_str()).collect();
+        assert_eq!(names, vec!["only-agents", "only-skills", "shared"]);
+        // One `shared`, and it is the .agents/skills copy.
+        let shared = s.agent_skills.iter().find(|k| k.name == "shared").unwrap();
+        assert_eq!(shared.description.as_deref(), Some(".agents/skills"));
+    }
+
+    #[test]
+    fn survey_finds_nested_categories_under_dot_agents_skills() {
+        let tmp = tempfile::tempdir().unwrap();
+        for (cat, name) in [("web", "alpha"), ("infra", "beta")] {
+            let d = tmp
+                .path()
+                .join(".agents")
+                .join("skills")
+                .join(cat)
+                .join(name);
+            fs::create_dir_all(&d).unwrap();
+            fs::write(d.join("SKILL.md"), skill_md(None)).unwrap();
+        }
+        let s = survey(tmp.path()).unwrap();
+        let names: Vec<&str> = s.agent_skills.iter().map(|k| k.name.as_str()).collect();
+        assert_eq!(names, vec!["alpha", "beta"]);
+    }
+
+    #[test]
+    fn a_root_skill_md_is_ignored_when_dot_agents_skills_has_entries() {
+        // The root-SKILL.md fallback is for repos with no skill root at all.
+        let tmp = tempfile::tempdir().unwrap();
+        fs::write(tmp.path().join("SKILL.md"), skill_md(None)).unwrap();
+        let d = tmp.path().join(".agents").join("skills").join("real");
+        fs::create_dir_all(&d).unwrap();
+        fs::write(d.join("SKILL.md"), skill_md(None)).unwrap();
+
+        let s = survey(tmp.path()).unwrap();
+        let names: Vec<&str> = s.agent_skills.iter().map(|k| k.name.as_str()).collect();
+        assert_eq!(names, vec!["real"]);
+    }
 }

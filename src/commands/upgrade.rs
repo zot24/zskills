@@ -76,9 +76,49 @@ pub fn run(filter: Vec<String>) -> Result<()> {
             if let Some(src) = entry.source.as_deref() {
                 let label = entry.name.as_deref().unwrap_or(src);
                 print!("  {} {} ... ", "↻".cyan(), label);
-                match crate::agent_skill::install(src, entry.name.as_deref()) {
-                    Ok(_) => println!("{}", "ok".green()),
-                    Err(e) => println!("{} ({})", "fail".red(), e),
+
+                // A source-only entry means "keep what I already own from this source",
+                // not "adopt whatever it ships today". `install(src, None)` installs
+                // every skill the survey finds, with no cap and no prompt — so widening
+                // the survey (a new skill root, or upstream simply adding skills) would
+                // otherwise make an unattended `upgrade` install things nobody asked for.
+                // Refresh the names already in the inventory instead.
+                let owned: Vec<String> = match entry.name.as_deref() {
+                    Some(n) => vec![n.to_string()],
+                    None => {
+                        let inv = crate::agent_skill::load_inventory().unwrap_or_default();
+                        inv.agent_skills
+                            .iter()
+                            .filter(|(_, e)| e.source == src)
+                            .map(|(n, _)| n.clone())
+                            .collect()
+                    }
+                };
+
+                if owned.is_empty() {
+                    // Nothing owned from this source yet: `sync` is what adopts, and it
+                    // applies the size policy. Upgrading here would bypass it.
+                    println!(
+                        "{}",
+                        "nothing owned yet — run `zskills sync` to install".dimmed()
+                    );
+                    continue;
+                }
+
+                let mut failures = 0;
+                for name in &owned {
+                    if let Err(e) = crate::agent_skill::install(src, Some(name)) {
+                        eprintln!("\n  {} {}: {}", "✗".red(), name, e);
+                        failures += 1;
+                    }
+                }
+                if failures == 0 {
+                    println!("{}", format!("ok ({})", owned.len()).green());
+                } else {
+                    println!(
+                        "{}",
+                        format!("{} of {} failed", failures, owned.len()).red()
+                    );
                 }
                 continue;
             }

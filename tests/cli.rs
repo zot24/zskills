@@ -2607,3 +2607,148 @@ fn a_local_entry_for_a_skill_not_on_disk_is_not_tracked() {
         .success()
         .stdout(predicate::str::contains("missing on disk").not());
 }
+
+// ---------------------------------------------------------------------------
+// `.agents/skills/` layout.
+//
+// `zskills install warpdotdev/common-skills --skill skill-doctor` failed with
+// "skill 'skill-doctor' not found (available: )". The survey only walked
+// `<repo>/skills/`, and Warp uses the cross-client `<repo>/.agents/skills/`.
+// ---------------------------------------------------------------------------
+
+/// Write `<repo>/.agents/skills/<name>/SKILL.md`.
+fn write_agents_skill(repo: &std::path::Path, name: &str, description: &str) {
+    let dir = repo.join(".agents").join("skills").join(name);
+    fs::create_dir_all(&dir).unwrap();
+    fs::write(
+        dir.join("SKILL.md"),
+        format!(
+            "---\nname: {}\ndescription: {}\n---\n# {}\n",
+            name, description, name
+        ),
+    )
+    .unwrap();
+}
+
+#[test]
+fn install_skill_flag_selects_from_dot_agents_skills() {
+    let upstream = tempfile::tempdir().unwrap();
+    write_agents_skill(upstream.path(), "skill-doctor", "Grade your skills");
+    write_agents_skill(upstream.path(), "write-product-spec", "Other skill");
+    git_init_and_commit(upstream.path());
+
+    let home = fake_home();
+    zskills(&home)
+        .args([
+            "install",
+            &file_url(upstream.path()),
+            "--skill",
+            "skill-doctor",
+        ])
+        .assert()
+        .success()
+        // The `+` marker is coloured, so assert the name and prove the rest on disk.
+        .stdout(predicate::str::contains("skill-doctor"));
+
+    assert!(home.path().join("skills/skill-doctor/SKILL.md").exists());
+    assert!(
+        !home.path().join("skills/write-product-spec").exists(),
+        "--skill must install exactly one skill"
+    );
+}
+
+#[test]
+fn a_large_dot_agents_skills_tree_still_requires_skill_or_all() {
+    // A large collection under the new root. The size policy must still apply there:
+    // discovering more layouts must not start flooding. `warpdotdev/common-skills`
+    // ships 26 skills this way; 14 is enough to be over the auto-install threshold.
+    let upstream = tempfile::tempdir().unwrap();
+    for i in 0..14 {
+        write_agents_skill(upstream.path(), &format!("skill-{:02}", i), "d");
+    }
+    git_init_and_commit(upstream.path());
+
+    let home = fake_home();
+    zskills(&home)
+        .args(["install", &file_url(upstream.path())])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("14"))
+        .stdout(predicate::str::contains("--all"));
+
+    assert!(
+        !home.path().join("skills/skill-00").exists(),
+        "a bare install of a large collection must install nothing"
+    );
+}
+
+#[test]
+fn install_reports_available_names_from_dot_agents_skills_when_skill_is_unknown() {
+    // The original failure printed "(available: )" — an empty list is what made the
+    // bug look like a missing skill rather than a missing layout.
+    let upstream = tempfile::tempdir().unwrap();
+    write_agents_skill(upstream.path(), "skill-doctor", "d");
+    git_init_and_commit(upstream.path());
+
+    let home = fake_home();
+    let out = zskills(&home)
+        .args(["install", &file_url(upstream.path()), "--skill", "nope"])
+        .assert()
+        .failure()
+        .get_output()
+        .stderr
+        .clone();
+    let stderr = String::from_utf8_lossy(&out);
+    assert!(stderr.contains("'nope' not found"), "{}", stderr);
+    assert!(
+        stderr.contains("skill-doctor"),
+        "the available list must name what the repo really ships: {}",
+        stderr
+    );
+}
+
+#[test]
+fn upgrade_refreshes_only_skills_already_owned_from_a_source() {
+    // A source-only manifest entry means "keep what I own from this source", not
+    // "adopt whatever it ships today". Widening the survey — a new skill root, or
+    // upstream adding skills — must not make an unattended `upgrade` install things
+    // nobody asked for. This is the regression the .agents/skills walker introduced:
+    // a repo with 1 skill under skills/ and 3 under .agents/skills/ went from
+    // installing 1 to installing 4.
+    let upstream = tempfile::tempdir().unwrap();
+    let repo = upstream.path().join("multi");
+    write_skill(&repo, "owned", "already installed");
+    write_agents_skill(&repo, "brand-new", "should NOT be adopted by upgrade");
+    write_agents_skill(&repo, "also-new", "should NOT be adopted by upgrade");
+    git_init_and_commit(&repo);
+
+    let home = fake_home();
+    // Own exactly one skill from that source.
+    zskills(&home)
+        .args(["install", &file_url(&repo), "--skill", "owned"])
+        .assert()
+        .success();
+    assert!(home.path().join("skills/owned").exists());
+
+    let dir = home.path().join("config").join("zskills");
+    fs::create_dir_all(&dir).unwrap();
+    fs::write(
+        dir.join("skills.toml"),
+        format!("[[agent_skills]]\nsource = \"{}\"\n", file_url(&repo)),
+    )
+    .unwrap();
+
+    zskills(&home).arg("upgrade").assert().success();
+
+    assert!(
+        home.path().join("skills/owned").exists(),
+        "the owned skill must still be refreshed"
+    );
+    for unwanted in ["brand-new", "also-new"] {
+        assert!(
+            !home.path().join("skills").join(unwanted).exists(),
+            "upgrade must not adopt {} — it was never requested",
+            unwanted
+        );
+    }
+}
