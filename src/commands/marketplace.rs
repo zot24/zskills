@@ -184,8 +184,21 @@ fn remove(name: String) -> Result<()> {
 
 fn list(as_json: bool) -> Result<()> {
     let known = crate::marketplace::load_known(&crate::paths::known_marketplaces_json()?)?;
+    // `list` is read-only, so a manifest it cannot parse costs the user the pin
+    // column and nothing else. The mutating commands use `load_pins()?` instead:
+    // there, treating an unparseable manifest as "no pins" would float every pinned
+    // marketplace, which is the failure the pin exists to prevent.
+    let pins = crate::marketplace::load_pins().unwrap_or_default();
     if as_json {
-        println!("{}", serde_json::to_string_pretty(&known)?);
+        let mut out = known.clone();
+        // Surface the pin in the JSON view without writing it to
+        // known_marketplaces.json — that file belongs to Claude Code.
+        for (name, pin) in &pins {
+            if let Some(entry) = out.get_mut(name).and_then(|e| e.as_object_mut()) {
+                entry.insert("zskillsPin".into(), Value::String(pin.clone()));
+            }
+        }
+        println!("{}", serde_json::to_string_pretty(&out)?);
         return Ok(());
     }
     if known.is_empty() {
@@ -214,16 +227,12 @@ fn list(as_json: bool) -> Result<()> {
             .get("autoUpdate")
             .and_then(|v| v.as_bool())
             .unwrap_or(false);
-        println!(
-            "  {}  {} plugin(s){}",
-            name.bold(),
-            count,
-            if auto {
-                "  [autoUpdate]".dimmed().to_string()
-            } else {
-                String::new()
-            }
-        );
+        let pin_note = match pins.get(name) {
+            Some(pin) => format!("  [pinned {}]", pin).yellow().to_string(),
+            None if auto => "  [autoUpdate]".dimmed().to_string(),
+            None => String::new(),
+        };
+        println!("  {}  {} plugin(s){}", name.bold(), count, pin_note);
     }
     Ok(())
 }
@@ -235,6 +244,7 @@ fn update(name: Option<String>) -> Result<()> {
         Some(n) => vec![n],
         None => known.keys().cloned().collect(),
     };
+    let pins = crate::marketplace::load_pins()?;
     let mut dirty = false;
     for n in &targets {
         if known.get(n).is_some_and(is_remote_index) {
@@ -245,21 +255,20 @@ fn update(name: Option<String>) -> Result<()> {
             continue;
         }
         print!("Updating {} ... ", n);
-        let result = if crate::git::is_git_repo(&repo) {
-            crate::git::pull(&repo)
-        } else {
-            crate::marketplace::update_via_tarball(n, &repo)
-        };
-        match result {
-            Ok(()) => {
-                println!("{}", "ok".green());
-                // The tap really did move — record when, so the field means
-                // something instead of just satisfying the schema.
-                if crate::marketplace::stamp_last_updated(&mut known, n) {
+        match crate::marketplace::refresh(n, &repo, pins.get(n).map(String::as_str)) {
+            Ok(outcome) => {
+                println!("{}", crate::marketplace::refresh_label(&outcome).green());
+                // Only stamp when the clone actually moved. A pin that was already
+                // satisfied changed nothing, and `lastUpdated` should not claim it did.
+                let moved = !matches!(
+                    outcome,
+                    crate::marketplace::Refresh::Pinned { moved: false, .. }
+                );
+                if moved && crate::marketplace::stamp_last_updated(&mut known, n) {
                     dirty = true;
                 }
             }
-            Err(e) => println!("{} ({})", "fail".red(), e),
+            Err(e) => println!("{} ({:#})", "fail".red(), e),
         }
     }
     if dirty {

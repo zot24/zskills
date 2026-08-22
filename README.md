@@ -87,6 +87,7 @@ zskills migrate-skill <name>            # promote ONE skill across every project
 zskills migrate-all <dir>               # interactive: walk a tree, prompt per skill
 zskills search <query> [-i]             # -i picks a result and installs it
 zskills marketplace add|remove|list|update
+                                        # pin one in skills.toml so update/upgrade can't float it
 ```
 
 `<name>` accepts unqualified (`servarr`) when unambiguous, or `name@marketplace` (`servarr@zot24-skills`) to disambiguate.

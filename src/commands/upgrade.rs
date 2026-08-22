@@ -12,6 +12,7 @@ pub fn run(filter: Vec<String>) -> Result<()> {
 
     // ── Marketplaces ────────────────────────────────────────────────────
     let known = crate::marketplace::load_known(&crate::paths::known_marketplaces_json()?)?;
+    let pins = crate::marketplace::load_pins()?;
     if !known.is_empty() {
         println!("{}", "Marketplaces".bold());
         for name in known.keys() {
@@ -23,14 +24,9 @@ pub fn run(filter: Vec<String>) -> Result<()> {
                 continue;
             }
             print!("  {} {} ... ", "↻".cyan(), name);
-            let result = if crate::git::is_git_repo(&repo) {
-                crate::git::pull(&repo)
-            } else {
-                crate::marketplace::update_via_tarball(name, &repo)
-            };
-            match result {
-                Ok(()) => println!("{}", "ok".green()),
-                Err(e) => println!("{} ({})", "fail".red(), e),
+            match crate::marketplace::refresh(name, &repo, pins.get(name).map(String::as_str)) {
+                Ok(outcome) => println!("{}", crate::marketplace::refresh_label(&outcome).green()),
+                Err(e) => println!("{} ({:#})", "fail".red(), e),
             }
         }
     }

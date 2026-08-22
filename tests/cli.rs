@@ -17,6 +17,10 @@ fn zskills(home: &TempDir) -> Command {
     cmd.env("AGENTS_HOME", home.path());
     // Sandbox the clone cache too, so repo-install tests never touch ~/.cache.
     cmd.env("XDG_CACHE_HOME", home.path().join("cache"));
+    // Sandbox manifest discovery. `manifest::discover()` reads
+    // $XDG_CONFIG_HOME/zskills/skills.toml, so without this a test would read the
+    // developer's real manifest — and marketplace pins are declared there.
+    cmd.env("XDG_CONFIG_HOME", home.path().join("config"));
     // Set for readability of failure dumps. Note: zskills does not currently honour
     // NO_COLOR (owo-colors' override needs its `supports-colors` feature), so the
     // assertions below match the text *inside* the escapes rather than raw output.
@@ -617,6 +621,7 @@ fn zskills_nested(parent: &TempDir, claude_home: &std::path::Path) -> Command {
     cmd.env("AGENTS_HOME", parent.path().join(".agents"));
     cmd.env("NO_COLOR", "1");
     cmd.env("ZSKILLS_NO_CLAUDE_CLI", "1");
+    cmd.env("XDG_CONFIG_HOME", parent.path().join("config"));
     // Make sure the managed-settings probe doesn't pick up a real system file in CI.
     cmd.env(
         "ZSKILLS_MANAGED_SETTINGS",
@@ -2037,4 +2042,366 @@ fn doctor_fix_converges_and_does_not_count_unfixable_findings_as_failures() {
         .assert()
         .success()
         .stdout(predicate::str::contains("still open").not());
+}
+
+// ---------------------------------------------------------------------------
+// Marketplace pins.
+//
+// Background (2026-08-21): `zskills update` and `zskills upgrade` `git pull` every
+// registered marketplace. That floated a marketplace off the tag it was deliberately
+// held at — v0.23.0 moved to v0.24.1 — and the next `upgrade` would have done it
+// again. A pin in skills.toml holds the clone at a tag, branch, or sha, and refuses
+// to fall back to a pull when the pin cannot be honoured.
+// ---------------------------------------------------------------------------
+
+/// An upstream marketplace with two commits. `v1` tags the first. `main` points at
+/// the second. Returns (repo path, sha_v1, sha_head).
+fn marketplace_upstream(
+    parent: &std::path::Path,
+    name: &str,
+) -> (std::path::PathBuf, String, String) {
+    let repo = parent.join(name);
+    fs::create_dir_all(repo.join(".claude-plugin")).unwrap();
+    let manifest = |plugins: &str| {
+        format!(
+            r#"{{"name":"{}","owner":{{"name":"T"}},"plugins":[{}]}}"#,
+            name, plugins
+        )
+    };
+    fs::write(
+        repo.join(".claude-plugin").join("marketplace.json"),
+        manifest(r#"{"name":"alpha","description":"pinned release"}"#),
+    )
+    .unwrap();
+    git_init_and_commit(&repo);
+    StdCommand::new("git")
+        .arg("-C")
+        .arg(&repo)
+        .args(["tag", "v1"])
+        .status()
+        .unwrap();
+    let sha_v1 = rev_parse(&repo, "HEAD");
+
+    // A second commit, so "floated" and "pinned" are distinguishable.
+    fs::write(
+        repo.join(".claude-plugin").join("marketplace.json"),
+        manifest(
+            r#"{"name":"alpha","description":"newer"},{"name":"beta","description":"added later"}"#,
+        ),
+    )
+    .unwrap();
+    StdCommand::new("git")
+        .arg("-C")
+        .arg(&repo)
+        .args(["add", "-A"])
+        .status()
+        .unwrap();
+    StdCommand::new("git")
+        .arg("-C")
+        .arg(&repo)
+        .args(["commit", "--quiet", "-m", "second"])
+        .status()
+        .unwrap();
+    let sha_head = rev_parse(&repo, "HEAD");
+    (repo, sha_v1, sha_head)
+}
+
+fn rev_parse(repo: &std::path::Path, r: &str) -> String {
+    let out = StdCommand::new("git")
+        .arg("-C")
+        .arg(repo)
+        .args(["rev-parse", r])
+        .output()
+        .unwrap();
+    String::from_utf8(out.stdout).unwrap().trim().to_string()
+}
+
+/// Clone `upstream` into CLAUDE_HOME as a registered marketplace, checked out at `at`.
+fn register_clone(home: &TempDir, name: &str, upstream: &std::path::Path, at: &str) {
+    let dest = home.path().join("plugins").join("marketplaces").join(name);
+    fs::create_dir_all(dest.parent().unwrap()).unwrap();
+    StdCommand::new("git")
+        .args(["clone", "--quiet"])
+        .arg(file_url(upstream))
+        .arg(&dest)
+        .status()
+        .unwrap();
+    // Stay on the tracking branch and move it, rather than detaching. A real
+    // marketplace clone is on `main` with an upstream, which is what makes an
+    // unpinned `git pull` fast-forward — and what let the reported drift happen.
+    StdCommand::new("git")
+        .arg("-C")
+        .arg(&dest)
+        .args(["checkout", "--quiet", "main"])
+        .status()
+        .unwrap();
+    StdCommand::new("git")
+        .arg("-C")
+        .arg(&dest)
+        .args(["reset", "--hard", "--quiet", at])
+        .status()
+        .unwrap();
+
+    let known_path = home.path().join("plugins").join("known_marketplaces.json");
+    let mut known: serde_json::Value =
+        serde_json::from_slice(&fs::read(&known_path).unwrap()).unwrap();
+    known[name] = json!({
+        "source": { "source": "git", "url": file_url(upstream) },
+        "installLocation": dest.to_string_lossy(),
+        "autoUpdate": true,
+        "lastUpdated": "2026-08-21T00:00:00.000Z"
+    });
+    fs::write(&known_path, serde_json::to_string_pretty(&known).unwrap()).unwrap();
+}
+
+/// Write a skills.toml into the sandboxed XDG_CONFIG_HOME.
+fn write_manifest(home: &TempDir, body: &str) {
+    let dir = home.path().join("config").join("zskills");
+    fs::create_dir_all(&dir).unwrap();
+    fs::write(dir.join("skills.toml"), body).unwrap();
+}
+
+fn marketplace_head(home: &TempDir, name: &str) -> String {
+    rev_parse(
+        &home.path().join("plugins").join("marketplaces").join(name),
+        "HEAD",
+    )
+}
+
+#[test]
+fn update_holds_a_pinned_marketplace_and_floats_an_unpinned_one() {
+    let up = tempfile::tempdir().unwrap();
+    let (pinned_repo, pinned_v1, pinned_head) = marketplace_upstream(up.path(), "pinned-mp");
+    let (free_repo, free_v1, free_head) = marketplace_upstream(up.path(), "free-mp");
+
+    let home = fake_home();
+    register_clone(&home, "pinned-mp", &pinned_repo, &pinned_v1);
+    register_clone(&home, "free-mp", &free_repo, &free_v1);
+    write_manifest(
+        &home,
+        "[[marketplaces]]\nname = \"pinned-mp\"\npin = \"v1\"\n",
+    );
+
+    zskills(&home)
+        .args(["update"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("pinned @"));
+
+    assert_eq!(
+        marketplace_head(&home, "pinned-mp"),
+        pinned_v1,
+        "a pinned marketplace must not float off its pin"
+    );
+    assert_ne!(marketplace_head(&home, "pinned-mp"), pinned_head);
+    assert_eq!(
+        marketplace_head(&home, "free-mp"),
+        free_head,
+        "an unpinned marketplace must still update"
+    );
+    assert_ne!(marketplace_head(&home, "free-mp"), free_v1);
+}
+
+#[test]
+fn upgrade_holds_a_pinned_marketplace() {
+    let up = tempfile::tempdir().unwrap();
+    let (repo, v1, head) = marketplace_upstream(up.path(), "pinned-mp");
+    let home = fake_home();
+    register_clone(&home, "pinned-mp", &repo, &v1);
+    write_manifest(
+        &home,
+        "[[marketplaces]]\nname = \"pinned-mp\"\npin = \"v1\"\n",
+    );
+
+    zskills(&home).args(["upgrade"]).assert().success();
+
+    assert_eq!(marketplace_head(&home, "pinned-mp"), v1);
+    assert_ne!(marketplace_head(&home, "pinned-mp"), head);
+}
+
+#[test]
+fn marketplace_update_restores_a_pinned_clone_that_drifted() {
+    // The reported failure: something already floated the clone forward. The next
+    // update must put it back, not leave it and not push it further.
+    let up = tempfile::tempdir().unwrap();
+    let (repo, v1, head) = marketplace_upstream(up.path(), "pinned-mp");
+    let home = fake_home();
+    register_clone(&home, "pinned-mp", &repo, &head); // already drifted
+    write_manifest(
+        &home,
+        "[[marketplaces]]\nname = \"pinned-mp\"\npin = \"v1\"\n",
+    );
+    assert_eq!(marketplace_head(&home, "pinned-mp"), head);
+
+    zskills(&home)
+        .args(["marketplace", "update"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("restored"));
+
+    assert_eq!(
+        marketplace_head(&home, "pinned-mp"),
+        v1,
+        "update must pull a drifted pinned clone back to its pin"
+    );
+}
+
+#[test]
+fn a_pin_accepts_a_full_sha() {
+    let up = tempfile::tempdir().unwrap();
+    let (repo, v1, head) = marketplace_upstream(up.path(), "pinned-mp");
+    let home = fake_home();
+    register_clone(&home, "pinned-mp", &repo, &head);
+    write_manifest(
+        &home,
+        &format!("[[marketplaces]]\nname = \"pinned-mp\"\npin = \"{}\"\n", v1),
+    );
+
+    zskills(&home).args(["update"]).assert().success();
+    assert_eq!(marketplace_head(&home, "pinned-mp"), v1);
+}
+
+#[test]
+fn an_unresolvable_pin_fails_and_never_falls_back_to_a_pull() {
+    // The dangerous failure mode: a typo in the pin silently reverting to `git pull`
+    // would float the marketplace, which is what the pin exists to prevent.
+    let up = tempfile::tempdir().unwrap();
+    let (repo, v1, head) = marketplace_upstream(up.path(), "pinned-mp");
+    let home = fake_home();
+    register_clone(&home, "pinned-mp", &repo, &v1);
+    write_manifest(
+        &home,
+        "[[marketplaces]]\nname = \"pinned-mp\"\npin = \"v9-does-not-exist\"\n",
+    );
+
+    zskills(&home)
+        .args(["update"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("does not exist"));
+
+    assert_eq!(
+        marketplace_head(&home, "pinned-mp"),
+        v1,
+        "a bad pin must leave the clone alone, not float it"
+    );
+    assert_ne!(marketplace_head(&home, "pinned-mp"), head);
+}
+
+#[test]
+fn a_blank_pin_is_treated_as_unpinned() {
+    let up = tempfile::tempdir().unwrap();
+    let (repo, v1, head) = marketplace_upstream(up.path(), "free-mp");
+    let home = fake_home();
+    register_clone(&home, "free-mp", &repo, &v1);
+    write_manifest(
+        &home,
+        "[[marketplaces]]\nname = \"free-mp\"\npin = \"   \"\n",
+    );
+
+    zskills(&home).args(["update"]).assert().success();
+    assert_eq!(
+        marketplace_head(&home, "free-mp"),
+        head,
+        "a blank pin must not freeze the marketplace"
+    );
+}
+
+#[test]
+fn marketplace_list_shows_the_pin() {
+    let up = tempfile::tempdir().unwrap();
+    let (repo, v1, _) = marketplace_upstream(up.path(), "pinned-mp");
+    let home = fake_home();
+    register_clone(&home, "pinned-mp", &repo, &v1);
+    write_manifest(
+        &home,
+        "[[marketplaces]]\nname = \"pinned-mp\"\npin = \"v1\"\n",
+    );
+
+    zskills(&home)
+        .args(["marketplace", "list"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("[pinned v1]"));
+}
+
+#[test]
+fn pinning_a_tarball_marketplace_is_refused_with_a_reason() {
+    // A marketplace that is not a git clone has no refs, so a pin cannot mean
+    // anything. Say so, rather than silently re-extracting the tarball and
+    // leaving the user believing the pin held.
+    let home = fake_home();
+    let dir = home
+        .path()
+        .join("plugins")
+        .join("marketplaces")
+        .join("tarball-mp");
+    fs::create_dir_all(dir.join(".claude-plugin")).unwrap();
+    fs::write(
+        dir.join(".claude-plugin").join("marketplace.json"),
+        r#"{"name":"tarball-mp","plugins":[]}"#,
+    )
+    .unwrap();
+    let known_path = home.path().join("plugins").join("known_marketplaces.json");
+    let mut known: serde_json::Value =
+        serde_json::from_slice(&fs::read(&known_path).unwrap()).unwrap();
+    known["tarball-mp"] = json!({
+        "source": { "source": "github", "repo": "owner/tarball-mp" },
+        "installLocation": dir.to_string_lossy(),
+        "autoUpdate": true,
+        "lastUpdated": "2026-08-21T00:00:00.000Z"
+    });
+    fs::write(&known_path, serde_json::to_string_pretty(&known).unwrap()).unwrap();
+    write_manifest(
+        &home,
+        "[[marketplaces]]\nname = \"tarball-mp\"\npin = \"v1\"\n",
+    );
+
+    zskills(&home)
+        .args(["marketplace", "update"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("not a git clone"));
+}
+
+#[test]
+fn a_pin_resolves_even_when_upstream_moved_a_tag() {
+    // Regression: `git fetch --tags` rejects *every* tag with "would clobber existing
+    // tag" and exits non-zero when upstream has moved any one of them. One moved tag
+    // anywhere upstream would then make an otherwise valid pin unresolvable. The real
+    // llm-wiki clone is in exactly that state. `fetch_all` passes `--force`.
+    let up = tempfile::tempdir().unwrap();
+    let (repo, v1, head) = marketplace_upstream(up.path(), "moved-tag-mp");
+
+    let home = fake_home();
+    register_clone(&home, "moved-tag-mp", &repo, &v1);
+
+    // Upstream moves `v1` onto the second commit and publishes a new `v2` there.
+    // The clone still has the old `v1`, so any fetch must overwrite it.
+    for args in [vec!["tag", "-f", "v1", &head], vec!["tag", "v2", &head]] {
+        StdCommand::new("git")
+            .arg("-C")
+            .arg(&repo)
+            .args(&args)
+            .status()
+            .unwrap();
+    }
+
+    // `v2` is not in the clone, so honouring this pin requires the fetch to succeed.
+    write_manifest(
+        &home,
+        "[[marketplaces]]\nname = \"moved-tag-mp\"\npin = \"v2\"\n",
+    );
+
+    zskills(&home)
+        .args(["update"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("would clobber").not());
+
+    assert_eq!(
+        marketplace_head(&home, "moved-tag-mp"),
+        head,
+        "a pin to a tag that needs fetching must resolve even when another tag moved"
+    );
 }
