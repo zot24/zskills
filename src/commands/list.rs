@@ -22,9 +22,12 @@ pub fn run(json_out: bool, verbose: bool, paths: bool) -> Result<()> {
     let user_skills = crate::paths::user_skills_dir().ok();
 
     let managed_names: Vec<&String> = inv.agent_skills.keys().collect();
+    // A name an active plugin already ships is not an orphan — the plugin owns it.
+    let from_plugins = crate::agent_skill::plugin_provided_skills(&report.active);
     let untracked: Vec<String> = on_disk
         .iter()
         .filter(|n| !inv.agent_skills.contains_key(n.as_str()))
+        .filter(|n| !from_plugins.contains(n.as_str()))
         .cloned()
         .collect();
 

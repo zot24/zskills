@@ -472,6 +472,45 @@ fn npm_installed_version(package: &str) -> Result<String> {
 }
 
 /// What's currently present in ~/.agents/skills/ (directories with SKILL.md).
+/// Skill names shipped by plugins that are installed **and** enabled.
+///
+/// A plugin carries its skills inside its own cache directory, so a copy of the same
+/// name under `~/.agents/skills/` is not an orphan waiting to be adopted — the plugin
+/// already owns that name. Reporting it as unmanaged asks the user to write a manifest
+/// entry that would fight the plugin for it.
+///
+/// Only *active* plugins count. A disabled plugin contributes nothing at runtime, so a
+/// skill left on disk after it was disabled really is unmanaged.
+pub fn plugin_provided_skills(active: &[String]) -> std::collections::BTreeSet<String> {
+    let mut out = std::collections::BTreeSet::new();
+    let Ok(cache) = crate::paths::plugins_dir().map(|p| p.join("cache")) else {
+        return out;
+    };
+    for qualified in active {
+        let Some((plugin, marketplace)) = qualified.rsplit_once('@') else {
+            continue;
+        };
+        // cache/<marketplace>/<plugin>/<version>/skills/<name>
+        let versions = cache.join(marketplace).join(plugin);
+        let Ok(entries) = std::fs::read_dir(&versions) else {
+            continue;
+        };
+        for v in entries.flatten() {
+            let Ok(skills) = std::fs::read_dir(v.path().join("skills")) else {
+                continue;
+            };
+            for sk in skills.flatten() {
+                if sk.path().is_dir() {
+                    if let Some(n) = sk.file_name().to_str() {
+                        out.insert(n.to_string());
+                    }
+                }
+            }
+        }
+    }
+    out
+}
+
 pub fn installed_on_disk() -> Result<Vec<String>> {
     let dir = crate::paths::user_skills_dir()?;
     if !dir.exists() {
