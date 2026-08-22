@@ -112,6 +112,112 @@ fn github_from_url(url: &str) -> Option<String> {
     Some(stripped.to_string())
 }
 
+/// What a refresh did to a marketplace clone.
+#[derive(Debug)]
+pub enum Refresh {
+    /// Unpinned: pulled (or re-extracted) to whatever upstream now says.
+    Floated,
+    /// Pinned: the clone is at the pinned commit. `moved` is false when it was
+    /// already there, true when this call put it back.
+    Pinned { sha: String, moved: bool },
+}
+
+/// Read the marketplace pins declared in the user's `skills.toml`.
+///
+/// A missing or unparseable manifest means "no pins": a broken manifest must not
+/// silently turn every pin off, so a parse error is surfaced to the caller rather
+/// than swallowed.
+pub fn load_pins() -> Result<std::collections::BTreeMap<String, String>> {
+    let Some(path) = crate::manifest::discover() else {
+        return Ok(Default::default());
+    };
+    let manifest = crate::manifest::load(&path)?;
+    Ok(manifest
+        .marketplaces
+        .iter()
+        .filter_map(|m| {
+            manifest
+                .marketplace_pin(&m.name)
+                .map(|p| (m.name.clone(), p.to_string()))
+        })
+        .collect())
+}
+
+/// Bring one marketplace clone to where it should be.
+///
+/// Without a pin this is the old behaviour: `git pull`, or a tarball re-extract for a
+/// clone that is not a git working tree.
+///
+/// With a pin, the clone is checked out at that ref and **never pulled**. The ref is
+/// resolved from what the clone already has; only when that fails do we `git fetch`,
+/// which cannot move `HEAD`. If the ref still does not resolve, this is an error — a
+/// pin that cannot be honoured must never fall through to a pull, because floating the
+/// tap is the exact failure the pin exists to prevent.
+pub fn refresh(name: &str, repo: &Path, pin: Option<&str>) -> Result<Refresh> {
+    let Some(pin) = pin else {
+        if crate::git::is_git_repo(repo) {
+            crate::git::pull(repo)?;
+        } else {
+            update_via_tarball(name, repo)?;
+        }
+        return Ok(Refresh::Floated);
+    };
+
+    anyhow::ensure!(
+        crate::git::is_git_repo(repo),
+        "marketplace '{}' is pinned to {} but {} is not a git clone — \
+         a tarball marketplace has no refs to pin to. Remove the pin, or re-add the \
+         marketplace from a git source.",
+        name,
+        pin,
+        repo.display()
+    );
+
+    let target = match crate::git::resolve_commit(repo, pin) {
+        Some(sha) => sha,
+        None => {
+            crate::git::fetch_all(repo).with_context(|| {
+                format!("fetching marketplace '{}' to resolve pin {}", name, pin)
+            })?;
+            crate::git::resolve_commit(repo, pin).ok_or_else(|| {
+                anyhow::anyhow!(
+                    "marketplace '{}' is pinned to {}, which does not exist in {} \
+                     even after a fetch — refusing to update it to anything else",
+                    name,
+                    pin,
+                    repo.display()
+                )
+            })?
+        }
+    };
+
+    let head = crate::git::head_sha(repo).unwrap_or_default();
+    if head == target {
+        return Ok(Refresh::Pinned {
+            sha: target,
+            moved: false,
+        });
+    }
+    crate::git::checkout_detached(repo, &target)?;
+    Ok(Refresh::Pinned {
+        sha: target,
+        moved: true,
+    })
+}
+
+/// One-line status for a refresh, for the three commands that print it.
+pub fn refresh_label(r: &Refresh) -> String {
+    match r {
+        Refresh::Floated => "ok".to_string(),
+        Refresh::Pinned { sha, moved: false } => {
+            format!("pinned @ {}", &sha[..sha.len().min(7)])
+        }
+        Refresh::Pinned { sha, moved: true } => {
+            format!("pinned @ {} (restored)", &sha[..sha.len().min(7)])
+        }
+    }
+}
+
 /// Fetch the marketplace's GitHub archive tarball and atomically replace `dest`.
 /// Tries `HEAD.tar.gz` (default branch). Uses the system temp dir for extraction
 /// then renames into place.

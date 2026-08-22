@@ -362,6 +362,44 @@ zskills marketplace update [<name>]
 
 `add-recommended` seeds the trusted defaults (currently just `anthropics/claude-plugins-official`). Idempotent — safe to re-run; existing marketplaces are left as-is.
 
+### Pinning a marketplace
+
+By default `marketplace update`, `update` and `upgrade` all `git pull` every registered
+marketplace, so a marketplace tracks whatever its default branch moves to. Declare a pin in
+`skills.toml` to hold one at a tag, branch, or full sha:
+
+```toml
+[[marketplaces]]
+name = "llm-wiki"
+pin = "v0.23.0"   # tag, branch, or full sha
+```
+
+A pinned marketplace is checked out at that ref and **never pulled**. `marketplace list`
+marks it `[pinned v0.23.0]`. If the clone has drifted, the next update puts it back:
+
+```
+$ zskills update
+Updating llm-wiki ... pinned @ d02cbcb (restored)
+```
+
+Three details worth knowing:
+
+- The ref is resolved from what the clone already has. Only if that fails does zskills
+  `git fetch`, which cannot move `HEAD`.
+- A pin that cannot be resolved is an **error**, not a fallback. zskills will not pull a
+  marketplace it was told to hold, so a typo in a pin freezes the marketplace rather than
+  floating it.
+- A pinned clone sits on a detached `HEAD` on purpose. Leaving it on a branch invites the
+  next pull to move it.
+
+Remove the `pin` line (or blank it) to let the marketplace float again.
+
+The pin lives in `skills.toml`, not in `known_marketplaces.json`. That file belongs to
+Claude Code, which validates it and rejects the whole file when it disagrees — one entry
+missing `lastUpdated` is enough to break every `claude plugin install`. `skills.toml` is
+also the half of the configuration that is meant to be shared between machines;
+`known_marketplaces.json` holds machine-local absolute paths.
+
 `add skills.sh` is recognized only when zskills was built with `--features skills-sh`. It registers skills.sh as a `remote-index` source type (no git clone) and is dispatched by `search` and `install` via the HTTP API. See [Optional features](#optional-features) below.
 
 ## `search`

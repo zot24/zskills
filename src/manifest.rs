@@ -10,6 +10,10 @@
 //! [[skills]]
 //! name = "github"
 //! marketplace = "claude-plugins-official"
+//!
+//! [[marketplaces]]
+//! name = "llm-wiki"
+//! pin = "v0.23.0"
 //! ```
 
 use anyhow::{Context, Result};
@@ -30,6 +34,49 @@ pub struct Manifest {
     /// MCP servers — written into the runtime's `mcpServers` map at the chosen scope.
     #[serde(default)]
     pub mcps: Vec<McpEntry>,
+
+    /// Marketplace policy. Today this carries one thing: a `pin`, which stops
+    /// `update` and `upgrade` from floating a tap off the ref you chose.
+    #[serde(default)]
+    pub marketplaces: Vec<MarketplaceEntry>,
+}
+
+impl Manifest {
+    /// The pin declared for `name`, if any. An empty or whitespace-only `pin` is
+    /// treated as absent, so commenting a pin out by blanking it behaves as expected.
+    pub fn marketplace_pin(&self, name: &str) -> Option<&str> {
+        self.marketplaces
+            .iter()
+            .find(|m| m.name == name)
+            .and_then(|m| m.pin.as_deref())
+            .map(str::trim)
+            .filter(|p| !p.is_empty())
+    }
+}
+
+/// A marketplace declaration in `skills.toml`.
+///
+/// ```toml
+/// [[marketplaces]]
+/// name = "llm-wiki"
+/// pin = "v0.23.0"   # tag, branch, or full sha
+/// ```
+///
+/// **Why the pin lives here and not in `known_marketplaces.json`.** That file belongs
+/// to Claude Code, which validates it against its own schema and rejects the *whole
+/// file* when it disagrees — one entry missing `lastUpdated` is enough to break every
+/// `claude plugin install`. Adding a key it does not know is the same bet with the same
+/// downside. `skills.toml` is zskills' own manifest, it is the file that already
+/// declares intent rather than observed state, and unlike `known_marketplaces.json` it
+/// holds no machine-local absolute paths, so it is the half of the configuration that
+/// is meant to be shared between machines. A pin is exactly that kind of declaration.
+#[derive(Debug, Deserialize, Serialize, Clone, Default)]
+pub struct MarketplaceEntry {
+    pub name: String,
+    /// Tag, branch, or full sha. When set, `update`/`upgrade` check this ref out and
+    /// never pull.
+    #[serde(default)]
+    pub pin: Option<String>,
 }
 
 #[derive(Debug, Deserialize, Serialize, Clone)]
@@ -454,4 +501,52 @@ pub fn append_mcp(path: &Path, entry: &McpEntry) -> Result<bool> {
     std::fs::write(path, doc.to_string())
         .with_context(|| format!("writing manifest {}", path.display()))?;
     Ok(true)
+}
+
+#[cfg(test)]
+mod marketplace_pin_tests {
+    use super::*;
+
+    fn parse(toml_src: &str) -> Manifest {
+        toml::from_str(toml_src).expect("manifest parses")
+    }
+
+    #[test]
+    fn reads_a_pin() {
+        let m = parse("[[marketplaces]]\nname = \"llm-wiki\"\npin = \"v0.23.0\"\n");
+        assert_eq!(m.marketplace_pin("llm-wiki"), Some("v0.23.0"));
+    }
+
+    #[test]
+    fn an_entry_without_a_pin_is_unpinned() {
+        let m = parse("[[marketplaces]]\nname = \"zot24-skills\"\n");
+        assert_eq!(m.marketplace_pin("zot24-skills"), None);
+    }
+
+    #[test]
+    fn a_blank_pin_is_unpinned() {
+        let m = parse("[[marketplaces]]\nname = \"a\"\npin = \"\"\n[[marketplaces]]\nname = \"b\"\npin = \"   \"\n");
+        assert_eq!(m.marketplace_pin("a"), None);
+        assert_eq!(m.marketplace_pin("b"), None);
+    }
+
+    #[test]
+    fn a_pin_is_trimmed() {
+        let m = parse("[[marketplaces]]\nname = \"a\"\npin = \"  v1  \"\n");
+        assert_eq!(m.marketplace_pin("a"), Some("v1"));
+    }
+
+    #[test]
+    fn an_unlisted_marketplace_is_unpinned() {
+        let m = parse("[[marketplaces]]\nname = \"a\"\npin = \"v1\"\n");
+        assert_eq!(m.marketplace_pin("other"), None);
+    }
+
+    #[test]
+    fn a_manifest_with_no_marketplaces_section_still_parses() {
+        // Every existing skills.toml predates this field.
+        let m = parse("[[skills]]\nname = \"firecrawl\"\nmarketplace = \"zot24-skills\"\n");
+        assert!(m.marketplaces.is_empty());
+        assert_eq!(m.marketplace_pin("zot24-skills"), None);
+    }
 }
