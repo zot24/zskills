@@ -149,7 +149,14 @@ pub fn run(json_out: bool, verbose: bool, paths: bool) -> Result<()> {
         }
         println!(
             "  {}",
-            "(add a [[agent_skills]] entry to your manifest to take ownership)".dimmed()
+            format!(
+                "(scanned {}; add an [[agent_skills]] entry to your manifest to take ownership)",
+                user_skills
+                    .as_deref()
+                    .map(|p| p.display().to_string())
+                    .unwrap_or_else(|| "~/.agents/skills".to_string())
+            )
+            .dimmed()
         );
     }
 

@@ -2504,6 +2504,46 @@ fn a_skill_from_a_disabled_plugin_is_still_unmanaged() {
         .success()
         .stdout(predicate::str::contains("on disk but not managed"))
         .stdout(predicate::str::contains("• shipped"));
+
+    // Discriminating half: on the unfixed code every on-disk skill was unmanaged, so
+    // the assertion above holds trivially. Re-enabling must flip it, which only the
+    // active-plugin filter can do.
+    let mut s: serde_json::Value = serde_json::from_slice(&fs::read(&sp).unwrap()).unwrap();
+    s["enabledPlugins"]["plug@mp"] = json!(true);
+    fs::write(&sp, serde_json::to_string_pretty(&s).unwrap()).unwrap();
+    zskills(&home)
+        .arg("list")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("• shipped").not());
+}
+
+#[test]
+fn only_the_installed_version_of_a_plugin_counts_as_shipping_a_skill() {
+    // The cache keeps old versions next to the current one. Unioning across all of
+    // them would hide a genuinely orphaned skill forever the first time an upgrade
+    // drops a name.
+    let home = fake_home();
+    write_disk_skill(&home, "dropped");
+    install_plugin_shipping_skill(&home, "mp", "plug", "kept");
+    // A stale 0.9.0 in the cache still ships `dropped`; the installed version is 1.0.0.
+    let stale = home
+        .path()
+        .join("plugins")
+        .join("cache")
+        .join("mp")
+        .join("plug")
+        .join("0.9.0")
+        .join("skills")
+        .join("dropped");
+    fs::create_dir_all(&stale).unwrap();
+    fs::write(stale.join("SKILL.md"), "---\nname: dropped\n---\n").unwrap();
+
+    zskills(&home)
+        .arg("list")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("• dropped"));
 }
 
 #[test]
