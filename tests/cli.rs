@@ -2706,3 +2706,49 @@ fn install_reports_available_names_from_dot_agents_skills_when_skill_is_unknown(
         stderr
     );
 }
+
+#[test]
+fn upgrade_refreshes_only_skills_already_owned_from_a_source() {
+    // A source-only manifest entry means "keep what I own from this source", not
+    // "adopt whatever it ships today". Widening the survey — a new skill root, or
+    // upstream adding skills — must not make an unattended `upgrade` install things
+    // nobody asked for. This is the regression the .agents/skills walker introduced:
+    // a repo with 1 skill under skills/ and 3 under .agents/skills/ went from
+    // installing 1 to installing 4.
+    let upstream = tempfile::tempdir().unwrap();
+    let repo = upstream.path().join("multi");
+    write_skill(&repo, "owned", "already installed");
+    write_agents_skill(&repo, "brand-new", "should NOT be adopted by upgrade");
+    write_agents_skill(&repo, "also-new", "should NOT be adopted by upgrade");
+    git_init_and_commit(&repo);
+
+    let home = fake_home();
+    // Own exactly one skill from that source.
+    zskills(&home)
+        .args(["install", &file_url(&repo), "--skill", "owned"])
+        .assert()
+        .success();
+    assert!(home.path().join("skills/owned").exists());
+
+    let dir = home.path().join("config").join("zskills");
+    fs::create_dir_all(&dir).unwrap();
+    fs::write(
+        dir.join("skills.toml"),
+        format!("[[agent_skills]]\nsource = \"{}\"\n", file_url(&repo)),
+    )
+    .unwrap();
+
+    zskills(&home).arg("upgrade").assert().success();
+
+    assert!(
+        home.path().join("skills/owned").exists(),
+        "the owned skill must still be refreshed"
+    );
+    for unwanted in ["brand-new", "also-new"] {
+        assert!(
+            !home.path().join("skills").join(unwanted).exists(),
+            "upgrade must not adopt {} — it was never requested",
+            unwanted
+        );
+    }
+}
