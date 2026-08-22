@@ -26,7 +26,7 @@ pub fn run(filter: Vec<String>) -> Result<()> {
             print!("  {} {} ... ", "↻".cyan(), name);
             match crate::marketplace::refresh(name, &repo, pins.get(name).map(String::as_str)) {
                 Ok(outcome) => println!("{}", crate::marketplace::refresh_label(&outcome).green()),
-                Err(e) => println!("{} ({})", "fail".red(), e),
+                Err(e) => println!("{} ({:#})", "fail".red(), e),
             }
         }
     }

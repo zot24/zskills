@@ -184,6 +184,10 @@ fn remove(name: String) -> Result<()> {
 
 fn list(as_json: bool) -> Result<()> {
     let known = crate::marketplace::load_known(&crate::paths::known_marketplaces_json()?)?;
+    // `list` is read-only, so a manifest it cannot parse costs the user the pin
+    // column and nothing else. The mutating commands use `load_pins()?` instead:
+    // there, treating an unparseable manifest as "no pins" would float every pinned
+    // marketplace, which is the failure the pin exists to prevent.
     let pins = crate::marketplace::load_pins().unwrap_or_default();
     if as_json {
         let mut out = known.clone();
@@ -264,7 +268,7 @@ fn update(name: Option<String>) -> Result<()> {
                     dirty = true;
                 }
             }
-            Err(e) => println!("{} ({})", "fail".red(), e),
+            Err(e) => println!("{} ({:#})", "fail".red(), e),
         }
     }
     if dirty {

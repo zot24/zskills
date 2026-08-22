@@ -2363,3 +2363,45 @@ fn pinning_a_tarball_marketplace_is_refused_with_a_reason() {
         .success()
         .stdout(predicate::str::contains("not a git clone"));
 }
+
+#[test]
+fn a_pin_resolves_even_when_upstream_moved_a_tag() {
+    // Regression: `git fetch --tags` rejects *every* tag with "would clobber existing
+    // tag" and exits non-zero when upstream has moved any one of them. One moved tag
+    // anywhere upstream would then make an otherwise valid pin unresolvable. The real
+    // llm-wiki clone is in exactly that state. `fetch_all` passes `--force`.
+    let up = tempfile::tempdir().unwrap();
+    let (repo, v1, head) = marketplace_upstream(up.path(), "moved-tag-mp");
+
+    let home = fake_home();
+    register_clone(&home, "moved-tag-mp", &repo, &v1);
+
+    // Upstream moves `v1` onto the second commit and publishes a new `v2` there.
+    // The clone still has the old `v1`, so any fetch must overwrite it.
+    for args in [vec!["tag", "-f", "v1", &head], vec!["tag", "v2", &head]] {
+        StdCommand::new("git")
+            .arg("-C")
+            .arg(&repo)
+            .args(&args)
+            .status()
+            .unwrap();
+    }
+
+    // `v2` is not in the clone, so honouring this pin requires the fetch to succeed.
+    write_manifest(
+        &home,
+        "[[marketplaces]]\nname = \"moved-tag-mp\"\npin = \"v2\"\n",
+    );
+
+    zskills(&home)
+        .args(["update"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("would clobber").not());
+
+    assert_eq!(
+        marketplace_head(&home, "moved-tag-mp"),
+        head,
+        "a pin to a tag that needs fetching must resolve even when another tag moved"
+    );
+}

@@ -50,11 +50,17 @@ pub fn is_git_repo(repo: &Path) -> bool {
 ///
 /// A pinned marketplace never pulls. It may still need one fetch to learn about a
 /// tag it does not have yet, and a fetch cannot move `HEAD`.
+///
+/// `--force` is required, not cosmetic. When upstream moves a tag, a plain
+/// `git fetch --tags` rejects **every** tag with "would clobber existing tag" and exits
+/// non-zero, so one moved tag upstream would make an otherwise valid pin unresolvable.
+/// The real `llm-wiki` clone is in that state today. Tags are upstream's to define, so
+/// taking their version is the right resolution.
 pub fn fetch_all(repo: &Path) -> Result<()> {
     let out = Command::new("git")
         .arg("-C")
         .arg(repo)
-        .args(["fetch", "--tags", "--quiet", "origin"])
+        .args(["fetch", "--tags", "--force", "--quiet", "origin"])
         .output()
         .context("running git fetch")?;
     anyhow::ensure!(

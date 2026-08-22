@@ -19,7 +19,7 @@ pub fn run(_skills: Vec<String>) -> Result<()> {
                 }
                 println!("{}", crate::marketplace::refresh_label(&outcome).green());
             }
-            Err(e) => println!("{} ({})", "fail".red(), e),
+            Err(e) => println!("{} ({:#})", "fail".red(), e),
         }
     }
     println!("\nMarketplaces refreshed. Restart Claude Code to pull latest skill bytes.");
