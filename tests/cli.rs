@@ -2607,3 +2607,102 @@ fn a_local_entry_for_a_skill_not_on_disk_is_not_tracked() {
         .success()
         .stdout(predicate::str::contains("missing on disk").not());
 }
+
+// ---------------------------------------------------------------------------
+// `.agents/skills/` layout.
+//
+// `zskills install warpdotdev/common-skills --skill skill-doctor` failed with
+// "skill 'skill-doctor' not found (available: )". The survey only walked
+// `<repo>/skills/`, and Warp uses the cross-client `<repo>/.agents/skills/`.
+// ---------------------------------------------------------------------------
+
+/// Write `<repo>/.agents/skills/<name>/SKILL.md`.
+fn write_agents_skill(repo: &std::path::Path, name: &str, description: &str) {
+    let dir = repo.join(".agents").join("skills").join(name);
+    fs::create_dir_all(&dir).unwrap();
+    fs::write(
+        dir.join("SKILL.md"),
+        format!(
+            "---\nname: {}\ndescription: {}\n---\n# {}\n",
+            name, description, name
+        ),
+    )
+    .unwrap();
+}
+
+#[test]
+fn install_skill_flag_selects_from_dot_agents_skills() {
+    let upstream = tempfile::tempdir().unwrap();
+    write_agents_skill(upstream.path(), "skill-doctor", "Grade your skills");
+    write_agents_skill(upstream.path(), "write-product-spec", "Other skill");
+    git_init_and_commit(upstream.path());
+
+    let home = fake_home();
+    zskills(&home)
+        .args([
+            "install",
+            &file_url(upstream.path()),
+            "--skill",
+            "skill-doctor",
+        ])
+        .assert()
+        .success()
+        // The `+` marker is coloured, so assert the name and prove the rest on disk.
+        .stdout(predicate::str::contains("skill-doctor"));
+
+    assert!(home.path().join("skills/skill-doctor/SKILL.md").exists());
+    assert!(
+        !home.path().join("skills/write-product-spec").exists(),
+        "--skill must install exactly one skill"
+    );
+}
+
+#[test]
+fn a_large_dot_agents_skills_tree_still_requires_skill_or_all() {
+    // A large collection under the new root. The size policy must still apply there:
+    // discovering more layouts must not start flooding. `warpdotdev/common-skills`
+    // ships 26 skills this way; 14 is enough to be over the auto-install threshold.
+    let upstream = tempfile::tempdir().unwrap();
+    for i in 0..14 {
+        write_agents_skill(upstream.path(), &format!("skill-{:02}", i), "d");
+    }
+    git_init_and_commit(upstream.path());
+
+    let home = fake_home();
+    zskills(&home)
+        .args(["install", &file_url(upstream.path())])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("14"))
+        .stdout(predicate::str::contains("--all"));
+
+    assert!(
+        !home.path().join("skills/skill-00").exists(),
+        "a bare install of a large collection must install nothing"
+    );
+}
+
+#[test]
+fn install_reports_available_names_from_dot_agents_skills_when_skill_is_unknown() {
+    // The original failure printed "(available: )" — an empty list is what made the
+    // bug look like a missing skill rather than a missing layout.
+    let upstream = tempfile::tempdir().unwrap();
+    write_agents_skill(upstream.path(), "skill-doctor", "d");
+    git_init_and_commit(upstream.path());
+
+    let home = fake_home();
+    let out = zskills(&home)
+        .args(["install", &file_url(upstream.path()), "--skill", "nope"])
+        .assert()
+        .failure()
+        .get_output()
+        .stderr
+        .clone();
+    let stderr = String::from_utf8_lossy(&out);
+    assert!(stderr.contains("'nope' not found"), "{}", stderr);
+    assert!(
+        stderr.contains("skill-doctor"),
+        "the available list must name what the repo really ships: {}",
+        stderr
+    );
+}

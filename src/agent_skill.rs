@@ -111,17 +111,49 @@ pub fn ensure_cache(source: &str) -> Result<PathBuf> {
 ///
 /// Names are unique in the result: if two categories expose the same skill name,
 /// the first by sorted path wins and the other is dropped.
+/// Roots a repository may keep its Agent Skills under, in precedence order.
+///
+/// `.agents/skills/` is the cross-client convention from the Agent Skills spec and is
+/// what `warpdotdev/common-skills` uses; `skills/` is the older layout this tool shipped
+/// with. A repository may legitimately use either, so both are walked.
+const SKILL_ROOTS: &[&str] = &[".agents/skills", "skills"];
+
+/// List the skill directories a cloned repo provides. Returns `(name, source_dir)` pairs,
+/// sorted by name and de-duplicated.
+///
+/// Each root is walked the same way: a directory holding its own `SKILL.md` is a skill and
+/// is never descended into, so a skill with helper subdirectories is not mistaken for a
+/// category; a directory without one is treated as a category and searched one level
+/// deeper. When no root yields anything, a repository-root `SKILL.md` makes the clone
+/// itself the single skill.
 pub fn skills_in_cache(cache: &Path) -> Vec<(String, PathBuf)> {
-    let skills_root = cache.join("skills");
     let mut out: Vec<(String, PathBuf)> = Vec::new();
-    let Ok(entries) = std::fs::read_dir(&skills_root) else {
-        // Fallback: single-skill repo at root level
+    for root in SKILL_ROOTS {
+        collect_skills_under(&cache.join(root), &mut out);
+    }
+
+    if out.is_empty() {
+        // Fallback: single-skill repo with SKILL.md at the root.
         if cache.join("SKILL.md").exists() {
             if let Some(name) = cache.file_name().and_then(|n| n.to_str()) {
                 out.push((name.to_string(), cache.to_path_buf()));
             }
         }
         return out;
+    }
+
+    // Sorting by (name, path) then de-duplicating by name keeps the winner stable when
+    // two roots offer the same name: `.agents/skills` sorts before `skills`, so the
+    // cross-client layout wins, and the choice does not depend on read_dir order.
+    out.sort_by(|a, b| a.0.cmp(&b.0).then_with(|| a.1.cmp(&b.1)));
+    out.dedup_by(|a, b| a.0 == b.0);
+    out
+}
+
+/// Walk one skill root, appending every skill directory it holds.
+fn collect_skills_under(root: &Path, out: &mut Vec<(String, PathBuf)>) {
+    let Ok(entries) = std::fs::read_dir(root) else {
+        return;
     };
 
     fn push_skill(out: &mut Vec<(String, PathBuf)>, dir: &Path) {
@@ -140,7 +172,7 @@ pub fn skills_in_cache(cache: &Path) -> Vec<(String, PathBuf)> {
 
     for p in top {
         if p.join("SKILL.md").exists() {
-            push_skill(&mut out, &p);
+            push_skill(out, &p);
             continue;
         }
         // Category directory: look one level deeper for <category>/<name>/SKILL.md.
@@ -154,13 +186,9 @@ pub fn skills_in_cache(cache: &Path) -> Vec<(String, PathBuf)> {
             .collect();
         nested.sort();
         for q in nested {
-            push_skill(&mut out, &q);
+            push_skill(out, &q);
         }
     }
-
-    out.sort_by(|a, b| a.0.cmp(&b.0).then_with(|| a.1.cmp(&b.1)));
-    out.dedup_by(|a, b| a.0 == b.0);
-    out
 }
 
 /// Copy a skill directory into ~/.agents/skills/<name>/ (deletes existing first).
