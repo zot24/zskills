@@ -2405,3 +2405,205 @@ fn a_pin_resolves_even_when_upstream_moved_a_tag() {
         "a pin to a tag that needs fetching must resolve even when another tag moved"
     );
 }
+
+// ---------------------------------------------------------------------------
+// Owning every on-disk Agent Skill.
+//
+// Three defects kept `zskills list` reporting skills as unmanaged that either
+// already had an owner or had just been adopted:
+//   1. a skill shipped by an ACTIVE plugin was still listed as an orphan;
+//   2. `claims` was honoured only on npm entries, silently ignored on local ones;
+//   3. a local entry naming a skill that is NOT on disk was tracked anyway, which
+//      manufactured the exact defect `doctor` exists to report.
+// ---------------------------------------------------------------------------
+
+/// Put an on-disk Agent Skill under AGENTS_HOME/skills/<name>.
+fn write_disk_skill(home: &TempDir, name: &str) {
+    let d = home.path().join("skills").join(name);
+    fs::create_dir_all(&d).unwrap();
+    fs::write(
+        d.join("SKILL.md"),
+        format!("---\nname: {}\ndescription: d\n---\n", name),
+    )
+    .unwrap();
+}
+
+/// Register an active plugin that ships `skill` from its cache.
+fn install_plugin_shipping_skill(home: &TempDir, mp: &str, plugin: &str, skill: &str) {
+    let cache = home
+        .path()
+        .join("plugins")
+        .join("cache")
+        .join(mp)
+        .join(plugin)
+        .join("1.0.0")
+        .join("skills")
+        .join(skill);
+    fs::create_dir_all(&cache).unwrap();
+    fs::write(cache.join("SKILL.md"), "---\nname: x\n---\n").unwrap();
+
+    let mp_dir = home.path().join("plugins").join("marketplaces").join(mp);
+    fs::create_dir_all(mp_dir.join(".claude-plugin")).unwrap();
+    fs::write(
+        mp_dir.join(".claude-plugin").join("marketplace.json"),
+        format!(r#"{{"name":"{}","plugins":[{{"name":"{}"}}]}}"#, mp, plugin),
+    )
+    .unwrap();
+
+    let known_path = home.path().join("plugins").join("known_marketplaces.json");
+    let mut known: serde_json::Value =
+        serde_json::from_slice(&fs::read(&known_path).unwrap()).unwrap();
+    known[mp] = json!({
+        "source": { "source": "github", "repo": format!("o/{}", mp) },
+        "installLocation": mp_dir.to_string_lossy(),
+        "autoUpdate": true,
+        "lastUpdated": "2026-08-22T00:00:00.000Z"
+    });
+    fs::write(&known_path, serde_json::to_string_pretty(&known).unwrap()).unwrap();
+
+    let q = format!("{}@{}", plugin, mp);
+    let sp = home.path().join("settings.json");
+    let mut s: serde_json::Value = serde_json::from_slice(&fs::read(&sp).unwrap()).unwrap();
+    s["enabledPlugins"][&q] = json!(true);
+    fs::write(&sp, serde_json::to_string_pretty(&s).unwrap()).unwrap();
+
+    let ip = home.path().join("plugins").join("installed_plugins.json");
+    let mut i: serde_json::Value = serde_json::from_slice(&fs::read(&ip).unwrap()).unwrap();
+    i["plugins"][&q] = json!([{ "scope": "user", "installPath": "/x", "version": "1.0.0" }]);
+    fs::write(&ip, serde_json::to_string_pretty(&i).unwrap()).unwrap();
+}
+
+#[test]
+fn a_skill_shipped_by_an_active_plugin_is_not_listed_as_unmanaged() {
+    let home = fake_home();
+    write_disk_skill(&home, "shipped");
+    install_plugin_shipping_skill(&home, "mp", "plug", "shipped");
+
+    zskills(&home)
+        .arg("list")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("on disk but not managed").not());
+}
+
+#[test]
+fn a_skill_from_a_disabled_plugin_is_still_unmanaged() {
+    // The filter must key on *active*, not merely installed. A disabled plugin
+    // contributes nothing at runtime, so its leftover copy really is an orphan.
+    let home = fake_home();
+    write_disk_skill(&home, "shipped");
+    install_plugin_shipping_skill(&home, "mp", "plug", "shipped");
+    let sp = home.path().join("settings.json");
+    let mut s: serde_json::Value = serde_json::from_slice(&fs::read(&sp).unwrap()).unwrap();
+    s["enabledPlugins"]["plug@mp"] = json!(false);
+    fs::write(&sp, serde_json::to_string_pretty(&s).unwrap()).unwrap();
+
+    zskills(&home)
+        .arg("list")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("on disk but not managed"))
+        .stdout(predicate::str::contains("• shipped"));
+
+    // Discriminating half: on the unfixed code every on-disk skill was unmanaged, so
+    // the assertion above holds trivially. Re-enabling must flip it, which only the
+    // active-plugin filter can do.
+    let mut s: serde_json::Value = serde_json::from_slice(&fs::read(&sp).unwrap()).unwrap();
+    s["enabledPlugins"]["plug@mp"] = json!(true);
+    fs::write(&sp, serde_json::to_string_pretty(&s).unwrap()).unwrap();
+    zskills(&home)
+        .arg("list")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("• shipped").not());
+}
+
+#[test]
+fn only_the_installed_version_of_a_plugin_counts_as_shipping_a_skill() {
+    // The cache keeps old versions next to the current one. Unioning across all of
+    // them would hide a genuinely orphaned skill forever the first time an upgrade
+    // drops a name.
+    let home = fake_home();
+    write_disk_skill(&home, "dropped");
+    install_plugin_shipping_skill(&home, "mp", "plug", "kept");
+    // A stale 0.9.0 in the cache still ships `dropped`; the installed version is 1.0.0.
+    let stale = home
+        .path()
+        .join("plugins")
+        .join("cache")
+        .join("mp")
+        .join("plug")
+        .join("0.9.0")
+        .join("skills")
+        .join("dropped");
+    fs::create_dir_all(&stale).unwrap();
+    fs::write(stale.join("SKILL.md"), "---\nname: dropped\n---\n").unwrap();
+
+    zskills(&home)
+        .arg("list")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("• dropped"));
+}
+
+#[test]
+fn claims_on_a_local_entry_adopts_matching_skills() {
+    let home = fake_home();
+    for n in ["alpha-one", "alpha-two", "beta-keep"] {
+        write_disk_skill(&home, n);
+    }
+    let dir = home.path().join("config").join("zskills");
+    fs::create_dir_all(&dir).unwrap();
+    fs::write(
+        dir.join("skills.toml"),
+        "[[agent_skills]]\nname = \"alpha-bundle\"\nclaims = [\"alpha-*\"]\n",
+    )
+    .unwrap();
+
+    // The skill name is bold in that log line, so assert the outcome below, not the styling.
+    zskills(&home).arg("sync").assert().success();
+
+    // The two claimed skills are adopted; the unrelated one stays unmanaged.
+    // Assert on --json: the text view prints adopted names in the *managed*
+    // section, so a whole-output substring check cannot tell the two apart.
+    let out = zskills(&home)
+        .args(["list", "--json"])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let v: serde_json::Value = serde_json::from_slice(&out).unwrap();
+    assert_eq!(
+        v["agent_skills"]["untracked"],
+        json!(["beta-keep"]),
+        "only the unclaimed skill should remain unmanaged"
+    );
+}
+
+#[test]
+fn a_local_entry_for_a_skill_not_on_disk_is_not_tracked() {
+    // Tracking it would write inventory that `doctor` immediately reports as
+    // "tracked in inventory but missing on disk" — sync manufacturing a defect.
+    let home = fake_home();
+    let dir = home.path().join("config").join("zskills");
+    fs::create_dir_all(&dir).unwrap();
+    fs::write(
+        dir.join("skills.toml"),
+        "[[agent_skills]]\nname = \"typo-not-on-disk\"\n",
+    )
+    .unwrap();
+
+    zskills(&home)
+        .arg("sync")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("nothing to track"))
+        .stdout(predicate::str::contains("tracked local agent skill typo-not-on-disk").not());
+
+    zskills(&home)
+        .arg("doctor")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("missing on disk").not());
+}

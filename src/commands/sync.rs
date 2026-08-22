@@ -457,10 +457,46 @@ pub fn run(file: Option<PathBuf>, dry_run: bool, prune: bool, adopt: bool) -> Re
             }
             (None, Some(name)) if entry.npm.is_none() => {
                 // Local-only entry: register in inventory if present on disk; don't fetch.
+                //
+                // The disk check is the point. Tracking a name that is not there writes an
+                // inventory entry `doctor` immediately reports as "tracked in inventory but
+                // missing on disk" — sync would manufacture the very defect doctor exists to
+                // find. A typo in the manifest must not do that.
+                let on_disk = crate::agent_skill::installed_on_disk().unwrap_or_default();
                 let mut inv = crate::agent_skill::load_inventory()?;
-                if !inv.agent_skills.contains_key(name) {
+
+                // A local entry may also `claims` globs, the same way an npm entry does.
+                // Without this, `claims` on a local entry is silently ignored.
+                let mut targets: Vec<String> = Vec::new();
+                if on_disk.iter().any(|n| n == name) {
+                    targets.push(name.to_string());
+                } else if entry.claims.is_empty() {
+                    println!(
+                        "  {} {} {}",
+                        "·".dimmed(),
+                        name,
+                        "(declared local, not on disk — nothing to track)".dimmed()
+                    );
+                }
+                for pattern in &entry.claims {
+                    let Ok(pat) = glob::Pattern::new(pattern) else {
+                        eprintln!("{} invalid claims pattern {:?}", "✗".red(), pattern);
+                        continue;
+                    };
+                    for n in on_disk.iter().filter(|n| pat.matches(n)) {
+                        if !targets.contains(n) {
+                            targets.push(n.clone());
+                        }
+                    }
+                }
+
+                let mut dirty = false;
+                for n in &targets {
+                    if inv.agent_skills.contains_key(n) {
+                        continue;
+                    }
                     inv.agent_skills.insert(
-                        name.to_string(),
+                        n.to_string(),
                         crate::agent_skill::Entry {
                             source: "local".to_string(),
                             installed_at: format!(
@@ -473,8 +509,11 @@ pub fn run(file: Option<PathBuf>, dry_run: bool, prune: bool, adopt: bool) -> Re
                             head_sha: "local".to_string(),
                         },
                     );
+                    dirty = true;
+                    println!("  tracked local agent skill {}", n.bold());
+                }
+                if dirty {
                     crate::agent_skill::save_inventory(&inv)?;
-                    println!("  tracked local agent skill {}", name.bold());
                 }
             }
             (None, None) => {

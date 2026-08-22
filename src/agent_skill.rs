@@ -472,6 +472,74 @@ fn npm_installed_version(package: &str) -> Result<String> {
 }
 
 /// What's currently present in ~/.agents/skills/ (directories with SKILL.md).
+/// Skill names shipped by plugins that are installed **and** enabled.
+///
+/// A plugin carries its skills inside its own cache directory, so a copy of the same
+/// name under `~/.agents/skills/` is not an orphan waiting to be adopted — the plugin
+/// already owns that name. Reporting it as unmanaged asks the user to write a manifest
+/// entry that would fight the plugin for it.
+///
+/// Only *active* plugins count. A disabled plugin contributes nothing at runtime, so a
+/// skill left on disk after it was disabled really is unmanaged.
+pub fn plugin_provided_skills(active: &[String]) -> std::collections::BTreeSet<String> {
+    let mut out = std::collections::BTreeSet::new();
+    let Ok(cache) = crate::paths::plugins_dir().map(|p| p.join("cache")) else {
+        return out;
+    };
+    // Which version of each plugin is actually installed. The cache keeps old versions
+    // alongside the current one, and unioning across all of them would hide a genuinely
+    // orphaned copy forever the first time an upgrade *drops* a skill: the name would
+    // still be found under the stale version directory.
+    let installed: std::collections::BTreeMap<String, String> =
+        crate::paths::installed_plugins_json()
+            .ok()
+            .and_then(|p| std::fs::read(p).ok())
+            .and_then(|b| serde_json::from_slice::<serde_json::Value>(&b).ok())
+            .and_then(|v| v.get("plugins").cloned())
+            .and_then(|p| p.as_object().cloned())
+            .map(|m| {
+                m.iter()
+                    .filter_map(|(k, v)| {
+                        let ver = v.as_array()?.first()?.get("version")?.as_str()?.to_string();
+                        Some((k.clone(), ver))
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+
+    for qualified in active {
+        let Some((plugin, marketplace)) = qualified.rsplit_once('@') else {
+            continue;
+        };
+        // cache/<marketplace>/<plugin>/<version>/skills/<name>
+        let base = cache.join(marketplace).join(plugin);
+        let dirs: Vec<std::path::PathBuf> = match installed.get(qualified) {
+            Some(v) => vec![base.join(v)],
+            // No recorded version: fall back to every cached version rather than
+            // reporting a plugin's own skills as orphans.
+            None => std::fs::read_dir(&base)
+                .into_iter()
+                .flatten()
+                .flatten()
+                .map(|e| e.path())
+                .collect(),
+        };
+        for d in dirs {
+            let Ok(skills) = std::fs::read_dir(d.join("skills")) else {
+                continue;
+            };
+            for sk in skills.flatten() {
+                if sk.path().is_dir() {
+                    if let Some(n) = sk.file_name().to_str() {
+                        out.insert(n.to_string());
+                    }
+                }
+            }
+        }
+    }
+    out
+}
+
 pub fn installed_on_disk() -> Result<Vec<String>> {
     let dir = crate::paths::user_skills_dir()?;
     if !dir.exists() {
