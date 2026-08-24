@@ -94,6 +94,16 @@ Bare `install`/`remove`/`purge`/`enable`/`disable`/`update`/`upgrade` exit 2 and
 
 ## Declarative manifest (skills.toml)
 
+CLI group to manifest key:
+
+```
+[[skills]]        → plugins      → zskills plugin  install|remove|purge|enable|disable
+[[agent_skills]]  → Agent Skills → zskills skill   install|remove|upgrade
+[[mcps]]          → MCP servers  → zskills mcp     add|remove
+```
+
+The group `skill` writes `[[agent_skills]]`. The key `[[skills]]` is plugins.
+
 ```toml
 # Claude Code plugins (marketplace-based, controlled via enabledPlugins)
 [[skills]]

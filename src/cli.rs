@@ -247,12 +247,21 @@ pub enum PluginCmd {
 pub enum AgentSkillCmd {
     /// Install Agent Skills from owner/repo or a git URL
     Install {
-        #[arg(short = 'i', long)]
+        #[arg(short = 'i', long, help = "Pick skills from the source interactively")]
         interactive: bool,
-        #[arg(long)]
+        #[arg(long, help = "Install every skill the source provides (>5 needs this)")]
         all: bool,
-        #[arg(long, conflicts_with = "all", value_name = "NAME")]
+        #[arg(
+            long,
+            conflicts_with = "all",
+            value_name = "NAME",
+            help = "Install only this one skill out of the source"
+        )]
         skill: Option<String>,
+        #[arg(
+            value_name = "SOURCE",
+            help = "owner/repo, https://, git@ or file:// URL"
+        )]
         skills: Vec<String>,
     },
     /// Delete bytes + inventory for an Agent Skill
@@ -266,6 +275,12 @@ pub enum AgentSkillCmd {
     },
     /// Refresh git/npm Agent Skills (and marketplace caches)
     Upgrade { names: Vec<String> },
+    /// Hidden. `skill migrate` is not a verb. Point at `migrate-skill`.
+    #[command(hide = true, disable_help_flag = true)]
+    Migrate {
+        #[arg(trailing_var_arg = true, allow_hyphen_values = true, hide = true)]
+        rest: Vec<String>,
+    },
 }
 
 #[derive(Subcommand)]
@@ -366,6 +381,9 @@ impl Cli {
                     crate::commands::agent_skills::remove(names, force, file)
                 }
                 AgentSkillCmd::Upgrade { names } => crate::commands::agent_skills::upgrade(names),
+                AgentSkillCmd::Migrate { rest } => {
+                    crate::commands::stub::run("skill-migrate", &rest)
+                }
             },
             Command::Mcp(cmd) => match cmd {
                 McpCmd::Add {

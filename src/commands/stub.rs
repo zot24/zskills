@@ -28,7 +28,7 @@ fn first_name(rest: &[String]) -> Option<&str> {
 fn doors(verb: &str) -> String {
     match verb {
         "install" => {
-            "  plugin:      zskills plugin install <name@marketplace>\n  skill:       zskills skill install <owner/repo>\n  mcp:         zskills mcp add <name>".into()
+            "  plugin:      zskills plugin install <name@marketplace>  (writes [[skills]])\n  skill:       zskills skill install <owner/repo>            (writes [[agent_skills]])\n  mcp:         zskills mcp add <name>".into()
         }
         "remove" => {
             "  plugin:      zskills plugin remove <name@marketplace>\n  skill:       zskills skill remove <name>\n  mcp:         zskills mcp remove <name> [--scope user|project|local]".into()
@@ -39,6 +39,9 @@ fn doors(verb: &str) -> String {
         "update" => "  marketplace: zskills marketplace update [name]".into(),
         "upgrade" => {
             "  skill:       zskills skill upgrade [name]\n  marketplace: zskills marketplace update [name]".into()
+        }
+        "skill-migrate" => {
+            "  use `zskills migrate-skill <name>` (top-level). `skill migrate` is not a verb.".into()
         }
         _ => String::new(),
     }

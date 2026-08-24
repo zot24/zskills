@@ -4,6 +4,7 @@ Full reference for every `zskills` subcommand. Flags are shown with their defaul
 
 ## Conventions
 
+- CLI group to manifest key: `plugin` → `[[skills]]`; `skill` → `[[agent_skills]]`; `mcp` → `[[mcps]]`.
 - `<name>` accepts the unqualified skill name (e.g. `servarr`) when unambiguous, or `name@marketplace` (e.g. `servarr@zot24-skills`) when multiple marketplaces declare the same skill. This matches Claude Code's own syntax.
 - Most commands print colored output. Set `NO_COLOR=1` to disable, or pipe through `cat` if you need plain text.
 - `CLAUDE_HOME=/custom/path` overrides `~/.claude` for testing.
@@ -92,7 +93,19 @@ zskills plugin enable  <name>...
 zskills plugin disable <name>...
 ```
 
-`enable` is a no-op if the plugin isn't installed (Claude Code will install it on next start). `disable` keeps bytes and inventory; use `purge` to wipe completely.
+`plugin enable` fails if the plugin is not in `enabledPlugins` or the plugin inventory. `plugin disable` keeps bytes and inventory; use `plugin purge` to delete bytes.
+
+## `skill`
+
+Agent Skills live in `~/.agents/skills/`. The group writes `[[agent_skills]]`, not `[[skills]]`.
+
+```
+zskills skill install <owner/repo> [--skill NAME | --all | -i]
+zskills skill remove <name> [--force] [--file path]
+zskills skill upgrade [<name>...]
+```
+
+`skill remove` deletes bytes. It is not `plugin remove`. `--force` is required when the name is also shipped by an enabled plugin, or when a source-only `[[agent_skills]]` row owns it.
 
 ## `sync` (headline command)
 

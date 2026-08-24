@@ -73,7 +73,7 @@ pub fn parse_source(source: &str) -> Result<(String, String)> {
         Ok((url, sanitize(source)))
     } else {
         anyhow::bail!(
-            "unrecognized agent-skill source: {} (expected owner/repo or git URL)",
+            "unrecognized Agent Skill source: {} (expected owner/repo or git URL)",
             source
         )
     }
@@ -92,7 +92,7 @@ pub fn ensure_cache(source: &str) -> Result<PathBuf> {
     if cache.exists() {
         crate::git::pull(&cache).ok(); // best-effort
     } else {
-        crate::git::clone(&url, &cache).context("cloning agent-skill source repo")?;
+        crate::git::clone(&url, &cache).context("cloning Agent Skill source repo")?;
     }
     Ok(cache)
 }
