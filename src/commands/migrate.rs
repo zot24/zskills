@@ -176,6 +176,7 @@ pub fn run(project: PathBuf, remove_from_project: bool, dry_run: bool) -> Result
                             .unwrap_or(0)
                     ),
                     head_sha: "local".to_string(),
+                    to: vec!["agents".into()],
                 },
             );
         }

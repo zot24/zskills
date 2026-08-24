@@ -21,7 +21,21 @@ pub fn run(json_out: bool, verbose: bool, paths: bool) -> Result<()> {
     };
     let user_skills = crate::paths::user_skills_dir().ok();
 
-    let managed_names: Vec<&String> = inv.agent_skills.keys().collect();
+    let managed_names: Vec<&String> = inv
+        .agent_skills
+        .iter()
+        .filter(|(n, e)| {
+            if let Some(q) = e.source.strip_prefix("plugin:") {
+                if report.active.iter().any(|a| a == q) {
+                    // The plugin line already names these locations.
+                    let _ = n;
+                    return false;
+                }
+            }
+            true
+        })
+        .map(|(n, _)| n)
+        .collect();
     // A name an active plugin already ships is not an orphan — the plugin owns it.
     let from_plugins = crate::agent_skill::plugin_provided_skills(&report.active);
     let untracked: Vec<String> = on_disk
@@ -57,16 +71,38 @@ pub fn run(json_out: bool, verbose: bool, paths: bool) -> Result<()> {
                 })
             })
             .collect();
+        let mut plugin_locations = serde_json::Map::new();
+        for k in &report.active {
+            plugin_locations.insert(
+                k.clone(),
+                crate::harness::visibility_for_plugin(k, true).to_json(),
+            );
+        }
+        for k in &report.installed_disabled {
+            plugin_locations.insert(
+                k.clone(),
+                crate::harness::visibility_for_plugin(k, false).to_json(),
+            );
+        }
+        let mut skill_locations = serde_json::Map::new();
+        for names in by_source.values() {
+            for n in names {
+                skill_locations
+                    .insert(n.clone(), crate::harness::visibility_for_skill(n).to_json());
+            }
+        }
         let out = json!({
             "plugins": {
                 "active": report.active,
                 "installed_disabled": report.installed_disabled,
                 "enabled_orphan": report.enabled_orphan,
                 "installed_orphan": report.installed_orphan,
+                "harnesses": plugin_locations,
             },
             "agent_skills": {
                 "managed": groups,
                 "untracked": untracked,
+                "harnesses": skill_locations,
             },
             "mcp_servers": mcps,
         });
@@ -82,14 +118,14 @@ pub fn run(json_out: bool, verbose: bool, paths: bool) -> Result<()> {
         println!("  (none)");
     } else {
         for k in &report.active {
-            print_plugin_line("✓", k, paths, &plugin_inv);
+            print_plugin_line("✓", k, paths, &plugin_inv, true);
         }
     }
 
     if !report.installed_disabled.is_empty() {
         println!("\n{}", "Plugins — installed but disabled".bold().yellow());
         for k in &report.installed_disabled {
-            print_plugin_line("•", k, paths, &plugin_inv);
+            print_plugin_line("•", k, paths, &plugin_inv, false);
         }
     }
 
@@ -178,10 +214,12 @@ fn print_group(
         } else {
             String::new()
         };
+        let loc = crate::harness::visibility_for_skill(&names[0]).format_human();
         println!(
-            "  ✓ {}  {}{}",
+            "  ✓ {}  {}{}{}",
             names[0],
             format!("← {}", source).dimmed(),
+            loc.dimmed(),
             path_suffix
         );
         return;
@@ -204,7 +242,8 @@ fn print_group(
             } else {
                 String::new()
             };
-            println!("      • {}{}", n, path_suffix);
+            let loc = crate::harness::visibility_for_skill(n).format_human();
+            println!("      • {}{}{}", n, loc.dimmed(), path_suffix);
         }
     } else {
         let preview: Vec<&str> = names.iter().take(5).map(|s| s.as_str()).collect();
@@ -223,13 +262,26 @@ fn agent_skill_path_suffix(name: &str, user_skills: Option<&std::path::Path>) ->
     }
 }
 
-fn print_plugin_line(marker: &str, qualified: &str, paths: bool, inv: &serde_json::Value) {
+fn print_plugin_line(
+    marker: &str,
+    qualified: &str,
+    paths: bool,
+    inv: &serde_json::Value,
+    active: bool,
+) {
+    let loc = crate::harness::visibility_for_plugin(qualified, active).format_human();
     if !paths {
-        println!("  {} {}", marker, qualified);
+        println!("  {} {}{}", marker, qualified, loc.dimmed());
         return;
     }
     let path = plugin_install_path(qualified, inv).unwrap_or_else(|| "(unknown)".to_string());
-    println!("  {} {}  {}", marker, qualified, path.dimmed());
+    println!(
+        "  {} {}{}  {}",
+        marker,
+        qualified,
+        loc.dimmed(),
+        path.dimmed()
+    );
 }
 
 fn plugin_install_path(qualified: &str, inv: &serde_json::Value) -> Option<String> {

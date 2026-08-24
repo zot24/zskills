@@ -8,11 +8,12 @@ Full reference for every `zskills` subcommand. Flags are shown with their defaul
 - `<name>` accepts the unqualified skill name (e.g. `servarr`) when unambiguous, or `name@marketplace` (e.g. `servarr@zot24-skills`) when multiple marketplaces declare the same skill. This matches Claude Code's own syntax.
 - Most commands print colored output. Set `NO_COLOR=1` to disable, or pipe through `cat` if you need plain text.
 - `CLAUDE_HOME=/custom/path` overrides `~/.claude` for testing.
+- `AGENTS_HOME` overrides `~/.agents`.
 - `XDG_CONFIG_HOME` and `XDG_CACHE_HOME` are respected for manifest/cache locations.
 
 ## `list`
 
-What's currently installed, with each item's enabled/disabled/orphaned status. Covers both Claude Code plugins and Agent Skills.
+What's currently installed, with each item's enabled/disabled/orphaned status. Covers both Claude Code plugins and Agent Skills. Each plugin and Agent Skill line names which **harnesses** can see it: `claude`, `pi`, `hermes`, `kimi`, `grok`, `codex`. A Claude-only plugin is not a Pi install. Harnesses that have no cited skill root are listed as skipped (`unsupported`), not as present.
 
 ```
 zskills list [--json] [-v] [--paths]
@@ -41,12 +42,13 @@ Three accepted spec shapes:
 ```
 zskills plugin install <name>                       # plugin from a registered marketplace
 zskills plugin install <name>@<marketplace>         # qualified plugin
+zskills plugin install <name> --harness pi,grok     # copy nested skills/<name>/ into the shared Agent Skill hub
 zskills skill install <owner>/<repo>                # Agent Skill(s) from a git repo
 zskills skill install <git-url>                     # same, for https://, git@, file://
 zskills plugin install -i                           # interactive picker over marketplace plugins
 ```
 
-**Plugin path (`<name>` / `<name>@<marketplace>`).** Resolves against registered marketplaces, flips `enabledPlugins` in `~/.claude/settings.json`. Claude Code materializes bytes on next launch.
+**Plugin path (`<name>` / `<name>@<marketplace>`).** Resolves against registered marketplaces. `--harness` is a one-shot override of `[defaults].harnesses` (comma-separated: `claude`, `pi`, `hermes`, `kimi`, `grok`, `codex`). Missing `[defaults]` and missing `--harness` keep 1.0 behaviour: Claude only. `claude` in the set flips `enabledPlugins` in `~/.claude/settings.json` and materializes the marketplace plugin. `pi` / `grok` / `codex` copy each nested `skills/<name>/` tree into the shared hub `~/.agents/skills/<name>/` so `SKILL.md` sits at the scan root (those harnesses already scan the hub). Copies are real directories. Symlinks are refused. `hermes` and `kimi` print `unsupported` and do not invent a folder.
 
 **Repo path (`<owner>/<repo>` or git URL).** Clones the repo via `git clone --depth 1` into `~/.cache/zskills/agent-skills/<owner>-<repo>/`, surveys the tree, and:
 - **Agent Skills** (any directory under `skills/<name>/SKILL.md`) — installed to `~/.agents/skills/<name>/` (the cross-client convention; visible to Claude Code, Grok CLI, and any other compliant client). Inventory tagged with the source.
@@ -58,6 +60,7 @@ zskills plugin install -i                           # interactive picker over ma
 | `-i`, `--interactive` | off | For plugin specs: without any `<name>`, browse all marketplace plugins with a fuzzy picker. For repo specs: always opens a multi-select picker over the Agent Skills found in the repo. |
 | `--all` | off | For repo specs only: when the repo contains more than 5 Agent Skills, confirm "yes, install every one." Without `--all`, large collections abort with a sample summary so they don't silently flood `~/.agents/skills/`. Ignored for repos with ≤5 skills (those install everything by default). |
 | `--skill <name>` | none | For repo specs only: install exactly one skill by name (the manifest `name` field) — the non-interactive counterpart to `-i` for multi-skill repos. Bypasses the >5-skill size policy (the selection is explicit) and conflicts with `--all`. |
+| `--harness <list>` | `[defaults].harnesses`, or Claude only | Comma-separated harness names. One-shot override. Not `--to`. |
 
 **Repo-path count behavior**:
 
@@ -123,7 +126,7 @@ zskills sync [--file <path>] [--dry-run] [--prune | --adopt]
 | `--adopt` | off | Inverse of `--prune`. Append every orphan (installed agent skill, enabled plugin, configured MCP that isn't yet in the manifest) to `skills.toml` and exit. Useful for capturing a hand-curated environment into your manifest in one shot. Mutually exclusive with `--prune`. |
 
 What sync does:
-1. For each `[[skills]]` entry: resolve `name@marketplace`, write to `enabledPlugins`. Entries currently enabled but not in the manifest get flipped off.
+1. For each `[[skills]]` entry: resolve `name@marketplace`. If `harnesses` (or `[defaults].harnesses`) contains `claude`, write to `enabledPlugins`. Entries currently enabled but not in the manifest get flipped off. Hub-backed harnesses (`pi`, `grok`, `codex`) copy nested `skills/<name>/` trees into `~/.agents/skills/` in the same pass.
 2. For each `[[agent_skills]]` entry: if `source` is present, clone/pull and copy `skills/<name>/` to `~/.agents/skills/`. If `npm` is present, run `npm install -g --no-fund --no-audit <pkg>` (or `install_cmd`), then claim all matching `claims` globs. If neither is present (just `name`), register the existing on-disk skill in inventory without fetching anything.
 3. Agent skills tracked in inventory but missing from the manifest are reported. With `--prune` they're deleted; with `--adopt` they're appended to the manifest; otherwise they're skipped.
 
