@@ -130,6 +130,7 @@ fn install_from_hits(hits: &[Hit]) -> Result<()> {
             let h = &hits[idx];
             let spec = format!("{}@{}", h.name, h.marketplace);
             crate::commands::install::run(vec![spec], false, false, None)?;
+            // search -i always produces name@marketplace (plugin path).
         }
     }
     Ok(())

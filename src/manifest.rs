@@ -503,6 +503,189 @@ pub fn append_mcp(path: &Path, entry: &McpEntry) -> Result<bool> {
     Ok(true)
 }
 
+fn mcp_table_scope(t: &toml_edit::Table) -> String {
+    t.get("scope")
+        .and_then(|v| v.as_str())
+        .map(str::to_string)
+        .unwrap_or_else(|| "user".into())
+}
+
+fn write_mcp_table(t: &mut toml_edit::Table, entry: &McpEntry) {
+    use toml_edit::{value, Array, InlineTable};
+    t["name"] = value(&entry.name);
+    match entry.scope.as_deref() {
+        Some(s) if s != "user" => t["scope"] = value(s),
+        _ => {
+            t.remove("scope");
+        }
+    }
+    if let Some(transport) = &entry.transport {
+        t["transport"] = value(transport);
+    } else {
+        t.remove("transport");
+    }
+    if let Some(c) = &entry.command {
+        t["command"] = value(c);
+    } else {
+        t.remove("command");
+    }
+    if !entry.args.is_empty() {
+        let mut arr = Array::new();
+        for a in &entry.args {
+            arr.push(a.as_str());
+        }
+        t["args"] = value(arr);
+    } else {
+        t.remove("args");
+    }
+    if !entry.env.is_empty() {
+        let mut tbl = InlineTable::new();
+        for (k, v) in &entry.env {
+            tbl.insert(k, v.as_str().into());
+        }
+        t["env"] = value(tbl);
+    } else {
+        t.remove("env");
+    }
+    if let Some(u) = &entry.url {
+        t["url"] = value(u);
+    } else {
+        t.remove("url");
+    }
+    if !entry.headers.is_empty() {
+        let mut tbl = InlineTable::new();
+        for (k, v) in &entry.headers {
+            tbl.insert(k, v.as_str().into());
+        }
+        t["headers"] = value(tbl);
+    } else {
+        t.remove("headers");
+    }
+}
+
+/// Replace or insert an `[[mcps]]` row for `(name, scope)`. Returns `"added"` or `"updated"`.
+pub fn upsert_mcp(path: &Path, entry: &McpEntry) -> Result<&'static str> {
+    use toml_edit::{ArrayOfTables, DocumentMut, Item, Table};
+
+    let raw = if path.exists() {
+        std::fs::read_to_string(path)
+            .with_context(|| format!("reading manifest {}", path.display()))?
+    } else {
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent).ok();
+        }
+        String::new()
+    };
+    let mut doc: DocumentMut = raw
+        .parse()
+        .with_context(|| format!("parsing manifest {} as TOML", path.display()))?;
+
+    let new_scope = entry.scope.clone().unwrap_or_else(|| "user".into());
+    let mut found = None;
+    if let Some(Item::ArrayOfTables(existing)) = doc.get("mcps") {
+        for (i, t) in existing.iter().enumerate() {
+            let name = t.get("name").and_then(|v| v.as_str());
+            if name == Some(&entry.name) && mcp_table_scope(t) == new_scope {
+                found = Some(i);
+                break;
+            }
+        }
+    }
+
+    let aot = match doc
+        .entry("mcps")
+        .or_insert(Item::ArrayOfTables(ArrayOfTables::new()))
+    {
+        Item::ArrayOfTables(a) => a,
+        slot => {
+            *slot = Item::ArrayOfTables(ArrayOfTables::new());
+            match slot {
+                Item::ArrayOfTables(a) => a,
+                _ => unreachable!(),
+            }
+        }
+    };
+
+    if let Some(i) = found {
+        write_mcp_table(aot.get_mut(i).expect("index from scan"), entry);
+        std::fs::write(path, doc.to_string())
+            .with_context(|| format!("writing manifest {}", path.display()))?;
+        return Ok("updated");
+    }
+
+    let mut t = Table::new();
+    write_mcp_table(&mut t, entry);
+    aot.push(t);
+    std::fs::write(path, doc.to_string())
+        .with_context(|| format!("writing manifest {}", path.display()))?;
+    Ok("added")
+}
+
+/// Drop the `[[mcps]]` row whose `(name, scope)` matches. Missing `scope` counts as user.
+pub fn drop_mcp(path: &Path, name: &str, scope: &str) -> Result<bool> {
+    use toml_edit::{DocumentMut, Item};
+
+    if !path.exists() {
+        return Ok(false);
+    }
+    let raw = std::fs::read_to_string(path)
+        .with_context(|| format!("reading manifest {}", path.display()))?;
+    let mut doc: DocumentMut = raw
+        .parse()
+        .with_context(|| format!("parsing manifest {} as TOML", path.display()))?;
+
+    let Some(Item::ArrayOfTables(aot)) = doc.get_mut("mcps") else {
+        return Ok(false);
+    };
+    let mut idx = None;
+    for (i, t) in aot.iter().enumerate() {
+        let n = t.get("name").and_then(|v| v.as_str());
+        if n == Some(name) && mcp_table_scope(t) == scope {
+            idx = Some(i);
+            break;
+        }
+    }
+    let Some(i) = idx else {
+        return Ok(false);
+    };
+    aot.remove(i);
+    std::fs::write(path, doc.to_string())
+        .with_context(|| format!("writing manifest {}", path.display()))?;
+    Ok(true)
+}
+
+/// Drop a named `[[agent_skills]]` row. Source-only rows (no `name`) are left alone.
+pub fn drop_named_agent_skill(path: &Path, name: &str) -> Result<bool> {
+    use toml_edit::{DocumentMut, Item};
+
+    if !path.exists() {
+        return Ok(false);
+    }
+    let raw = std::fs::read_to_string(path)
+        .with_context(|| format!("reading manifest {}", path.display()))?;
+    let mut doc: DocumentMut = raw
+        .parse()
+        .with_context(|| format!("parsing manifest {} as TOML", path.display()))?;
+
+    let Some(Item::ArrayOfTables(aot)) = doc.get_mut("agent_skills") else {
+        return Ok(false);
+    };
+    let mut idx = None;
+    for (i, t) in aot.iter().enumerate() {
+        if t.get("name").and_then(|v| v.as_str()) == Some(name) {
+            idx = Some(i);
+            break;
+        }
+    }
+    let Some(i) = idx else {
+        return Ok(false);
+    };
+    aot.remove(i);
+    std::fs::write(path, doc.to_string())
+        .with_context(|| format!("writing manifest {}", path.display()))?;
+    Ok(true)
+}
+
 #[cfg(test)]
 mod marketplace_pin_tests {
     use super::*;

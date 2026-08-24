@@ -1,5 +1,19 @@
 use thiserror::Error;
 
+/// Hidden stub for a verb removed in 1.0. `main` maps this to exit 2.
+#[derive(Debug)]
+pub struct RemovedVerb {
+    pub message: String,
+}
+
+impl std::fmt::Display for RemovedVerb {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.message)
+    }
+}
+
+impl std::error::Error for RemovedVerb {}
+
 #[derive(Debug, Error)]
 #[allow(dead_code)]
 pub enum Error {

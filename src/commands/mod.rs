@@ -1,14 +1,17 @@
+pub mod agent_skills;
 pub mod doctor;
 pub mod enable;
 pub mod install;
 pub mod list;
 pub mod marketplace;
+pub mod mcp;
 pub mod migrate;
 pub mod migrate_all;
 pub mod migrate_skill;
 pub mod remove;
 pub mod scan;
 pub mod search;
+pub mod stub;
 pub mod sync;
 pub mod update;
 pub mod upgrade;

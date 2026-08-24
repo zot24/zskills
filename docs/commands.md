@@ -4,6 +4,7 @@ Full reference for every `zskills` subcommand. Flags are shown with their defaul
 
 ## Conventions
 
+- CLI group to manifest key: `plugin` → `[[skills]]`; `skill` → `[[agent_skills]]`; `mcp` → `[[mcps]]`.
 - `<name>` accepts the unqualified skill name (e.g. `servarr`) when unambiguous, or `name@marketplace` (e.g. `servarr@zot24-skills`) when multiple marketplaces declare the same skill. This matches Claude Code's own syntax.
 - Most commands print colored output. Set `NO_COLOR=1` to disable, or pipe through `cat` if you need plain text.
 - `CLAUDE_HOME=/custom/path` overrides `~/.claude` for testing.
@@ -38,11 +39,11 @@ Servers are grouped by scope (managed → local → project → user) and only t
 Three accepted spec shapes:
 
 ```
-zskills install <name>                       # plugin from a registered marketplace
-zskills install <name>@<marketplace>         # qualified plugin
-zskills install <owner>/<repo>               # NEW: Agent Skill(s) directly from a git repo
-zskills install <git-url>                    # NEW: same, for arbitrary git URLs (https://, git@, file://)
-zskills install -i                           # interactive picker over marketplace plugins
+zskills plugin install <name>                       # plugin from a registered marketplace
+zskills plugin install <name>@<marketplace>         # qualified plugin
+zskills skill install <owner>/<repo>                # Agent Skill(s) from a git repo
+zskills skill install <git-url>                     # same, for https://, git@, file://
+zskills plugin install -i                           # interactive picker over marketplace plugins
 ```
 
 **Plugin path (`<name>` / `<name>@<marketplace>`).** Resolves against registered marketplaces, flips `enabledPlugins` in `~/.claude/settings.json`. Claude Code materializes bytes on next launch.
@@ -67,16 +68,16 @@ zskills install -i                           # interactive picker over marketpla
 | 2–5 | install all | picker | install all | install just that one |
 | > 5 | **abort + summary + next-step hint** | picker | install all | install just that one |
 
-**Sparse installs (root-level SKILL.md).** A repo whose `SKILL.md` sits at the repo root inside a larger project (source code, lockfiles, websites…) is installed *sparsely*: only `SKILL.md`, the conventional skill dirs (`references/`, `assets/`, `scripts/`), and relative paths that `SKILL.md` links to are copied out — never the whole source tree, and never `.git/`. Installs from the `skills/<name>/SKILL.md` layout copy the skill subdirectory as before. Legacy full-repo installs are flagged by `zskills doctor` and slimmed on the next `zskills upgrade` (or `doctor --fix`).
+**Sparse installs (root-level SKILL.md).** A repo whose `SKILL.md` sits at the repo root inside a larger project (source code, lockfiles, websites…) is installed *sparsely*: only `SKILL.md`, the conventional skill dirs (`references/`, `assets/`, `scripts/`), and relative paths that `SKILL.md` links to are copied out — never the whole source tree, and never `.git/`. Installs from the `skills/<name>/SKILL.md` layout copy the skill subdirectory as before. Legacy full-repo installs are flagged by `zskills doctor` and slimmed on the next `zskills skill upgrade` (or `doctor --fix`).
 
 ## `remove` / `purge`
 
 `remove` is apt-style: disable in `enabledPlugins` and drop the inventory entry, but leave bytes on disk so re-enabling is instant. `purge` does the same plus deletes the bytes from `~/.claude/plugins/cache/`.
 
 ```
-zskills remove <name>...
-zskills remove -i
-zskills purge  <name>...
+zskills plugin remove <name>...
+zskills plugin remove -i
+zskills plugin purge  <name>...
 ```
 
 | Flag | Default | Description |
@@ -88,11 +89,23 @@ zskills purge  <name>...
 Flip a plugin's `enabledPlugins` flag without (un)installing.
 
 ```
-zskills enable  <name>...
-zskills disable <name>...
+zskills plugin enable  <name>...
+zskills plugin disable <name>...
 ```
 
-`enable` is a no-op if the plugin isn't installed (Claude Code will install it on next start). `disable` keeps bytes and inventory; use `purge` to wipe completely.
+`plugin enable` fails if the plugin is not in `enabledPlugins` or the plugin inventory. `plugin disable` keeps bytes and inventory; use `plugin purge` to delete bytes.
+
+## `skill`
+
+Agent Skills live in `~/.agents/skills/`. The group writes `[[agent_skills]]`, not `[[skills]]`.
+
+```
+zskills skill install <owner/repo> [--skill NAME | --all | -i]
+zskills skill remove <name> [--force] [--file path]
+zskills skill upgrade [<name>...]
+```
+
+`skill remove` deletes bytes. It is not `plugin remove`. `--force` is required when the name is also shipped by an enabled plugin, or when a source-only `[[agent_skills]]` row owns it.
 
 ## `sync` (headline command)
 
@@ -133,7 +146,7 @@ If a `./skills.toml` exists in CWD when you run `sync` without `--file`, zskills
 The one command for refreshing everything zskills manages — marketplaces, git agent skills, and npm agent skills.
 
 ```
-zskills upgrade [<name>...]
+zskills skill upgrade [<name>...]
 ```
 
 | Source kind | What `upgrade` does |

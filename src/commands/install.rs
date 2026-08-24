@@ -85,8 +85,8 @@ fn install_from_repo(spec: &str, interactive: bool, all: bool, skill: Option<&st
         );
         println!("  zskills marketplace add {}", spec.bold());
         println!(
-            "  zskills install <plugin>@<marketplace>   {}",
-            "(or `zskills install -i` to browse)".dimmed()
+            "  zskills plugin install <plugin>@<marketplace>   {}",
+            "(or `zskills plugin install -i` to browse)".dimmed()
         );
         if !survey.agent_skills.is_empty() {
             println!(
@@ -214,12 +214,12 @@ fn print_large_collection_summary(
     println!("\n{}", "Options:".bold());
     println!(
         "  {}   {}",
-        format!("zskills install {} -i", spec).bold(),
+        format!("zskills skill install {} -i", spec).bold(),
         "interactive picker".dimmed()
     );
     println!(
         "  {}   {}",
-        format!("zskills install {} --all", spec).bold(),
+        format!("zskills skill install {} --all", spec).bold(),
         format!("install all {} skills", count).dimmed()
     );
     let preview: Vec<&str> = skills.iter().take(5).map(|s| s.name.as_str()).collect();

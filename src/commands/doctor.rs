@@ -11,6 +11,8 @@ pub fn run(fix: bool) -> Result<()> {
     let mut fixable = 0;
 
     issues += check_mcps();
+    issues += check_mcp_intent();
+    issues += check_stale_zskills_skill_md();
 
     // A marketplace entry with no `lastUpdated` string makes Claude Code reject the
     // *whole* known_marketplaces.json, which breaks every `claude plugin install`.
@@ -159,7 +161,8 @@ pub fn run(fix: bool) -> Result<()> {
         }
         println!(
             "  {}",
-            "run `zskills upgrade <name>` or `zskills doctor --fix` to re-install slim".dimmed()
+            "run `zskills skill upgrade <name>` or `zskills doctor --fix` to re-install slim"
+                .dimmed()
         );
     }
 
@@ -215,7 +218,7 @@ pub fn run(fix: bool) -> Result<()> {
         let mut inv = crate::agent_skill::load_inventory()?;
         for k in &agent_inventory_missing {
             inv.agent_skills.remove(k);
-            println!("  removed {} from agent-skill inventory", k);
+            println!("  removed {} from Agent Skill inventory", k);
             fixed += 1;
         }
         crate::agent_skill::save_inventory(&inv)?;
@@ -339,6 +342,93 @@ fn check_mcps() -> usize {
         println!("  {} {}", format!("[{}]", scope).dimmed(), name.bold());
         for msg in msgs {
             println!("    - {}", msg);
+        }
+    }
+    issues
+}
+
+/// Compare [[mcps]] intent with runtime Manual keys. `--fix` stays a no-op.
+fn check_mcp_intent() -> usize {
+    let Some(path) = crate::manifest::discover() else {
+        return 0;
+    };
+    let Ok(manifest) = crate::manifest::load(&path) else {
+        return 0;
+    };
+    let runtime = crate::mcp::load_all().unwrap_or_default();
+    let mut issues = 0;
+    for entry in &manifest.mcps {
+        let Ok(scope) = entry.scope_kind() else {
+            continue;
+        };
+        let present = runtime.iter().any(|m| {
+            m.name == entry.name
+                && m.scope.label() == scope
+                && matches!(m.source, crate::mcp::Source::Manual)
+        });
+        if !present {
+            issues += 1;
+            println!(
+                "{} [[mcps]] `{}` ({}) is in the manifest but not in the runtime map",
+                "✗".red(),
+                entry.name,
+                scope
+            );
+        }
+    }
+    for m in runtime
+        .iter()
+        .filter(|m| matches!(m.source, crate::mcp::Source::Manual))
+    {
+        let in_manifest = manifest
+            .mcps
+            .iter()
+            .any(|e| e.name == m.name && e.scope_kind().ok() == Some(m.scope.label()));
+        if !in_manifest {
+            issues += 1;
+            println!(
+                "{} MCP `{}` ({}) is in the runtime map but not in [[mcps]]",
+                "✗".red(),
+                m.name,
+                m.scope.label()
+            );
+        }
+    }
+    issues
+}
+
+/// Warn if a SKILL.md named zskills still teaches bare verbs.
+fn check_stale_zskills_skill_md() -> usize {
+    let mut issues = 0;
+    let candidates = [
+        crate::paths::user_skills_dir()
+            .ok()
+            .map(|p| p.join("zskills").join("SKILL.md")),
+        crate::paths::claude_home()
+            .ok()
+            .map(|p| p.join("skills").join("zskills").join("SKILL.md")),
+    ];
+    for path in candidates.into_iter().flatten() {
+        if !path.exists() {
+            continue;
+        }
+        let Ok(text) = std::fs::read_to_string(&path) else {
+            continue;
+        };
+        let stale = [
+            "zskills install ",
+            "zskills remove ",
+            "zskills purge ",
+            "zskills enable ",
+            "zskills disable ",
+        ];
+        if stale.iter().any(|s| text.contains(s)) {
+            issues += 1;
+            println!(
+                "{} {} still documents bare verbs removed in 1.0 — recopy skills/zskills/SKILL.md from this version",
+                "!".yellow(),
+                path.display()
+            );
         }
     }
     issues

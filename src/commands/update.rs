@@ -1,6 +1,7 @@
 use anyhow::Result;
 use owo_colors::OwoColorize;
 
+#[allow(dead_code)] // folded into `marketplace update`; kept for the all-tap refresh print
 pub fn run(_skills: Vec<String>) -> Result<()> {
     // Refresh every marketplace; Claude Code itself handles version negotiation.
     let known = crate::marketplace::load_known(&crate::paths::known_marketplaces_json()?)?;

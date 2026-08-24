@@ -130,7 +130,7 @@ fn list_json_reports_active_and_orphan() {
 fn enable_disable_flips_settings_without_clobbering_other_fields() {
     let home = fake_home();
     zskills(&home)
-        .args(["disable", "foo@test-mp"])
+        .args(["plugin", "disable", "foo@test-mp"])
         .assert()
         .success();
     let s: serde_json::Value =
@@ -140,7 +140,7 @@ fn enable_disable_flips_settings_without_clobbering_other_fields() {
     assert!(s["hooks"].is_object()); // preserved
 
     zskills(&home)
-        .args(["enable", "foo@test-mp"])
+        .args(["plugin", "enable", "foo@test-mp"])
         .assert()
         .success();
     let s: serde_json::Value =
@@ -497,7 +497,7 @@ fn upgrade_runs_without_marketplaces_or_manifest() {
     // "Upgrade complete" line.
     let home = fake_home();
     zskills(&home)
-        .args(["upgrade"])
+        .args(["skill", "upgrade"])
         .assert()
         .success()
         .stdout(predicates::str::contains("Upgrade complete"));
@@ -549,7 +549,7 @@ fn doctor_detects_orphan_and_fixes_it() {
 fn install_interactive_flag_in_help() {
     let home = fake_home();
     zskills(&home)
-        .args(["install", "--help"])
+        .args(["plugin", "install", "--help"])
         .assert()
         .success()
         .stdout(predicate::str::contains("-i"))
@@ -571,7 +571,7 @@ fn search_interactive_flag_in_help() {
 fn remove_interactive_flag_in_help() {
     let home = fake_home();
     zskills(&home)
-        .args(["remove", "--help"])
+        .args(["plugin", "remove", "--help"])
         .assert()
         .success()
         .stdout(predicate::str::contains("-i"))
@@ -1120,7 +1120,7 @@ fn install_repo_root_skill_is_sparse() {
 
     let home = fake_home();
     zskills(&home)
-        .args(["install", &file_url(&repo)])
+        .args(["skill", "install", &file_url(&repo)])
         .assert()
         .success();
 
@@ -1154,7 +1154,13 @@ fn install_skill_flag_selects_single_skill() {
 
     let home = fake_home();
     zskills(&home)
-        .args(["install", &file_url(upstream.path()), "--skill", "beta"])
+        .args([
+            "skill",
+            "install",
+            &file_url(upstream.path()),
+            "--skill",
+            "beta",
+        ])
         .assert()
         .success()
         .stdout(predicate::str::contains("beta"));
@@ -1172,7 +1178,13 @@ fn install_skill_flag_unknown_name_errors() {
 
     let home = fake_home();
     let out = zskills(&home)
-        .args(["install", &file_url(upstream.path()), "--skill", "nope"])
+        .args([
+            "skill",
+            "install",
+            &file_url(upstream.path()),
+            "--skill",
+            "nope",
+        ])
         .assert()
         .failure()
         .get_output()
@@ -1191,7 +1203,7 @@ fn install_skill_flag_unknown_name_errors() {
 fn install_skill_flag_conflicts_with_all() {
     let home = fake_home();
     zskills(&home)
-        .args(["install", "owner/repo", "--skill", "x", "--all"])
+        .args(["skill", "install", "owner/repo", "--skill", "x", "--all"])
         .assert()
         .failure()
         .stderr(predicate::str::contains("cannot be used with"));
@@ -1207,7 +1219,13 @@ fn install_skill_flag_bypasses_large_collection_policy() {
 
     let home = fake_home();
     zskills(&home)
-        .args(["install", &file_url(upstream.path()), "--skill", "skill-3"])
+        .args([
+            "skill",
+            "install",
+            &file_url(upstream.path()),
+            "--skill",
+            "skill-3",
+        ])
         .assert()
         .success();
 
@@ -1272,7 +1290,7 @@ fn install_repo_single_skill_auto_installs() {
 
     let home = fake_home();
     zskills(&home)
-        .args(["install", &file_url(upstream.path())])
+        .args(["skill", "install", &file_url(upstream.path())])
         .assert()
         .success()
         .stdout(predicate::str::contains("alpha"));
@@ -1295,7 +1313,7 @@ fn install_repo_small_multi_installs_all() {
 
     let home = fake_home();
     zskills(&home)
-        .args(["install", &file_url(upstream.path())])
+        .args(["skill", "install", &file_url(upstream.path())])
         .assert()
         .success();
 
@@ -1322,7 +1340,7 @@ fn install_repo_large_collection_aborts_without_all() {
 
     let home = fake_home();
     zskills(&home)
-        .args(["install", &file_url(upstream.path())])
+        .args(["skill", "install", &file_url(upstream.path())])
         .assert()
         .success()
         .stdout(predicate::str::contains("won't install all"))
@@ -1351,7 +1369,7 @@ fn install_repo_large_collection_with_all_installs_everything() {
 
     let home = fake_home();
     zskills(&home)
-        .args(["install", &file_url(upstream.path()), "--all"])
+        .args(["skill", "install", &file_url(upstream.path()), "--all"])
         .assert()
         .success();
 
@@ -1381,7 +1399,7 @@ fn install_repo_marketplace_redirects() {
 
     let home = fake_home();
     zskills(&home)
-        .args(["install", &file_url(upstream.path())])
+        .args(["skill", "install", &file_url(upstream.path())])
         .assert()
         .success()
         .stdout(predicate::str::contains("marketplace"))
@@ -1410,7 +1428,7 @@ fn install_repo_mcp_hint_appears_alongside_skill_install() {
 
     let home = fake_home();
     let out = zskills(&home)
-        .args(["install", &file_url(upstream.path())])
+        .args(["skill", "install", &file_url(upstream.path())])
         .assert()
         .success()
         .get_output()
@@ -1435,7 +1453,7 @@ fn install_repo_with_no_skills_errors() {
 
     let home = fake_home();
     let out = zskills(&home)
-        .args(["install", &file_url(upstream.path())])
+        .args(["skill", "install", &file_url(upstream.path())])
         .assert()
         // A failed install exits non-zero: the error is on stderr *and* in $?.
         .failure()
@@ -1699,7 +1717,7 @@ fn install_plugin_invokes_claude_to_fetch_the_bytes() {
     zskills(&home)
         .env_remove("ZSKILLS_NO_CLAUDE_CLI")
         .env("ZSKILLS_CLAUDE_BIN", &stub)
-        .args(["install", "vercel@vercel-plugin"])
+        .args(["plugin", "install", "vercel@vercel-plugin"])
         .assert()
         .success()
         .stdout(predicate::str::contains("fetched vercel@vercel-plugin"));
@@ -1731,7 +1749,7 @@ fn install_plugin_reports_pending_when_claude_cli_is_missing() {
 
     // ZSKILLS_NO_CLAUDE_CLI=1 is already set by the helper.
     zskills(&home)
-        .args(["install", "vercel@vercel-plugin"])
+        .args(["plugin", "install", "vercel@vercel-plugin"])
         .assert()
         // The plugin genuinely is not installed, so the exit code says so too.
         .failure()
@@ -1763,7 +1781,7 @@ fn install_plugin_does_not_claim_success_when_the_fetch_fails() {
     zskills(&home)
         .env_remove("ZSKILLS_NO_CLAUDE_CLI")
         .env("ZSKILLS_CLAUDE_BIN", &stub)
-        .args(["install", "vercel@vercel-plugin"])
+        .args(["plugin", "install", "vercel@vercel-plugin"])
         .assert()
         .failure()
         .stdout(predicate::str::contains("enabled but not installed"))
@@ -1947,7 +1965,7 @@ fn install_does_not_trust_a_zero_exit_without_bytes() {
     zskills(&home)
         .env_remove("ZSKILLS_NO_CLAUDE_CLI")
         .env("ZSKILLS_CLAUDE_BIN", &stub)
-        .args(["install", "vercel@vercel-plugin"])
+        .args(["plugin", "install", "vercel@vercel-plugin"])
         .assert()
         .stdout(predicate::str::contains("fetched vercel@vercel-plugin").not())
         .stdout(predicate::str::contains("installed and ready").not())
@@ -1972,7 +1990,7 @@ fn install_kills_a_hanging_claude_instead_of_waiting_forever() {
         .env_remove("ZSKILLS_NO_CLAUDE_CLI")
         .env("ZSKILLS_CLAUDE_BIN", &stub)
         .env("ZSKILLS_CLAUDE_TIMEOUT_SECS", "1")
-        .args(["install", "vercel@vercel-plugin"])
+        .args(["plugin", "install", "vercel@vercel-plugin"])
         .assert()
         .stderr(predicate::str::contains("timed out"));
     assert!(
@@ -1995,7 +2013,7 @@ fn install_rejects_a_plugin_no_marketplace_offers_instead_of_writing_a_bogus_ena
     );
 
     zskills(&home)
-        .args(["install", "bogus@no-such-mp"])
+        .args(["plugin", "install", "bogus@no-such-mp"])
         .assert()
         .failure()
         .stdout(predicate::str::contains("+ bogus@no-such-mp").not());
@@ -2024,7 +2042,7 @@ fn install_exits_non_zero_when_the_fetch_fails() {
     zskills(&home)
         .env_remove("ZSKILLS_NO_CLAUDE_CLI")
         .env("ZSKILLS_CLAUDE_BIN", &stub)
-        .args(["install", "vercel@vercel-plugin"])
+        .args(["plugin", "install", "vercel@vercel-plugin"])
         .assert()
         .failure();
 }
@@ -2183,7 +2201,7 @@ fn update_holds_a_pinned_marketplace_and_floats_an_unpinned_one() {
     );
 
     zskills(&home)
-        .args(["update"])
+        .args(["marketplace", "update"])
         .assert()
         .success()
         .stdout(predicate::str::contains("pinned @"));
@@ -2213,7 +2231,7 @@ fn upgrade_holds_a_pinned_marketplace() {
         "[[marketplaces]]\nname = \"pinned-mp\"\npin = \"v1\"\n",
     );
 
-    zskills(&home).args(["upgrade"]).assert().success();
+    zskills(&home).args(["skill", "upgrade"]).assert().success();
 
     assert_eq!(marketplace_head(&home, "pinned-mp"), v1);
     assert_ne!(marketplace_head(&home, "pinned-mp"), head);
@@ -2257,7 +2275,10 @@ fn a_pin_accepts_a_full_sha() {
         &format!("[[marketplaces]]\nname = \"pinned-mp\"\npin = \"{}\"\n", v1),
     );
 
-    zskills(&home).args(["update"]).assert().success();
+    zskills(&home)
+        .args(["marketplace", "update"])
+        .assert()
+        .success();
     assert_eq!(marketplace_head(&home, "pinned-mp"), v1);
 }
 
@@ -2275,7 +2296,7 @@ fn an_unresolvable_pin_fails_and_never_falls_back_to_a_pull() {
     );
 
     zskills(&home)
-        .args(["update"])
+        .args(["marketplace", "update"])
         .assert()
         .success()
         .stdout(predicate::str::contains("does not exist"));
@@ -2299,7 +2320,10 @@ fn a_blank_pin_is_treated_as_unpinned() {
         "[[marketplaces]]\nname = \"free-mp\"\npin = \"   \"\n",
     );
 
-    zskills(&home).args(["update"]).assert().success();
+    zskills(&home)
+        .args(["marketplace", "update"])
+        .assert()
+        .success();
     assert_eq!(
         marketplace_head(&home, "free-mp"),
         head,
@@ -2394,7 +2418,7 @@ fn a_pin_resolves_even_when_upstream_moved_a_tag() {
     );
 
     zskills(&home)
-        .args(["update"])
+        .args(["marketplace", "update"])
         .assert()
         .success()
         .stdout(predicate::str::contains("would clobber").not());
@@ -2640,6 +2664,7 @@ fn install_skill_flag_selects_from_dot_agents_skills() {
     let home = fake_home();
     zskills(&home)
         .args([
+            "skill",
             "install",
             &file_url(upstream.path()),
             "--skill",
@@ -2670,7 +2695,7 @@ fn a_large_dot_agents_skills_tree_still_requires_skill_or_all() {
 
     let home = fake_home();
     zskills(&home)
-        .args(["install", &file_url(upstream.path())])
+        .args(["skill", "install", &file_url(upstream.path())])
         .assert()
         .success()
         .stdout(predicate::str::contains("14"))
@@ -2692,7 +2717,13 @@ fn install_reports_available_names_from_dot_agents_skills_when_skill_is_unknown(
 
     let home = fake_home();
     let out = zskills(&home)
-        .args(["install", &file_url(upstream.path()), "--skill", "nope"])
+        .args([
+            "skill",
+            "install",
+            &file_url(upstream.path()),
+            "--skill",
+            "nope",
+        ])
         .assert()
         .failure()
         .get_output()
@@ -2725,7 +2756,7 @@ fn upgrade_refreshes_only_skills_already_owned_from_a_source() {
     let home = fake_home();
     // Own exactly one skill from that source.
     zskills(&home)
-        .args(["install", &file_url(&repo), "--skill", "owned"])
+        .args(["skill", "install", &file_url(&repo), "--skill", "owned"])
         .assert()
         .success();
     assert!(home.path().join("skills/owned").exists());
@@ -2738,7 +2769,7 @@ fn upgrade_refreshes_only_skills_already_owned_from_a_source() {
     )
     .unwrap();
 
-    zskills(&home).arg("upgrade").assert().success();
+    zskills(&home).args(["skill", "upgrade"]).assert().success();
 
     assert!(
         home.path().join("skills/owned").exists(),
@@ -2751,4 +2782,79 @@ fn upgrade_refreshes_only_skills_already_owned_from_a_source() {
             unwanted
         );
     }
+}
+
+#[test]
+fn bare_remove_stub_exits_2_and_names_typed_replacement() {
+    let home = fake_home();
+    zskills(&home)
+        .args(["remove", "honcho"])
+        .assert()
+        .failure()
+        .code(2)
+        .stderr(predicate::str::contains("error: removed-in-1.0: remove"))
+        .stderr(predicate::str::contains("zskills skill remove"))
+        .stderr(predicate::str::contains("zskills mcp remove"));
+}
+
+#[test]
+fn plugin_remove_unknown_name_does_not_print_success() {
+    let home = fake_home();
+    zskills(&home)
+        .args(["plugin", "remove", "this-does-not-exist-xyz123"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("is not installed"));
+}
+
+#[test]
+fn mcp_add_and_remove_write_intent_then_runtime() {
+    let (parent, claude_home) = fake_home_nested();
+    let manifest_dir = parent.path().join("config").join("zskills");
+    fs::create_dir_all(&manifest_dir).unwrap();
+    let manifest = manifest_dir.join("skills.toml");
+    fs::write(&manifest, "").unwrap();
+    let claude_json = parent.path().join(".claude.json");
+    fs::write(&claude_json, r#"{"mcpServers":{}}"#).unwrap();
+
+    zskills_nested(&parent, &claude_home)
+        .args([
+            "mcp",
+            "add",
+            "honcho",
+            "--url",
+            "https://mcp.honcho.dev",
+            "--transport",
+            "http",
+            "--file",
+            manifest.to_str().unwrap(),
+        ])
+        .assert()
+        .success();
+
+    let toml = fs::read_to_string(&manifest).unwrap();
+    assert!(toml.contains("name = \"honcho\""));
+    let json: serde_json::Value = serde_json::from_slice(&fs::read(&claude_json).unwrap()).unwrap();
+    assert_eq!(
+        json["mcpServers"]["honcho"]["url"],
+        "https://mcp.honcho.dev"
+    );
+
+    zskills_nested(&parent, &claude_home)
+        .args([
+            "mcp",
+            "remove",
+            "honcho",
+            "--file",
+            manifest.to_str().unwrap(),
+        ])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("removed mcp"))
+        .stdout(predicate::str::contains("honcho"));
+
+    let toml = fs::read_to_string(&manifest).unwrap();
+    assert!(!toml.contains("name = \"honcho\""));
+    let json: serde_json::Value = serde_json::from_slice(&fs::read(&claude_json).unwrap()).unwrap();
+    assert!(json["mcpServers"].get("honcho").is_none());
 }

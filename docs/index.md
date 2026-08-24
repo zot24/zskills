@@ -67,7 +67,7 @@ zskills marketplace add-recommended     # seed trusted defaults (Anthropic-offic
 zskills marketplace add zot24/skills    # register additional taps as needed
 zskills search <query>                  # find skills across registered marketplaces
 zskills sync                            # apply the manifest
-zskills upgrade                         # refresh everything from origin
+zskills skill upgrade                   # refresh Agent Skills from origin
 zskills list                            # see what's installed
 zskills doctor                          # reconcile disk ↔ inventory ↔ settings
 ```
@@ -75,23 +75,17 @@ zskills doctor                          # reconcile disk ↔ inventory ↔ setti
 ## Commands
 
 ```text
-zskills list [-v]                       # what's installed; agent skills grouped by source
-zskills install <name>                  # add a plugin to enabledPlugins
-zskills remove  <name>                  # disable + drop inventory (keep bytes)
-zskills purge   <name>                  # also delete bytes
-zskills enable  <name> / disable <name> # flip the flag only
-zskills sync [--file f.toml] [--prune]  # apply declarative manifest
-zskills upgrade [<name>...]             # ONE command: refresh everything
-zskills update [<name>...]              # refresh marketplace caches (plugins only)
-zskills doctor [--fix]                  # reconcile disk ↔ inventory ↔ settings
-zskills scan [path]                     # find project-scope skills across a tree
-zskills migrate <project>               # promote project skills to user scope
-zskills migrate-skill <name>            # promote ONE skill across every project
-zskills migrate-all <dir>               # interactive sweep
-zskills search <query>                  # keyword search across registered marketplaces
-zskills marketplace add|remove|list|update
-zskills marketplace add-recommended     # seed trusted defaults (anthropics/claude-plugins-official)
+zskills list [-v]
+zskills plugin install|remove|purge|enable|disable
+zskills skill install|remove|upgrade
+zskills mcp add|remove
+zskills sync [--file f.toml] [--prune]
+zskills doctor [--fix]
+zskills scan|migrate|migrate-skill|migrate-all|search
+zskills marketplace add|remove|list|update|add-recommended
 ```
+
+Bare `install`/`remove`/`purge`/`enable`/`disable`/`update`/`upgrade` exit 2.
 
 Optional capabilities live behind cargo features so the default binary stays minimal — see [Commands → Optional features](./commands.md#optional-features) for the `skills-sh` remote-index driver.
 

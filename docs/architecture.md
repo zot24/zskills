@@ -184,7 +184,7 @@ known_marketplaces.json:
 }
 ```
 
-Each driver lives behind its own cargo feature (today: `skills-sh`). Default builds don't compile the driver in — `marketplace add skills.sh` errors with *"unrecognized marketplace source"*. With the feature, `add` accepts the special name, `search` federates to the API when `ZSKILLS_SKILLS_SH_API_KEY` is set, and `install` falls through to the index when local plugin resolution misses (routing through the existing agent-skill install path).
+Each driver lives behind its own cargo feature (today: `skills-sh`). Default builds don't compile the driver in — `marketplace add skills.sh` errors with *"unrecognized marketplace source"*. With the feature, `add` accepts the special name, `search` federates to the API when `ZSKILLS_SKILLS_SH_API_KEY` is set, and `install` falls through to the index when local plugin resolution misses (routing through the existing skill install path).
 
 The non-feature build still tolerates remote-index entries that might be in `known_marketplaces.json` from a feature-built version: `list` shows them with a `[remote-index]` tag, `update` skips them, `remove` works as expected. This is a forward-compatibility hedge, not a runtime dispatch path.
 
@@ -213,7 +213,7 @@ The manifest entry's `claims` glob list bridges the gap when an npm package over
 - Sparse-checkout and partial-clone work correctly without bespoke handling.
 - Errors come back as plain git output, which is what users already know how to read.
 
-The trade-off is one process spawn per fetch, which is fine: marketplace updates and agent-skill installs are rare events.
+The trade-off is one process spawn per fetch, which is fine: marketplace updates and skill installs are rare events.
 
 ## Path resolution
 
