@@ -67,7 +67,7 @@ zskills marketplace add-recommended     # seed trusted defaults (Anthropic-offic
 zskills marketplace add zot24/skills    # register additional taps as needed
 zskills search <query>                  # find skills across registered marketplaces
 zskills sync                            # apply the manifest
-zskills upgrade                         # refresh everything from origin
+zskills skill upgrade                   # refresh Agent Skills from origin
 zskills list                            # see what's installed
 zskills doctor                          # reconcile disk ↔ inventory ↔ settings
 ```

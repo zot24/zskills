@@ -67,7 +67,7 @@ zskills plugin install -i                           # interactive picker over ma
 | 2–5 | install all | picker | install all | install just that one |
 | > 5 | **abort + summary + next-step hint** | picker | install all | install just that one |
 
-**Sparse installs (root-level SKILL.md).** A repo whose `SKILL.md` sits at the repo root inside a larger project (source code, lockfiles, websites…) is installed *sparsely*: only `SKILL.md`, the conventional skill dirs (`references/`, `assets/`, `scripts/`), and relative paths that `SKILL.md` links to are copied out — never the whole source tree, and never `.git/`. Installs from the `skills/<name>/SKILL.md` layout copy the skill subdirectory as before. Legacy full-repo installs are flagged by `zskills doctor` and slimmed on the next `zskills upgrade` (or `doctor --fix`).
+**Sparse installs (root-level SKILL.md).** A repo whose `SKILL.md` sits at the repo root inside a larger project (source code, lockfiles, websites…) is installed *sparsely*: only `SKILL.md`, the conventional skill dirs (`references/`, `assets/`, `scripts/`), and relative paths that `SKILL.md` links to are copied out — never the whole source tree, and never `.git/`. Installs from the `skills/<name>/SKILL.md` layout copy the skill subdirectory as before. Legacy full-repo installs are flagged by `zskills doctor` and slimmed on the next `zskills skill upgrade` (or `doctor --fix`).
 
 ## `remove` / `purge`
 
@@ -133,7 +133,7 @@ If a `./skills.toml` exists in CWD when you run `sync` without `--file`, zskills
 The one command for refreshing everything zskills manages — marketplaces, git agent skills, and npm agent skills.
 
 ```
-zskills upgrade [<name>...]
+zskills skill upgrade [<name>...]
 ```
 
 | Source kind | What `upgrade` does |
