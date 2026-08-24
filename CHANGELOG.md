@@ -2,6 +2,17 @@
 
 All notable changes to this project are documented here. The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html). Releases from this point forward are managed by [release-please](https://github.com/googleapis/release-please) based on [Conventional Commits](https://www.conventionalcommits.org/).
 
+## [1.0.0](https://github.com/zot24/zskills/compare/v0.9.0...v1.0.0) (2026-08-24)
+
+
+### ⚠ BREAKING CHANGES
+
+* typed plugin, skill, and mcp command groups ([#32](https://github.com/zot24/zskills/issues/32))
+
+### Features
+
+* typed plugin, skill, and mcp command groups ([#32](https://github.com/zot24/zskills/issues/32)) ([5562c42](https://github.com/zot24/zskills/commit/5562c42d375184e63ad1197e5726be6a46cd864e))
+
 ## [0.9.0](https://github.com/zot24/zskills/compare/v0.8.0...v0.9.0) (2026-08-22)
 
 
