@@ -35,6 +35,7 @@ pub fn run(
     let known = crate::marketplace::load_known(&crate::paths::known_marketplaces_json()?)?;
 
     let mut desired_plugins: BTreeSet<String> = BTreeSet::new();
+    let mut plugin_copies: Vec<(String, Vec<crate::harness::Harness>)> = Vec::new();
     for entry in &manifest.skills {
         let qualified = match entry.qualified() {
             Some(q) => q,
@@ -46,7 +47,27 @@ pub fn run(
                 }
             },
         };
-        desired_plugins.insert(qualified);
+        let targets = match crate::harness::resolve(
+            &[],
+            &manifest.defaults.harnesses,
+            &entry.harnesses,
+            crate::harness::default_plugin(),
+        ) {
+            Ok(t) => t,
+            Err(e) => {
+                eprintln!("{} {}: {}", "✗".red(), entry.name, e);
+                continue;
+            }
+        };
+        if targets.contains(&crate::harness::Harness::Claude) {
+            desired_plugins.insert(qualified.clone());
+        }
+        if targets
+            .iter()
+            .any(|h| h.hub_is_enough() || h.skill_skip_reason().is_some())
+        {
+            plugin_copies.push((qualified, targets));
+        }
     }
 
     let settings_path = crate::paths::settings_json()?;
@@ -212,7 +233,8 @@ pub fn run(
         && deferred_sources_to_install.is_empty()
         && mcps_to_install.is_empty()
         && mcps_to_update.is_empty()
-        && mcps_to_remove.is_empty();
+        && mcps_to_remove.is_empty()
+        && plugin_copies.is_empty();
     if nothing {
         println!("  (no changes — manifest matches current state)");
         return Ok(());
@@ -220,6 +242,17 @@ pub fn run(
 
     for k in &plugins_to_enable {
         println!("  {} enable  plugin  {}", "+".green(), k);
+    }
+    for (q, hs) in &plugin_copies {
+        let dests = hs
+            .iter()
+            .filter(|h| h.hub_is_enough())
+            .map(|h| h.as_str())
+            .collect::<Vec<_>>()
+            .join(", ");
+        if !dests.is_empty() {
+            println!("  {} copy    plugin  {} → hub ({})", "~".cyan(), q, dests);
+        }
     }
     for k in &plugins_to_disable {
         if adopt {
@@ -341,6 +374,7 @@ pub fn run(
                 name,
                 marketplace: mp,
                 version: None,
+                harnesses: Vec::new(),
             };
             if crate::manifest::append_skill(&path, &entry)? {
                 adopted += 1;
@@ -413,6 +447,22 @@ pub fn run(
             ep.insert((*k).clone(), Value::Bool(false));
         }
         crate::settings::save(&settings_path, &settings)?;
+    }
+
+    for (q, hs) in &plugin_copies {
+        match crate::harness::materialize_hub(q, hs) {
+            Ok(names) => {
+                if !names.is_empty() {
+                    println!(
+                        "  {} {}  copied {} nested skill(s) into the Agent Skill hub",
+                        "✓".green(),
+                        q,
+                        names.len()
+                    );
+                }
+            }
+            Err(e) => eprintln!("{} {q}: {e}", "✗".red()),
+        }
     }
 
     for entry in &manifest.agent_skills {
@@ -523,6 +573,7 @@ pub fn run(
                                     .unwrap_or(0)
                             ),
                             head_sha: "local".to_string(),
+                            to: vec!["agents".into()],
                         },
                     );
                     dirty = true;

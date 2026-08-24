@@ -218,6 +218,15 @@ pub enum PluginCmd {
     Install {
         #[arg(short = 'i', long)]
         interactive: bool,
+        /// One-shot harness override (comma-separated): claude,pi,hermes,kimi,grok,codex.
+        /// Omitted: `[defaults].harnesses`, or Claude only when `[defaults]` is missing.
+        #[arg(
+            long = "harness",
+            value_delimiter = ',',
+            value_enum,
+            value_name = "HARNESS"
+        )]
+        harness: Vec<crate::harness::Harness>,
         skills: Vec<String>,
     },
     /// Drop enabledPlugins + inventory; keep bytes
@@ -258,6 +267,14 @@ pub enum AgentSkillCmd {
             help = "Install only this one skill out of the source"
         )]
         skill: Option<String>,
+        /// One-shot harness override (comma-separated). Omitted: `[defaults].harnesses`.
+        #[arg(
+            long = "harness",
+            value_delimiter = ',',
+            value_enum,
+            value_name = "HARNESS"
+        )]
+        harness: Vec<crate::harness::Harness>,
         #[arg(
             value_name = "SOURCE",
             help = "owner/repo, https://, git@ or file:// URL"
@@ -304,6 +321,14 @@ pub enum McpCmd {
         scope: String,
         #[arg(long)]
         file: Option<PathBuf>,
+        /// One-shot MCP harness override. Omitted: `[defaults].mcp_harnesses`.
+        #[arg(
+            long = "harness",
+            value_delimiter = ',',
+            value_enum,
+            value_name = "HARNESS"
+        )]
+        harness: Vec<crate::harness::Harness>,
     },
     /// Remove one MCP server from skills.toml and the runtime map
     Remove {
@@ -351,6 +376,7 @@ impl Cli {
                 PluginCmd::Install {
                     skills,
                     interactive,
+                    harness,
                 } => {
                     if skills
                         .iter()
@@ -360,7 +386,7 @@ impl Cli {
                             "plugin install takes name or name@marketplace; use `zskills skill install` for owner/repo"
                         );
                     }
-                    crate::commands::install::run(skills, interactive, false, None)
+                    crate::commands::install::run(skills, interactive, false, None, harness)
                 }
                 PluginCmd::Remove {
                     skills,
@@ -376,7 +402,10 @@ impl Cli {
                     interactive,
                     all,
                     skill,
-                } => crate::commands::agent_skills::install(skills, interactive, all, skill),
+                    harness,
+                } => {
+                    crate::commands::agent_skills::install(skills, interactive, all, skill, harness)
+                }
                 AgentSkillCmd::Remove { names, force, file } => {
                     crate::commands::agent_skills::remove(names, force, file)
                 }
@@ -396,6 +425,7 @@ impl Cli {
                     header,
                     scope,
                     file,
+                    harness,
                 } => crate::commands::mcp::add(
                     name,
                     transport,
@@ -406,6 +436,7 @@ impl Cli {
                     header,
                     Some(scope),
                     file,
+                    harness,
                 ),
                 McpCmd::Remove { name, scope, file } => {
                     crate::commands::mcp::remove(name, scope, file)

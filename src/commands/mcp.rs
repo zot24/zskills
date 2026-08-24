@@ -19,6 +19,7 @@ pub fn add(
     header: Vec<(String, String)>,
     scope: Option<String>,
     file: Option<PathBuf>,
+    harness: Vec<crate::harness::Harness>,
 ) -> Result<()> {
     let entry = McpEntry {
         name: name.clone(),
@@ -29,6 +30,7 @@ pub fn add(
         url,
         headers: header.into_iter().collect::<BTreeMap<_, _>>(),
         scope: scope.clone(),
+        mcp_harnesses: harness.iter().map(|h| h.as_str().to_string()).collect(),
     };
     entry.validate()?;
     let scope_s = entry.scope_kind()?;
@@ -51,8 +53,18 @@ pub fn add(
         );
     }
 
-    crate::mcp::upsert(&mcp_scope, &name, entry.to_json_value())?;
-    println!("{} applied mcp {} ({})", "✓".green(), name.bold(), scope_s);
+    let (_, mcp_defaults) = crate::harness::load_defaults();
+    let hs = crate::harness::resolve(
+        &harness,
+        &mcp_defaults,
+        &[],
+        vec![crate::harness::Harness::Claude],
+    )?;
+    if hs.contains(&crate::harness::Harness::Claude) {
+        crate::mcp::upsert(&mcp_scope, &name, entry.to_json_value())?;
+        println!("{} applied mcp {} ({})", "✓".green(), name.bold(), scope_s);
+    }
+    crate::harness::print_mcp_skips(&hs);
     Ok(())
 }
 

@@ -27,6 +27,10 @@ pub struct Entry {
     pub source: String,
     pub installed_at: String,
     pub head_sha: String,
+    /// Scan roots this copy was written to (`agents`, `pi`, `project`).
+    /// Empty means today's default: `agents` only.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub to: Vec<String>,
 }
 
 pub fn load_inventory() -> Result<Inventory> {
@@ -193,12 +197,34 @@ fn collect_skills_under(root: &Path, out: &mut Vec<(String, PathBuf)>) {
 
 /// Copy a skill directory into ~/.agents/skills/<name>/ (deletes existing first).
 pub fn install_to_user_dir(skill_name: &str, src_dir: &Path) -> Result<()> {
-    let dest = crate::paths::user_skills_dir()?.join(skill_name);
-    if dest.exists() {
-        std::fs::remove_dir_all(&dest)?;
+    install_to_root(&crate::paths::user_skills_dir()?, skill_name, src_dir)
+}
+
+/// Copy a skill directory into `<root>/<name>/`. Replaces an existing directory
+/// or leftover symlink. Never creates a symlink.
+pub fn install_to_root(root: &Path, skill_name: &str, src_dir: &Path) -> Result<()> {
+    validate_skill_name(skill_name)?;
+    let dest = root.join(skill_name);
+    if let Ok(meta) = dest.symlink_metadata() {
+        if meta.file_type().is_symlink() {
+            std::fs::remove_file(&dest)
+                .with_context(|| format!("refusing to keep a symlink at {}", dest.display()))?;
+        } else if meta.is_dir() {
+            std::fs::remove_dir_all(&dest)?;
+        } else {
+            std::fs::remove_file(&dest)?;
+        }
     }
     std::fs::create_dir_all(&dest)?;
     copy_dir_recursive(src_dir, &dest)?;
+    anyhow::ensure!(
+        !dest
+            .symlink_metadata()
+            .map(|m| m.file_type().is_symlink())
+            .unwrap_or(false),
+        "install produced a symlink at {} — copies must be real directories",
+        dest.display()
+    );
     Ok(())
 }
 
@@ -209,8 +235,9 @@ const CONVENTIONAL_SKILL_DIRS: &[&str] = &["references", "assets", "scripts"];
 /// Sparse-install a **root-level** skill (SKILL.md at the repo root of a larger
 /// project): materialize only SKILL.md, the conventional skill dirs, and the
 /// relative paths SKILL.md references — never the whole source tree.
-pub fn install_root_skill_sparse(skill_name: &str, cache: &Path) -> Result<()> {
-    let dest = crate::paths::user_skills_dir()?.join(skill_name);
+pub fn install_root_skill_sparse_to(root: &Path, skill_name: &str, cache: &Path) -> Result<()> {
+    validate_skill_name(skill_name)?;
+    let dest = root.join(skill_name);
     if dest.exists() {
         std::fs::remove_dir_all(&dest)?;
     }
@@ -446,6 +473,7 @@ pub fn install_npm(
                 source: source_tag.clone(),
                 installed_at: now.clone(),
                 head_sha: pkg_version.clone(),
+                to: vec!["agents".into()],
             },
         );
     }
@@ -654,7 +682,7 @@ pub fn install(source: &str, name: Option<&str>) -> Result<Vec<String>> {
         if src_dir == &cache {
             // Root-level SKILL.md in a larger project — materialize sparsely
             // instead of copying the whole source tree.
-            install_root_skill_sparse(skill_name, &cache)?;
+            install_root_skill_sparse_to(&crate::paths::user_skills_dir()?, skill_name, &cache)?;
         } else {
             install_to_user_dir(skill_name, src_dir)?;
         }
@@ -664,6 +692,7 @@ pub fn install(source: &str, name: Option<&str>) -> Result<Vec<String>> {
                 source: source.to_string(),
                 installed_at: installed_at.clone(),
                 head_sha: head_sha.clone(),
+                to: vec!["agents".into()],
             },
         );
         installed_names.push(skill_name.clone());
@@ -685,6 +714,10 @@ pub fn remove(skill_name: &str) -> Result<bool> {
     remove_from_user_dir(skill_name)?;
     save_inventory(&inv)?;
     Ok(true)
+}
+
+pub(crate) fn inventory_now() -> String {
+    chrono_now_iso()
 }
 
 fn chrono_now_iso() -> String {

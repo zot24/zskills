@@ -15,6 +15,7 @@ fn zskills(home: &TempDir) -> Command {
     // `<tempdir>/skills/` is the install target (mirrors the production layout
     // where ~/.agents/skills/ lives alongside ~/.claude/).
     cmd.env("AGENTS_HOME", home.path());
+    cmd.env("PI_HOME", home.path().join("pi"));
     // Sandbox the clone cache too, so repo-install tests never touch ~/.cache.
     cmd.env("XDG_CACHE_HOME", home.path().join("cache"));
     // Sandbox manifest discovery. `manifest::discover()` reads
@@ -619,6 +620,7 @@ fn zskills_nested(parent: &TempDir, claude_home: &std::path::Path) -> Command {
     cmd.env("CLAUDE_HOME", claude_home);
     // Pin the cross-client Agent Skills home next to CLAUDE_HOME so tests stay sandboxed.
     cmd.env("AGENTS_HOME", parent.path().join(".agents"));
+    cmd.env("PI_HOME", parent.path().join(".pi-home"));
     cmd.env("NO_COLOR", "1");
     cmd.env("ZSKILLS_NO_CLAUDE_CLI", "1");
     cmd.env("XDG_CONFIG_HOME", parent.path().join("config"));
@@ -2857,4 +2859,193 @@ fn mcp_add_and_remove_write_intent_then_runtime() {
     assert!(!toml.contains("name = \"honcho\""));
     let json: serde_json::Value = serde_json::from_slice(&fs::read(&claude_json).unwrap()).unwrap();
     assert!(json["mcpServers"].get("honcho").is_none());
+}
+
+// ──── harness targets (`[defaults].harnesses` / `--harness` / list) ─────────
+
+/// Marketplace clone that ships nested `skills/<plugin>/SKILL.md`, the layout
+/// `pi@zot24-skills` uses.
+fn stage_marketplace_plugin_with_nested_skill(home: &TempDir, mp: &str, plugin: &str) {
+    let mp_dir = home.path().join("plugins").join("marketplaces").join(mp);
+    fs::create_dir_all(mp_dir.join(".claude-plugin")).unwrap();
+    fs::write(
+        mp_dir.join(".claude-plugin").join("marketplace.json"),
+        format!(
+            r#"{{"name":"{mp}","plugins":[{{"name":"{plugin}","source":"./skills/{plugin}"}}]}}"#
+        ),
+    )
+    .unwrap();
+    let nested = mp_dir
+        .join("skills")
+        .join(plugin)
+        .join("skills")
+        .join(plugin);
+    fs::create_dir_all(&nested).unwrap();
+    fs::write(
+        nested.join("SKILL.md"),
+        format!("---\nname: {plugin}\ndescription: d\n---\n"),
+    )
+    .unwrap();
+    fs::write(nested.join("notes.md"), "not a symlink\n").unwrap();
+
+    let known_path = home.path().join("plugins").join("known_marketplaces.json");
+    let mut known: serde_json::Value =
+        serde_json::from_slice(&fs::read(&known_path).unwrap()).unwrap();
+    known[mp] = json!({
+        "source": { "source": "github", "repo": format!("o/{mp}") },
+        "installLocation": mp_dir.to_string_lossy(),
+        "autoUpdate": true,
+        "lastUpdated": "2026-08-24T00:00:00.000Z"
+    });
+    fs::write(&known_path, serde_json::to_string_pretty(&known).unwrap()).unwrap();
+}
+
+#[test]
+fn list_active_plugin_shows_claude_not_pi() {
+    let home = fake_home();
+    let out = zskills(&home)
+        .args(["list", "--json"])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let v: serde_json::Value = serde_json::from_slice(&out).unwrap();
+    assert_eq!(v["plugins"]["active"][0], "foo@test-mp");
+    let vis = v["plugins"]["harnesses"]["foo@test-mp"]["visible"]
+        .as_array()
+        .unwrap();
+    assert!(vis.iter().any(|x| x == "claude"));
+    assert!(!vis.iter().any(|x| x == "pi"));
+}
+
+#[test]
+fn plugin_install_harness_pi_copies_nested_skill_to_hub_not_symlink() {
+    let home = fake_home();
+    stage_marketplace_plugin_with_nested_skill(&home, "zot24-skills", "pi");
+
+    zskills(&home)
+        .args(["plugin", "install", "pi@zot24-skills", "--harness", "pi"])
+        .assert()
+        .success();
+
+    let dest = home.path().join("skills").join("pi").join("SKILL.md");
+    assert!(dest.is_file(), "SKILL.md must sit at the hub scan root");
+    let meta = fs::symlink_metadata(home.path().join("skills").join("pi")).unwrap();
+    assert!(!meta.file_type().is_symlink(), "owner forbade symlinks");
+    assert!(home
+        .path()
+        .join("skills")
+        .join("pi")
+        .join("notes.md")
+        .is_file());
+    let settings: serde_json::Value =
+        serde_json::from_slice(&fs::read(home.path().join("settings.json")).unwrap()).unwrap();
+    assert!(
+        settings["enabledPlugins"]
+            .get("pi@zot24-skills")
+            .is_none_or(|v| v == false),
+        "pi-only harness must not enable the Claude plugin"
+    );
+}
+
+#[test]
+fn list_after_hub_copy_shows_pi_visible_to_pi() {
+    let home = fake_home();
+    stage_marketplace_plugin_with_nested_skill(&home, "zot24-skills", "pi");
+    zskills(&home)
+        .args(["plugin", "install", "pi@zot24-skills", "--harness", "pi"])
+        .assert()
+        .success();
+
+    let out = zskills(&home)
+        .args(["list", "--json"])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let v: serde_json::Value = serde_json::from_slice(&out).unwrap();
+    let skill_vis = v["agent_skills"]["harnesses"]["pi"]["visible"]
+        .as_array()
+        .cloned()
+        .unwrap_or_default();
+    assert!(
+        skill_vis.iter().any(|x| x == "pi"),
+        "list must show the hub copy visible to Pi: {v}"
+    );
+    assert!(
+        !skill_vis.iter().any(|x| x == "claude"),
+        "a hub-only copy is not a Claude plugin: {v}"
+    );
+}
+
+#[test]
+fn unknown_harness_is_refused() {
+    let home = fake_home();
+    zskills(&home)
+        .args(["plugin", "install", "foo@test-mp", "--harness", "agents"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("invalid value"));
+}
+
+#[test]
+fn hermes_and_kimi_are_skipped_not_invented() {
+    let home = fake_home();
+    stage_marketplace_plugin_with_nested_skill(&home, "zot24-skills", "pi");
+    zskills(&home)
+        .args([
+            "plugin",
+            "install",
+            "pi@zot24-skills",
+            "--harness",
+            "hermes,kimi",
+        ])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("unsupported"));
+    assert!(
+        !home
+            .path()
+            .join("skills")
+            .join("pi")
+            .join("SKILL.md")
+            .is_file(),
+        "unsupported harnesses must not invent a hub copy"
+    );
+}
+
+#[test]
+fn sync_applies_harnesses_on_plugin_row() {
+    let home = fake_home();
+    stage_marketplace_plugin_with_nested_skill(&home, "zot24-skills", "pi");
+    let manifest_dir = home.path().join("config").join("zskills");
+    fs::create_dir_all(&manifest_dir).unwrap();
+    fs::write(
+        manifest_dir.join("skills.toml"),
+        r#"
+[defaults]
+harnesses = ["claude", "pi", "hermes", "kimi", "grok", "codex"]
+mcp_harnesses = ["claude", "pi", "hermes", "kimi", "grok", "codex"]
+
+[[skills]]
+name = "pi"
+marketplace = "zot24-skills"
+harnesses = ["pi"]
+"#,
+    )
+    .unwrap();
+    zskills(&home).args(["sync", "--force"]).assert().success();
+    assert!(home
+        .path()
+        .join("skills")
+        .join("pi")
+        .join("SKILL.md")
+        .is_file());
+    let settings: serde_json::Value =
+        serde_json::from_slice(&fs::read(home.path().join("settings.json")).unwrap()).unwrap();
+    assert!(settings["enabledPlugins"]
+        .get("pi@zot24-skills")
+        .is_none_or(|v| v == false));
 }

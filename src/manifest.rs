@@ -39,6 +39,20 @@ pub struct Manifest {
     /// `update` and `upgrade` from floating a tap off the ref you chose.
     #[serde(default)]
     pub marketplaces: Vec<MarketplaceEntry>,
+
+    /// Default harness lists. Missing = today's 1.0 behaviour (plugin → Claude
+    /// only, Agent Skill → hub only, MCP → Claude json only).
+    #[serde(default)]
+    pub defaults: Defaults,
+}
+
+/// `[defaults]` in skills.toml.
+#[derive(Debug, Deserialize, Serialize, Clone, Default)]
+pub struct Defaults {
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub harnesses: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub mcp_harnesses: Vec<String>,
 }
 
 impl Manifest {
@@ -86,6 +100,10 @@ pub struct SkillEntry {
     pub marketplace: Option<String>,
     #[serde(default)]
     pub version: Option<String>,
+    /// Harnesses this plugin should be visible to. Empty = inherit `[defaults].harnesses`,
+    /// or Claude only when `[defaults]` is missing.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub harnesses: Vec<String>,
 }
 
 impl SkillEntry {
@@ -133,6 +151,10 @@ pub struct McpEntry {
     /// `"user"` (default) | `"project"` | `"local"`.
     #[serde(default)]
     pub scope: Option<String>,
+    /// Harnesses this MCP server should be declared in. Empty = inherit
+    /// `[defaults].mcp_harnesses`, or Claude only when `[defaults]` is missing.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub mcp_harnesses: Vec<String>,
 }
 
 impl McpEntry {
@@ -258,6 +280,9 @@ pub struct AgentSkillEntry {
     /// to take ownership of them. Example: `claims = ["gsd-*"]`.
     #[serde(default)]
     pub claims: Vec<String>,
+    /// Harnesses this Agent Skill should be visible to. Empty = inherit `[defaults].harnesses`.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub harnesses: Vec<String>,
 }
 
 /// Find the user-level manifest. Does NOT look at `./skills.toml` — that path
@@ -357,7 +382,7 @@ pub fn append_agent_skill(path: &Path, entry: &AgentSkillEntry) -> Result<bool> 
 
 /// Append a `[[skills]]` entry. Skips if `name@marketplace` already present.
 pub fn append_skill(path: &Path, entry: &SkillEntry) -> Result<bool> {
-    use toml_edit::{value, ArrayOfTables, DocumentMut, Item, Table};
+    use toml_edit::{value, Array, ArrayOfTables, DocumentMut, Item, Table};
 
     let raw = if path.exists() {
         std::fs::read_to_string(path)
@@ -405,6 +430,13 @@ pub fn append_skill(path: &Path, entry: &SkillEntry) -> Result<bool> {
     }
     if let Some(v) = &entry.version {
         t["version"] = value(v);
+    }
+    if !entry.harnesses.is_empty() {
+        let mut arr = Array::new();
+        for h in &entry.harnesses {
+            arr.push(h.as_str());
+        }
+        t["harnesses"] = toml_edit::Item::Value(arr.into());
     }
     aot.push(t);
 

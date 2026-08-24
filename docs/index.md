@@ -28,6 +28,10 @@ Requires `git` and (for npm-sourced skills) `npm` on `$PATH`.
 Create `~/.config/zskills/skills.toml`:
 
 ```toml
+[defaults]
+harnesses = ["claude", "pi", "hermes", "kimi", "grok", "codex"]
+mcp_harnesses = ["claude", "pi", "hermes", "kimi", "grok", "codex"]
+
 # Claude Code plugins (marketplace-based)
 [[skills]]
 name = "umbrel-app"
@@ -68,7 +72,7 @@ zskills marketplace add zot24/skills    # register additional taps as needed
 zskills search <query>                  # find skills across registered marketplaces
 zskills sync                            # apply the manifest
 zskills skill upgrade                   # refresh Agent Skills from origin
-zskills list                            # see what's installed
+zskills list                            # see what's installed (prints which harnesses can see each name)
 zskills doctor                          # reconcile disk ↔ inventory ↔ settings
 ```
 

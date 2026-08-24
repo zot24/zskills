@@ -69,8 +69,9 @@ Existing tooling is per-runtime, per-language, and per-primitive: there's a Java
 ## Commands
 
 ```
-zskills list [-v]                              # plugins, Agent Skills, MCP servers
+zskills list [-v]                              # plugins, Agent Skills, MCP servers (prints which harnesses can see each name)
 zskills plugin install <name@marketplace>      # add to enabledPlugins
+zskills plugin install <name> --harness pi,grok  # copy nested skills/<name>/ into ~/.agents/skills/ (the shared hub)
 zskills plugin install -i                      # browse marketplace plugins
 zskills plugin remove  <name>                  # drop inventory, keep bytes
 zskills plugin purge   <name>                  # also delete bytes
@@ -106,9 +107,18 @@ The group `skill` writes `[[agent_skills]]`. The key `[[skills]]` is plugins.
 
 ```toml
 # Claude Code plugins (marketplace-based, controlled via enabledPlugins)
+[defaults]
+harnesses = ["claude", "pi", "hermes", "kimi", "grok", "codex"]
+mcp_harnesses = ["claude", "pi", "hermes", "kimi", "grok", "codex"]
+
 [[skills]]
 name = "umbrel-app"
 marketplace = "zot24-skills"
+
+[[skills]]
+name = "pi"
+marketplace = "zot24-skills"
+# harnesses = ["claude", "pi"]   # optional override; inherit [defaults].harnesses if omitted
 
 [[skills]]
 name = "github"
