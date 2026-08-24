@@ -335,9 +335,37 @@ fn copy_dir_recursive(src: &Path, dst: &Path) -> Result<()> {
     Ok(())
 }
 
+/// Reject names that would make `user_skills_dir().join(name)` escape that
+/// directory. Empty, `.`, `..`, and any path separator are refused before
+/// `remove_dir_all`. `sync --prune` calls this through [`remove`].
+pub fn validate_skill_name(skill_name: &str) -> Result<()> {
+    if skill_name.is_empty() {
+        anyhow::bail!("invalid Agent Skill name: empty");
+    }
+    if skill_name == "." || skill_name == ".." {
+        anyhow::bail!("invalid Agent Skill name: {skill_name:?}");
+    }
+    if skill_name.contains('/')
+        || skill_name.contains('\\')
+        || skill_name.contains(std::path::MAIN_SEPARATOR)
+    {
+        anyhow::bail!("invalid Agent Skill name {skill_name:?}: path separator not allowed");
+    }
+    Ok(())
+}
+
 /// Remove an installed agent skill from ~/.agents/skills/<name>/.
 pub fn remove_from_user_dir(skill_name: &str) -> Result<()> {
-    let dest = crate::paths::user_skills_dir()?.join(skill_name);
+    validate_skill_name(skill_name)?;
+    let base = crate::paths::user_skills_dir()?;
+    let dest = base.join(skill_name);
+    if dest.parent() != Some(base.as_path()) {
+        anyhow::bail!(
+            "refusing to delete {}: not a direct child of {}",
+            dest.display(),
+            base.display()
+        );
+    }
     if dest.exists() {
         std::fs::remove_dir_all(&dest)?;
     }
@@ -645,11 +673,18 @@ pub fn install(source: &str, name: Option<&str>) -> Result<Vec<String>> {
 }
 
 pub fn remove(skill_name: &str) -> Result<bool> {
+    validate_skill_name(skill_name)?;
     let mut inv = load_inventory()?;
-    let removed_from_inventory = inv.agent_skills.remove(skill_name).is_some();
+    let in_inventory = inv.agent_skills.contains_key(skill_name);
+    let dest = crate::paths::user_skills_dir()?.join(skill_name);
+    let on_disk = dest.is_dir();
+    if !in_inventory && !on_disk {
+        return Ok(false);
+    }
+    inv.agent_skills.remove(skill_name);
     remove_from_user_dir(skill_name)?;
     save_inventory(&inv)?;
-    Ok(removed_from_inventory)
+    Ok(true)
 }
 
 fn chrono_now_iso() -> String {
@@ -753,5 +788,82 @@ mod tests {
     fn glob_exact_no_wildcard() {
         assert!(glob_match("foo", "foo"));
         assert!(!glob_match("foo", "foobar"));
+    }
+
+    /// Process-global `AGENTS_HOME` must not leak across tests.
+    static AGENTS_HOME_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    fn with_agents_home<T>(f: impl FnOnce(&std::path::Path) -> T) -> T {
+        let _guard = AGENTS_HOME_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let tmp = tempfile::tempdir().unwrap();
+        let home = tmp.path();
+        let skills = home.join("skills");
+        fs::create_dir_all(skills.join("alpha")).unwrap();
+        fs::write(skills.join("alpha").join("SKILL.md"), "a").unwrap();
+        fs::create_dir_all(skills.join("beta")).unwrap();
+        fs::write(skills.join("beta").join("SKILL.md"), "b").unwrap();
+        fs::create_dir_all(home.join(".claude")).unwrap();
+        fs::write(home.join(".claude").join("keep"), "x").unwrap();
+        // SAFETY: held under AGENTS_HOME_LOCK; restored before the guard drops.
+        let prev = std::env::var_os("AGENTS_HOME");
+        std::env::set_var("AGENTS_HOME", home);
+        let out = f(home);
+        match prev {
+            Some(v) => std::env::set_var("AGENTS_HOME", v),
+            None => std::env::remove_var("AGENTS_HOME"),
+        }
+        out
+    }
+
+    fn surviving_skills(home: &std::path::Path) -> Vec<String> {
+        let skills = home.join("skills");
+        if !skills.is_dir() {
+            return Vec::new();
+        }
+        let mut names: Vec<String> = fs::read_dir(&skills)
+            .unwrap()
+            .filter_map(|e| e.ok())
+            .filter(|e| e.path().is_dir() && e.path().join("SKILL.md").exists())
+            .map(|e| e.file_name().to_string_lossy().into_owned())
+            .collect();
+        names.sort();
+        names
+    }
+
+    #[test]
+    fn remove_from_user_dir_rejects_empty_dot_dotdot_and_traversal() {
+        with_agents_home(|home| {
+            for bad in ["", ".", "..", "../.claude"] {
+                let err = super::remove_from_user_dir(bad).unwrap_err().to_string();
+                assert!(
+                    err.contains("invalid Agent Skill name") || err.contains("not a direct child"),
+                    "unexpected error for {bad:?}: {err}"
+                );
+                assert_eq!(surviving_skills(home), ["alpha", "beta"]);
+                assert!(
+                    home.join(".claude").join("keep").exists(),
+                    ".claude neighbour deleted for {bad:?}"
+                );
+            }
+        });
+    }
+
+    #[test]
+    fn remove_resolves_presence_before_deleting_and_leaves_neighbours() {
+        with_agents_home(|home| {
+            for bad in ["", ".", "..", "../.claude"] {
+                assert!(
+                    super::remove(bad).is_err(),
+                    "remove({bad:?}) must error before any delete"
+                );
+            }
+            assert!(!super::remove("missing-skill").unwrap());
+            assert_eq!(surviving_skills(home), ["alpha", "beta"]);
+            assert!(home.join(".claude").join("keep").exists());
+
+            assert!(super::remove("alpha").unwrap());
+            assert_eq!(surviving_skills(home), ["beta"]);
+            assert!(!super::remove("alpha").unwrap());
+        });
     }
 }
