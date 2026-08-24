@@ -8,7 +8,7 @@ use std::path::PathBuf;
     about = "Package manager for plugins, Agent Skills, and MCP servers",
     long_about = "Declarative install and reconciliation across Claude Code marketplaces.\n\
                   Treats skills.toml as intent and ~/.claude/settings.json + installed_plugins.json as state.\n\
-                  Typed groups: plugin, agent-skill, mcp."
+                  Typed groups: plugin, skill, mcp."
 )]
 pub struct Cli {
     #[command(subcommand)]
@@ -38,7 +38,7 @@ pub enum Command {
     Plugin(PluginCmd),
 
     /// Agent Skills in ~/.agents/skills/
-    #[command(name = "agent-skill", subcommand)]
+    #[command(name = "skill", subcommand)]
     AgentSkill(AgentSkillCmd),
 
     /// MCP servers in skills.toml and the runtime mcpServers map
@@ -81,7 +81,7 @@ pub enum Command {
         #[arg(trailing_var_arg = true, allow_hyphen_values = true, hide = true)]
         rest: Vec<String>,
     },
-    /// Removed in 1.0. Use `agent-skill upgrade` / `marketplace update`.
+    /// Removed in 1.0. Use `skill upgrade` / `marketplace update`.
     #[command(hide = true, disable_help_flag = true)]
     Upgrade {
         #[arg(trailing_var_arg = true, allow_hyphen_values = true, hide = true)]
@@ -342,7 +342,7 @@ impl Cli {
                         .any(|s| crate::commands::install::is_repo_spec(s))
                     {
                         anyhow::bail!(
-                            "plugin install takes name or name@marketplace; use `zskills agent-skill install` for owner/repo"
+                            "plugin install takes name or name@marketplace; use `zskills skill install` for owner/repo"
                         );
                     }
                     crate::commands::install::run(skills, interactive, false, None)

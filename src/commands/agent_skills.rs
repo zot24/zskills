@@ -1,4 +1,4 @@
-//! `zskills agent-skill` verbs.
+//! `zskills skill` verbs.
 
 use anyhow::Result;
 use owo_colors::OwoColorize;
@@ -15,7 +15,7 @@ pub fn install(
         .any(|s| !crate::commands::install::is_repo_spec(s))
     {
         anyhow::bail!(
-            "agent-skill install takes owner/repo or a git URL; use `zskills plugin install` for name@marketplace"
+            "skill install takes owner/repo or a git URL; use `zskills plugin install` for name@marketplace"
         );
     }
     crate::commands::install::run(specs, interactive, all, skill)

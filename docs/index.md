@@ -77,7 +77,7 @@ zskills doctor                          # reconcile disk ↔ inventory ↔ setti
 ```text
 zskills list [-v]
 zskills plugin install|remove|purge|enable|disable
-zskills agent-skill install|remove|upgrade
+zskills skill install|remove|upgrade
 zskills mcp add|remove
 zskills sync [--file f.toml] [--prune]
 zskills doctor [--fix]

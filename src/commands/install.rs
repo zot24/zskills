@@ -214,12 +214,12 @@ fn print_large_collection_summary(
     println!("\n{}", "Options:".bold());
     println!(
         "  {}   {}",
-        format!("zskills agent-skill install {} -i", spec).bold(),
+        format!("zskills skill install {} -i", spec).bold(),
         "interactive picker".dimmed()
     );
     println!(
         "  {}   {}",
-        format!("zskills agent-skill install {} --all", spec).bold(),
+        format!("zskills skill install {} --all", spec).bold(),
         format!("install all {} skills", count).dimmed()
     );
     let preview: Vec<&str> = skills.iter().take(5).map(|s| s.name.as_str()).collect();

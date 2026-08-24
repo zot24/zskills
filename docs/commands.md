@@ -40,8 +40,8 @@ Three accepted spec shapes:
 ```
 zskills plugin install <name>                       # plugin from a registered marketplace
 zskills plugin install <name>@<marketplace>         # qualified plugin
-zskills agent-skill install <owner>/<repo>          # Agent Skill(s) from a git repo
-zskills agent-skill install <git-url>               # same, for https://, git@, file://
+zskills skill install <owner>/<repo>                # Agent Skill(s) from a git repo
+zskills skill install <git-url>                     # same, for https://, git@, file://
 zskills plugin install -i                           # interactive picker over marketplace plugins
 ```
 

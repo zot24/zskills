@@ -497,7 +497,7 @@ fn upgrade_runs_without_marketplaces_or_manifest() {
     // "Upgrade complete" line.
     let home = fake_home();
     zskills(&home)
-        .args(["agent-skill", "upgrade"])
+        .args(["skill", "upgrade"])
         .assert()
         .success()
         .stdout(predicates::str::contains("Upgrade complete"));
@@ -1120,7 +1120,7 @@ fn install_repo_root_skill_is_sparse() {
 
     let home = fake_home();
     zskills(&home)
-        .args(["agent-skill", "install", &file_url(&repo)])
+        .args(["skill", "install", &file_url(&repo)])
         .assert()
         .success();
 
@@ -1155,7 +1155,7 @@ fn install_skill_flag_selects_single_skill() {
     let home = fake_home();
     zskills(&home)
         .args([
-            "agent-skill",
+            "skill",
             "install",
             &file_url(upstream.path()),
             "--skill",
@@ -1179,7 +1179,7 @@ fn install_skill_flag_unknown_name_errors() {
     let home = fake_home();
     let out = zskills(&home)
         .args([
-            "agent-skill",
+            "skill",
             "install",
             &file_url(upstream.path()),
             "--skill",
@@ -1203,14 +1203,7 @@ fn install_skill_flag_unknown_name_errors() {
 fn install_skill_flag_conflicts_with_all() {
     let home = fake_home();
     zskills(&home)
-        .args([
-            "agent-skill",
-            "install",
-            "owner/repo",
-            "--skill",
-            "x",
-            "--all",
-        ])
+        .args(["skill", "install", "owner/repo", "--skill", "x", "--all"])
         .assert()
         .failure()
         .stderr(predicate::str::contains("cannot be used with"));
@@ -1227,7 +1220,7 @@ fn install_skill_flag_bypasses_large_collection_policy() {
     let home = fake_home();
     zskills(&home)
         .args([
-            "agent-skill",
+            "skill",
             "install",
             &file_url(upstream.path()),
             "--skill",
@@ -1297,7 +1290,7 @@ fn install_repo_single_skill_auto_installs() {
 
     let home = fake_home();
     zskills(&home)
-        .args(["agent-skill", "install", &file_url(upstream.path())])
+        .args(["skill", "install", &file_url(upstream.path())])
         .assert()
         .success()
         .stdout(predicate::str::contains("alpha"));
@@ -1320,7 +1313,7 @@ fn install_repo_small_multi_installs_all() {
 
     let home = fake_home();
     zskills(&home)
-        .args(["agent-skill", "install", &file_url(upstream.path())])
+        .args(["skill", "install", &file_url(upstream.path())])
         .assert()
         .success();
 
@@ -1347,7 +1340,7 @@ fn install_repo_large_collection_aborts_without_all() {
 
     let home = fake_home();
     zskills(&home)
-        .args(["agent-skill", "install", &file_url(upstream.path())])
+        .args(["skill", "install", &file_url(upstream.path())])
         .assert()
         .success()
         .stdout(predicate::str::contains("won't install all"))
@@ -1376,12 +1369,7 @@ fn install_repo_large_collection_with_all_installs_everything() {
 
     let home = fake_home();
     zskills(&home)
-        .args([
-            "agent-skill",
-            "install",
-            &file_url(upstream.path()),
-            "--all",
-        ])
+        .args(["skill", "install", &file_url(upstream.path()), "--all"])
         .assert()
         .success();
 
@@ -1411,7 +1399,7 @@ fn install_repo_marketplace_redirects() {
 
     let home = fake_home();
     zskills(&home)
-        .args(["agent-skill", "install", &file_url(upstream.path())])
+        .args(["skill", "install", &file_url(upstream.path())])
         .assert()
         .success()
         .stdout(predicate::str::contains("marketplace"))
@@ -1440,7 +1428,7 @@ fn install_repo_mcp_hint_appears_alongside_skill_install() {
 
     let home = fake_home();
     let out = zskills(&home)
-        .args(["agent-skill", "install", &file_url(upstream.path())])
+        .args(["skill", "install", &file_url(upstream.path())])
         .assert()
         .success()
         .get_output()
@@ -1465,7 +1453,7 @@ fn install_repo_with_no_skills_errors() {
 
     let home = fake_home();
     let out = zskills(&home)
-        .args(["agent-skill", "install", &file_url(upstream.path())])
+        .args(["skill", "install", &file_url(upstream.path())])
         .assert()
         // A failed install exits non-zero: the error is on stderr *and* in $?.
         .failure()
@@ -2243,10 +2231,7 @@ fn upgrade_holds_a_pinned_marketplace() {
         "[[marketplaces]]\nname = \"pinned-mp\"\npin = \"v1\"\n",
     );
 
-    zskills(&home)
-        .args(["agent-skill", "upgrade"])
-        .assert()
-        .success();
+    zskills(&home).args(["skill", "upgrade"]).assert().success();
 
     assert_eq!(marketplace_head(&home, "pinned-mp"), v1);
     assert_ne!(marketplace_head(&home, "pinned-mp"), head);
@@ -2679,7 +2664,7 @@ fn install_skill_flag_selects_from_dot_agents_skills() {
     let home = fake_home();
     zskills(&home)
         .args([
-            "agent-skill",
+            "skill",
             "install",
             &file_url(upstream.path()),
             "--skill",
@@ -2710,7 +2695,7 @@ fn a_large_dot_agents_skills_tree_still_requires_skill_or_all() {
 
     let home = fake_home();
     zskills(&home)
-        .args(["agent-skill", "install", &file_url(upstream.path())])
+        .args(["skill", "install", &file_url(upstream.path())])
         .assert()
         .success()
         .stdout(predicate::str::contains("14"))
@@ -2733,7 +2718,7 @@ fn install_reports_available_names_from_dot_agents_skills_when_skill_is_unknown(
     let home = fake_home();
     let out = zskills(&home)
         .args([
-            "agent-skill",
+            "skill",
             "install",
             &file_url(upstream.path()),
             "--skill",
@@ -2771,13 +2756,7 @@ fn upgrade_refreshes_only_skills_already_owned_from_a_source() {
     let home = fake_home();
     // Own exactly one skill from that source.
     zskills(&home)
-        .args([
-            "agent-skill",
-            "install",
-            &file_url(&repo),
-            "--skill",
-            "owned",
-        ])
+        .args(["skill", "install", &file_url(&repo), "--skill", "owned"])
         .assert()
         .success();
     assert!(home.path().join("skills/owned").exists());
@@ -2790,10 +2769,7 @@ fn upgrade_refreshes_only_skills_already_owned_from_a_source() {
     )
     .unwrap();
 
-    zskills(&home)
-        .args(["agent-skill", "upgrade"])
-        .assert()
-        .success();
+    zskills(&home).args(["skill", "upgrade"]).assert().success();
 
     assert!(
         home.path().join("skills/owned").exists(),
@@ -2817,6 +2793,7 @@ fn bare_remove_stub_exits_2_and_names_typed_replacement() {
         .failure()
         .code(2)
         .stderr(predicate::str::contains("error: removed-in-1.0: remove"))
+        .stderr(predicate::str::contains("zskills skill remove"))
         .stderr(predicate::str::contains("zskills mcp remove"));
 }
 

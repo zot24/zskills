@@ -28,17 +28,17 @@ fn first_name(rest: &[String]) -> Option<&str> {
 fn doors(verb: &str) -> String {
     match verb {
         "install" => {
-            "  plugin:      zskills plugin install <name@marketplace>\n  agent-skill: zskills agent-skill install <owner/repo>\n  mcp:         zskills mcp add <name>".into()
+            "  plugin:      zskills plugin install <name@marketplace>\n  skill:       zskills skill install <owner/repo>\n  mcp:         zskills mcp add <name>".into()
         }
         "remove" => {
-            "  plugin:      zskills plugin remove <name@marketplace>\n  agent-skill: zskills agent-skill remove <name>\n  mcp:         zskills mcp remove <name> [--scope user|project|local]".into()
+            "  plugin:      zskills plugin remove <name@marketplace>\n  skill:       zskills skill remove <name>\n  mcp:         zskills mcp remove <name> [--scope user|project|local]".into()
         }
         "purge" => "  plugin:      zskills plugin purge <name@marketplace>".into(),
         "enable" => "  plugin:      zskills plugin enable <name@marketplace>".into(),
         "disable" => "  plugin:      zskills plugin disable <name@marketplace>".into(),
         "update" => "  marketplace: zskills marketplace update [name]".into(),
         "upgrade" => {
-            "  agent-skill: zskills agent-skill upgrade [name]\n  marketplace: zskills marketplace update [name]".into()
+            "  skill:       zskills skill upgrade [name]\n  marketplace: zskills marketplace update [name]".into()
         }
         _ => String::new(),
     }
@@ -62,7 +62,7 @@ fn live_hint(name: &str) -> Option<String> {
     if let Ok(inv) = crate::agent_skill::load_inventory() {
         if inv.agent_skills.contains_key(name) {
             lines.push(format!(
-                "  agent-skill {name}                 → zskills agent-skill remove {name} (DELETES bytes)"
+                "  skill       {name}                 → zskills skill remove {name} (DELETES bytes)"
             ));
         }
     }

@@ -161,7 +161,7 @@ pub fn run(fix: bool) -> Result<()> {
         }
         println!(
             "  {}",
-            "run `zskills agent-skill upgrade <name>` or `zskills doctor --fix` to re-install slim"
+            "run `zskills skill upgrade <name>` or `zskills doctor --fix` to re-install slim"
                 .dimmed()
         );
     }
@@ -218,7 +218,7 @@ pub fn run(fix: bool) -> Result<()> {
         let mut inv = crate::agent_skill::load_inventory()?;
         for k in &agent_inventory_missing {
             inv.agent_skills.remove(k);
-            println!("  removed {} from agent-skill inventory", k);
+            println!("  removed {} from Agent Skill inventory", k);
             fixed += 1;
         }
         crate::agent_skill::save_inventory(&inv)?;

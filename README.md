@@ -75,9 +75,9 @@ zskills plugin install -i                      # browse marketplace plugins
 zskills plugin remove  <name>                  # drop inventory, keep bytes
 zskills plugin purge   <name>                  # also delete bytes
 zskills plugin enable|disable <name>
-zskills agent-skill install <owner/repo>
-zskills agent-skill remove <name>              # deletes bytes
-zskills agent-skill upgrade [<name>...]
+zskills skill install <owner/repo>
+zskills skill remove <name>                    # deletes bytes
+zskills skill upgrade [<name>...]
 zskills mcp add <name> --url|--command ...
 zskills mcp remove <name> [--scope user]
 zskills sync [--file f.toml]                   # apply skills.toml
