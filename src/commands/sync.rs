@@ -6,7 +6,13 @@ use serde_json::Value;
 use std::collections::BTreeSet;
 use std::path::PathBuf;
 
-pub fn run(file: Option<PathBuf>, dry_run: bool, prune: bool, adopt: bool) -> Result<()> {
+pub fn run(
+    file: Option<PathBuf>,
+    dry_run: bool,
+    prune: bool,
+    adopt: bool,
+    force: bool,
+) -> Result<()> {
     // Warn loudly if a `./skills.toml` exists and the user didn't pass --file.
     if file.is_none() {
         if let Some(cwd_path) = crate::manifest::cwd_skills_toml() {
@@ -61,6 +67,14 @@ pub fn run(file: Option<PathBuf>, dry_run: bool, prune: bool, adopt: bool) -> Re
 
     let plugins_to_enable: Vec<_> = desired_plugins.difference(&current_plugins).collect();
     let plugins_to_disable: Vec<_> = current_plugins.difference(&desired_plugins).collect();
+    let skip_plugin_diff = desired_plugins.is_empty() && !current_plugins.is_empty() && !force;
+    if skip_plugin_diff {
+        eprintln!(
+            "{} skipping plugin reconcile: manifest has no [[skills]] ({} enabled); pass --force to disable extras",
+            "!".yellow(),
+            current_plugins.len()
+        );
+    }
 
     // -------- 2) Agent Skills reconciliation --------
     // The manifest carries (source, optional name). We need to compare against the inventory,
@@ -390,14 +404,16 @@ pub fn run(file: Option<PathBuf>, dry_run: bool, prune: bool, adopt: bool) -> Re
     }
 
     // -------- 4) Apply --------
-    let ep = crate::settings::enabled_plugins_mut(&mut settings);
-    for k in &plugins_to_enable {
-        ep.insert((*k).clone(), Value::Bool(true));
+    if !skip_plugin_diff {
+        let ep = crate::settings::enabled_plugins_mut(&mut settings);
+        for k in &plugins_to_enable {
+            ep.insert((*k).clone(), Value::Bool(true));
+        }
+        for k in &plugins_to_disable {
+            ep.insert((*k).clone(), Value::Bool(false));
+        }
+        crate::settings::save(&settings_path, &settings)?;
     }
-    for k in &plugins_to_disable {
-        ep.insert((*k).clone(), Value::Bool(false));
-    }
-    crate::settings::save(&settings_path, &settings)?;
 
     for entry in &manifest.agent_skills {
         if let Some(pkg) = entry.npm.as_deref() {
@@ -560,10 +576,15 @@ pub fn run(file: Option<PathBuf>, dry_run: bool, prune: bool, adopt: bool) -> Re
     }
     if prune {
         for (scope, name) in &mcps_to_remove {
-            if let Err(e) = crate::mcp::remove(scope, name) {
-                eprintln!("{} mcp `{}`: {}", "✗".red(), name, e);
-            } else {
-                println!("  removed mcp {} ({})", name.bold(), scope.label());
+            match crate::mcp::remove(scope, name) {
+                Ok(true) => println!("  removed mcp {} ({})", name.bold(), scope.label()),
+                Ok(false) => eprintln!(
+                    "{} mcp `{}` ({}) not found in the attributed file",
+                    "✗".red(),
+                    name,
+                    scope.label()
+                ),
+                Err(e) => eprintln!("{} mcp `{}`: {}", "✗".red(), name, e),
             }
         }
     }

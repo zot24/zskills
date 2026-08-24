@@ -38,11 +38,11 @@ Servers are grouped by scope (managed → local → project → user) and only t
 Three accepted spec shapes:
 
 ```
-zskills install <name>                       # plugin from a registered marketplace
-zskills install <name>@<marketplace>         # qualified plugin
-zskills install <owner>/<repo>               # NEW: Agent Skill(s) directly from a git repo
-zskills install <git-url>                    # NEW: same, for arbitrary git URLs (https://, git@, file://)
-zskills install -i                           # interactive picker over marketplace plugins
+zskills plugin install <name>                       # plugin from a registered marketplace
+zskills plugin install <name>@<marketplace>         # qualified plugin
+zskills agent-skill install <owner>/<repo>          # Agent Skill(s) from a git repo
+zskills agent-skill install <git-url>               # same, for https://, git@, file://
+zskills plugin install -i                           # interactive picker over marketplace plugins
 ```
 
 **Plugin path (`<name>` / `<name>@<marketplace>`).** Resolves against registered marketplaces, flips `enabledPlugins` in `~/.claude/settings.json`. Claude Code materializes bytes on next launch.
@@ -74,9 +74,9 @@ zskills install -i                           # interactive picker over marketpla
 `remove` is apt-style: disable in `enabledPlugins` and drop the inventory entry, but leave bytes on disk so re-enabling is instant. `purge` does the same plus deletes the bytes from `~/.claude/plugins/cache/`.
 
 ```
-zskills remove <name>...
-zskills remove -i
-zskills purge  <name>...
+zskills plugin remove <name>...
+zskills plugin remove -i
+zskills plugin purge  <name>...
 ```
 
 | Flag | Default | Description |
@@ -88,8 +88,8 @@ zskills purge  <name>...
 Flip a plugin's `enabledPlugins` flag without (un)installing.
 
 ```
-zskills enable  <name>...
-zskills disable <name>...
+zskills plugin enable  <name>...
+zskills plugin disable <name>...
 ```
 
 `enable` is a no-op if the plugin isn't installed (Claude Code will install it on next start). `disable` keeps bytes and inventory; use `purge` to wipe completely.

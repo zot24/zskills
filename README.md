@@ -69,26 +69,24 @@ Existing tooling is per-runtime, per-language, and per-primitive: there's a Java
 ## Commands
 
 ```
-zskills list [-v]                       # what's installed; agent skills grouped by source
-zskills install <name>                  # add to enabledPlugins
-zskills install -i                      # browse all marketplace plugins, fuzzy-pick one
-zskills remove  <name>                  # disable + drop inventory entry (keep bytes — apt style)
-zskills remove  -i                      # multi-select from enabled plugins to remove
-zskills purge   <name>                  # also delete bytes
-zskills enable  <name>                  # flip on without (un)installing
-zskills disable <name>
-zskills sync [--file f.toml]            # apply declarative manifest (headline command)
-zskills update [<name>...]              # refresh marketplace caches (plugins only)
-zskills upgrade [<name>...]             # ONE command: refresh marketplaces + reinstall all agent skills
-zskills doctor [--fix]                  # reconcile disk ↔ inventory ↔ settings
-zskills scan [path]                     # find project-scope skills across a tree
-zskills migrate <project>               # promote one project's skills to user scope
-zskills migrate-skill <name>            # promote ONE skill across every project in a tree
-zskills migrate-all <dir>               # interactive: walk a tree, prompt per skill
-zskills search <query> [-i]             # -i picks a result and installs it
+zskills list [-v]                              # plugins, Agent Skills, MCP servers
+zskills plugin install <name@marketplace>      # add to enabledPlugins
+zskills plugin install -i                      # browse marketplace plugins
+zskills plugin remove  <name>                  # drop inventory, keep bytes
+zskills plugin purge   <name>                  # also delete bytes
+zskills plugin enable|disable <name>
+zskills agent-skill install <owner/repo>
+zskills agent-skill remove <name>              # deletes bytes
+zskills agent-skill upgrade [<name>...]
+zskills mcp add <name> --url|--command ...
+zskills mcp remove <name> [--scope user]
+zskills sync [--file f.toml]                   # apply skills.toml
 zskills marketplace add|remove|list|update
-                                        # pin one in skills.toml so update/upgrade can't float it
+zskills doctor [--fix]
+zskills scan|migrate|migrate-skill|migrate-all|search
 ```
+
+Bare `install`/`remove`/`purge`/`enable`/`disable`/`update`/`upgrade` exit 2 and name the typed replacement.
 
 `<name>` accepts unqualified (`servarr`) when unambiguous, or `name@marketplace` (`servarr@zot24-skills`) to disambiguate.
 

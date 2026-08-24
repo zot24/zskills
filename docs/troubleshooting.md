@@ -239,7 +239,7 @@ Managed scope is **read-only** by design — `zskills sync` never writes to it, 
 
 ## I want to remove an MCP from one scope without touching others
 
-`sync --prune` removes everything not in the manifest, across every writable scope. For a one-MCP one-scope removal today, edit the relevant settings file directly (or use `claude mcp remove` if it targets the scope you want). A finer-grained removal API is on the [roadmap](https://github.com/zot24/zskills/issues/14).
+`sync --prune` removes everything not in the manifest, across every writable scope. For one MCP server at one scope, run `zskills mcp remove <name> [--scope user|project|local]`. That command writes the matching `[[mcps]]` row and the runtime key. It does not run a full `sync`.
 
 ## How do I uninstall zskills entirely?
 

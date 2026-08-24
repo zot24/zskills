@@ -19,8 +19,19 @@ mod skills_sh;
 mod timestamp;
 
 use clap::Parser;
+use std::process::ExitCode;
 
-fn main() -> anyhow::Result<()> {
+fn main() -> ExitCode {
     let cli = cli::Cli::parse();
-    cli.run()
+    match cli.run() {
+        Ok(()) => ExitCode::SUCCESS,
+        Err(e) => {
+            eprintln!("{e:#}");
+            if e.downcast_ref::<error::RemovedVerb>().is_some() {
+                ExitCode::from(2)
+            } else {
+                ExitCode::FAILURE
+            }
+        }
+    }
 }

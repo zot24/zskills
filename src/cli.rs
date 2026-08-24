@@ -5,9 +5,10 @@ use std::path::PathBuf;
 #[command(
     name = "zskills",
     version,
-    about = "Package manager for Claude Code skills",
-    long_about = "Declarative install, enable, and reconciliation across Claude Code marketplaces.\n\
-                  Treats skills.toml as intent and ~/.claude/settings.json + installed_plugins.json as state."
+    about = "Package manager for plugins, Agent Skills, and MCP servers",
+    long_about = "Declarative install and reconciliation across Claude Code marketplaces.\n\
+                  Treats skills.toml as intent and ~/.claude/settings.json + installed_plugins.json as state.\n\
+                  Typed groups: plugin, agent-skill, mcp."
 )]
 pub struct Cli {
     #[command(subcommand)]
@@ -32,65 +33,59 @@ pub enum Command {
         paths: bool,
     },
 
-    /// Install + enable one or more skills (format: name, name@marketplace, owner/repo, or git URL)
+    /// Marketplace plugins (`enabledPlugins` + `installed_plugins.json`)
+    #[command(subcommand)]
+    Plugin(PluginCmd),
+
+    /// Agent Skills in ~/.agents/skills/
+    #[command(name = "agent-skill", subcommand)]
+    AgentSkill(AgentSkillCmd),
+
+    /// MCP servers in skills.toml and the runtime mcpServers map
+    #[command(subcommand)]
+    Mcp(McpCmd),
+
+    /// Removed in 1.0. Prints the typed replacement and exits 2.
+    #[command(hide = true, disable_help_flag = true)]
     Install {
-        /// Browse all marketplace plugins interactively and pick one to install
-        #[arg(short = 'i', long)]
-        interactive: bool,
-
-        /// When installing from a repo (owner/repo or git URL) with more than 5 Agent Skills,
-        /// confirm "install everything." Without this, large collections abort with a summary
-        /// so they don't silently flood ~/.agents/skills/.
-        #[arg(long)]
-        all: bool,
-
-        /// When installing from a repo, install only the named skill (the manifest
-        /// `name` field / the name shown by the survey). Non-interactive alternative
-        /// to `-i` for multi-skill repos.
-        #[arg(long, conflicts_with = "all", value_name = "NAME")]
-        skill: Option<String>,
-
-        /// Skills to install
-        skills: Vec<String>,
+        #[arg(trailing_var_arg = true, allow_hyphen_values = true, hide = true)]
+        rest: Vec<String>,
     },
-
-    /// Disable + drop from inventory (keeps bytes on disk)
+    /// Removed in 1.0.
+    #[command(hide = true, disable_help_flag = true)]
     Remove {
-        /// Browse enabled plugins interactively and pick which to remove
-        #[arg(short = 'i', long)]
-        interactive: bool,
-
-        skills: Vec<String>,
+        #[arg(trailing_var_arg = true, allow_hyphen_values = true, hide = true)]
+        rest: Vec<String>,
     },
-
-    /// Like remove, but also deletes the bytes from ~/.claude/plugins
+    /// Removed in 1.0.
+    #[command(hide = true, disable_help_flag = true)]
     Purge {
-        #[arg(required = true)]
-        skills: Vec<String>,
+        #[arg(trailing_var_arg = true, allow_hyphen_values = true, hide = true)]
+        rest: Vec<String>,
     },
-
-    /// Flip enabledPlugins on (skill must already be installed)
+    /// Removed in 1.0.
+    #[command(hide = true, disable_help_flag = true)]
     Enable {
-        #[arg(required = true)]
-        skills: Vec<String>,
+        #[arg(trailing_var_arg = true, allow_hyphen_values = true, hide = true)]
+        rest: Vec<String>,
     },
-
-    /// Flip enabledPlugins off (skill stays installed)
+    /// Removed in 1.0.
+    #[command(hide = true, disable_help_flag = true)]
     Disable {
-        #[arg(required = true)]
-        skills: Vec<String>,
+        #[arg(trailing_var_arg = true, allow_hyphen_values = true, hide = true)]
+        rest: Vec<String>,
     },
-
-    /// Update one or more skills (or all) to latest from their marketplace
+    /// Removed in 1.0. Use `marketplace update`.
+    #[command(hide = true, disable_help_flag = true)]
     Update {
-        /// Specific skills to update; empty = all
-        skills: Vec<String>,
+        #[arg(trailing_var_arg = true, allow_hyphen_values = true, hide = true)]
+        rest: Vec<String>,
     },
-
-    /// Upgrade everything zskills manages: marketplaces, git agent skills, npm agent skills.
+    /// Removed in 1.0. Use `agent-skill upgrade` / `marketplace update`.
+    #[command(hide = true, disable_help_flag = true)]
     Upgrade {
-        /// Specific names to upgrade; empty = upgrade everything
-        names: Vec<String>,
+        #[arg(trailing_var_arg = true, allow_hyphen_values = true, hide = true)]
+        rest: Vec<String>,
     },
 
     /// Apply a declarative skills.toml manifest to the current scope
@@ -114,6 +109,11 @@ pub enum Command {
         /// listed gets appended to the manifest. Inverse of `--prune`.
         #[arg(long, conflicts_with = "prune")]
         adopt: bool,
+
+        /// Allow applying a manifest that declares zero entries of a kind while
+        /// state still holds many (the silent mass-disable guard).
+        #[arg(long)]
+        force: bool,
     },
 
     /// Reconcile disk ↔ inventory ↔ settings; report orphans + mismatches
@@ -213,6 +213,94 @@ pub enum Command {
 }
 
 #[derive(Subcommand)]
+pub enum PluginCmd {
+    /// Install + enable a marketplace plugin (name or name@marketplace)
+    Install {
+        #[arg(short = 'i', long)]
+        interactive: bool,
+        skills: Vec<String>,
+    },
+    /// Drop enabledPlugins + inventory; keep bytes
+    Remove {
+        #[arg(short = 'i', long)]
+        interactive: bool,
+        skills: Vec<String>,
+    },
+    /// Like remove, and delete recorded installPath bytes
+    Purge {
+        #[arg(required = true)]
+        skills: Vec<String>,
+    },
+    /// Flip enabledPlugins on (plugin must already be installed)
+    Enable {
+        #[arg(required = true)]
+        skills: Vec<String>,
+    },
+    /// Flip enabledPlugins off (plugin stays installed)
+    Disable {
+        #[arg(required = true)]
+        skills: Vec<String>,
+    },
+}
+
+#[derive(Subcommand)]
+pub enum AgentSkillCmd {
+    /// Install Agent Skills from owner/repo or a git URL
+    Install {
+        #[arg(short = 'i', long)]
+        interactive: bool,
+        #[arg(long)]
+        all: bool,
+        #[arg(long, conflicts_with = "all", value_name = "NAME")]
+        skill: Option<String>,
+        skills: Vec<String>,
+    },
+    /// Delete bytes + inventory for an Agent Skill
+    Remove {
+        #[arg(long)]
+        force: bool,
+        #[arg(long)]
+        file: Option<PathBuf>,
+        #[arg(required = true)]
+        names: Vec<String>,
+    },
+    /// Refresh git/npm Agent Skills (and marketplace caches)
+    Upgrade { names: Vec<String> },
+}
+
+#[derive(Subcommand)]
+pub enum McpCmd {
+    /// Declare an MCP server in skills.toml and the runtime map
+    Add {
+        name: String,
+        #[arg(long)]
+        transport: Option<String>,
+        #[arg(long)]
+        command: Option<String>,
+        #[arg(long = "args", value_name = "ARG")]
+        args: Vec<String>,
+        #[arg(long = "env", value_name = "KEY=VALUE", value_parser = crate::commands::mcp::parse_kv)]
+        env: Vec<(String, String)>,
+        #[arg(long)]
+        url: Option<String>,
+        #[arg(long = "header", value_name = "KEY=VALUE", value_parser = crate::commands::mcp::parse_kv)]
+        header: Vec<(String, String)>,
+        #[arg(long, default_value = "user")]
+        scope: String,
+        #[arg(long)]
+        file: Option<PathBuf>,
+    },
+    /// Remove one MCP server from skills.toml and the runtime map
+    Remove {
+        name: String,
+        #[arg(long)]
+        scope: Option<String>,
+        #[arg(long)]
+        file: Option<PathBuf>,
+    },
+}
+
+#[derive(Subcommand)]
 pub enum MarketplaceCmd {
     /// Add a marketplace tap (owner/repo or full git URL)
     Add { source: String },
@@ -244,27 +332,81 @@ impl Cli {
                 verbose,
                 paths,
             } => crate::commands::list::run(json, verbose, paths),
-            Command::Install {
-                skills,
-                interactive,
-                all,
-                skill,
-            } => crate::commands::install::run(skills, interactive, all, skill),
-            Command::Remove {
-                skills,
-                interactive,
-            } => crate::commands::remove::run(skills, interactive, false),
-            Command::Purge { skills } => crate::commands::remove::run(skills, false, true),
-            Command::Enable { skills } => crate::commands::enable::run(skills, true),
-            Command::Disable { skills } => crate::commands::enable::run(skills, false),
-            Command::Update { skills } => crate::commands::update::run(skills),
-            Command::Upgrade { names } => crate::commands::upgrade::run(names),
+            Command::Plugin(cmd) => match cmd {
+                PluginCmd::Install {
+                    skills,
+                    interactive,
+                } => {
+                    if skills
+                        .iter()
+                        .any(|s| crate::commands::install::is_repo_spec(s))
+                    {
+                        anyhow::bail!(
+                            "plugin install takes name or name@marketplace; use `zskills agent-skill install` for owner/repo"
+                        );
+                    }
+                    crate::commands::install::run(skills, interactive, false, None)
+                }
+                PluginCmd::Remove {
+                    skills,
+                    interactive,
+                } => crate::commands::remove::run(skills, interactive, false),
+                PluginCmd::Purge { skills } => crate::commands::remove::run(skills, false, true),
+                PluginCmd::Enable { skills } => crate::commands::enable::run(skills, true),
+                PluginCmd::Disable { skills } => crate::commands::enable::run(skills, false),
+            },
+            Command::AgentSkill(cmd) => match cmd {
+                AgentSkillCmd::Install {
+                    skills,
+                    interactive,
+                    all,
+                    skill,
+                } => crate::commands::agent_skills::install(skills, interactive, all, skill),
+                AgentSkillCmd::Remove { names, force, file } => {
+                    crate::commands::agent_skills::remove(names, force, file)
+                }
+                AgentSkillCmd::Upgrade { names } => crate::commands::agent_skills::upgrade(names),
+            },
+            Command::Mcp(cmd) => match cmd {
+                McpCmd::Add {
+                    name,
+                    transport,
+                    command,
+                    args,
+                    env,
+                    url,
+                    header,
+                    scope,
+                    file,
+                } => crate::commands::mcp::add(
+                    name,
+                    transport,
+                    command,
+                    args,
+                    env,
+                    url,
+                    header,
+                    Some(scope),
+                    file,
+                ),
+                McpCmd::Remove { name, scope, file } => {
+                    crate::commands::mcp::remove(name, scope, file)
+                }
+            },
+            Command::Install { rest } => crate::commands::stub::run("install", &rest),
+            Command::Remove { rest } => crate::commands::stub::run("remove", &rest),
+            Command::Purge { rest } => crate::commands::stub::run("purge", &rest),
+            Command::Enable { rest } => crate::commands::stub::run("enable", &rest),
+            Command::Disable { rest } => crate::commands::stub::run("disable", &rest),
+            Command::Update { rest } => crate::commands::stub::run("update", &rest),
+            Command::Upgrade { rest } => crate::commands::stub::run("upgrade", &rest),
             Command::Sync {
                 file,
                 dry_run,
                 prune,
                 adopt,
-            } => crate::commands::sync::run(file, dry_run, prune, adopt),
+                force,
+            } => crate::commands::sync::run(file, dry_run, prune, adopt, force),
             Command::Doctor { fix } => crate::commands::doctor::run(fix),
             Command::Scan { path, depth, json } => crate::commands::scan::run(path, depth, json),
             Command::Migrate {

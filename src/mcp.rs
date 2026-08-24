@@ -508,14 +508,47 @@ pub fn upsert(scope: &Scope, name: &str, entry: serde_json::Value) -> Result<()>
     })
 }
 
-/// Remove one MCP server entry from the target file for `scope`. Atomic.
-/// No-op if the entry isn't present.
-pub fn remove(scope: &Scope, name: &str) -> Result<()> {
-    let (path, wrapped) = write_target(scope)?;
+/// Remove one MCP server at `scope` from the file `load_all` attributed it to.
+/// Returns `Ok(true)` if at least one JSON key was deleted.
+/// Returns `Ok(false)` if no matching Manual entry exists at that scope.
+/// Refuses `FromPlugin` and `managed`.
+pub fn remove(scope: &Scope, name: &str) -> Result<bool> {
+    if *scope == Scope::Managed {
+        anyhow::bail!("cannot write to managed scope — deployed by IT, not zskills");
+    }
+    let all = load_all().unwrap_or_default();
+    let hits: Vec<&McpServer> = all
+        .iter()
+        .filter(|m| m.scope == *scope && m.name == name)
+        .collect();
+    if hits.is_empty() {
+        return Ok(false);
+    }
+    let mut deleted = false;
+    for m in hits {
+        match &m.source {
+            Source::FromPlugin { plugin } => anyhow::bail!(
+                "MCP '{name}' at scope {} is provided by plugin {plugin}",
+                scope.label()
+            ),
+            Source::Manual => {
+                delete_key_from_file(&m.source_file, name)?;
+                deleted = true;
+            }
+        }
+    }
+    Ok(deleted)
+}
+
+fn delete_key_from_file(path: &Path, name: &str) -> Result<()> {
     if !path.exists() {
         return Ok(());
     }
-    write_with_mutation(&path, wrapped, |servers| {
+    let wrapped = match read_json(path) {
+        Some(v) => v.get("mcpServers").is_some(),
+        None => true,
+    };
+    write_with_mutation(path, wrapped, |servers| {
         servers.shift_remove(name);
     })
 }
