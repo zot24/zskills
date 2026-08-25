@@ -397,6 +397,22 @@ fn check_mcp_intent() -> usize {
     issues
 }
 
+/// Bare verbs removed in 1.0, when each one moved under a typed group
+/// (`zskills plugin install`, `zskills skill install`, `zskills mcp add`). The
+/// trailing space stops `zskills plugin install ` from matching `zskills install `.
+///
+/// `check_stale_zskills_skill_md` reads this list at run time. The test
+/// `shipped_skill_md_teaches_no_removed_verb` reads the same list against the
+/// `SKILL.md` this repo ships, so the checker and the guard cannot drift apart.
+pub(crate) const REMOVED_BARE_VERBS: &[&str] = &[
+    "zskills install ",
+    "zskills remove ",
+    "zskills purge ",
+    "zskills enable ",
+    "zskills disable ",
+    "zskills upgrade ",
+];
+
 /// Warn if a SKILL.md named zskills still teaches bare verbs.
 fn check_stale_zskills_skill_md() -> usize {
     let mut issues = 0;
@@ -415,14 +431,7 @@ fn check_stale_zskills_skill_md() -> usize {
         let Ok(text) = std::fs::read_to_string(&path) else {
             continue;
         };
-        let stale = [
-            "zskills install ",
-            "zskills remove ",
-            "zskills purge ",
-            "zskills enable ",
-            "zskills disable ",
-        ];
-        if stale.iter().any(|s| text.contains(s)) {
+        if REMOVED_BARE_VERBS.iter().any(|s| text.contains(s)) {
             issues += 1;
             println!(
                 "{} {} still documents bare verbs removed in 1.0 — recopy skills/zskills/SKILL.md from this version",
@@ -432,4 +441,77 @@ fn check_stale_zskills_skill_md() -> usize {
         }
     }
     issues
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// `doctor` tells a user to recopy `skills/zskills/SKILL.md` "from this
+    /// version". That advice is circular while the shipped file is itself stale,
+    /// which is what happened between 1.0 and 1.2.0: the file taught 36 removed
+    /// verbs and every `doctor` run reported the copy the user had just made.
+    ///
+    /// Guard the shipped file with the checker's own list.
+    #[test]
+    fn shipped_skill_md_teaches_no_removed_verb() {
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("skills")
+            .join("zskills")
+            .join("SKILL.md");
+        let text = std::fs::read_to_string(&path)
+            .unwrap_or_else(|e| panic!("cannot read {}: {e}", path.display()));
+
+        let mut found: Vec<String> = Vec::new();
+        for (n, line) in text.lines().enumerate() {
+            for verb in REMOVED_BARE_VERBS {
+                if line.contains(verb) {
+                    found.push(format!("  {}:{}: {}", path.display(), n + 1, line.trim()));
+                }
+            }
+        }
+
+        assert!(
+            found.is_empty(),
+            "the shipped SKILL.md teaches {} verb(s) removed in 1.0.\n\
+             Each verb moved under a typed group: `zskills plugin install`, \
+             `zskills skill install`, `zskills mcp add`.\n{}",
+            found.len(),
+            found.join("\n")
+        );
+    }
+
+    /// The trailing space in each pattern is load-bearing. Without it every
+    /// typed form would match its own removed verb and the guard would fire on
+    /// correct documentation.
+    #[test]
+    fn typed_forms_do_not_match_removed_verbs() {
+        for typed in [
+            "zskills plugin install foo",
+            "zskills plugin remove foo",
+            "zskills plugin purge foo",
+            "zskills plugin enable foo",
+            "zskills plugin disable foo",
+            "zskills skill install owner/repo",
+            "zskills skill remove foo",
+            "zskills skill upgrade foo",
+        ] {
+            assert!(
+                !REMOVED_BARE_VERBS.iter().any(|v| typed.contains(v)),
+                "typed form `{typed}` must not match a removed bare verb"
+            );
+        }
+    }
+
+    /// Every removed verb is still detected in its bare form.
+    #[test]
+    fn removed_verbs_are_detected_in_bare_form() {
+        for verb in REMOVED_BARE_VERBS {
+            let line = format!("Run `{verb}foo` to do the thing.");
+            assert!(
+                REMOVED_BARE_VERBS.iter().any(|v| line.contains(v)),
+                "bare form of `{verb}` must be detected"
+            );
+        }
+    }
 }
