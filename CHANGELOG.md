@@ -2,6 +2,14 @@
 
 All notable changes to this project are documented here. The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html). Releases from this point forward are managed by [release-please](https://github.com/googleapis/release-please) based on [Conventional Commits](https://www.conventionalcommits.org/).
 
+## [1.2.0](https://github.com/zot24/zskills/compare/v1.1.0...v1.2.0) (2026-08-25)
+
+
+### Features
+
+* register the Agent Skill hub in Pi settings ([#45](https://github.com/zot24/zskills/issues/45)) ([b99398a](https://github.com/zot24/zskills/commit/b99398a607d695f1709dd517e276488de7567456))
+* symlink hub skills into per-harness roots ([#46](https://github.com/zot24/zskills/issues/46)) ([e92139e](https://github.com/zot24/zskills/commit/e92139ee19bf92a6a3961db536c02710555b28fa))
+
 ## [1.1.0](https://github.com/zot24/zskills/compare/v1.0.0...v1.1.0) (2026-08-24)
 
 
