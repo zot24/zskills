@@ -19,7 +19,7 @@ Fix: create the file at `~/.config/zskills/skills.toml`, or pass `--file <path>`
 Two registered marketplaces both expose a skill with the same name. zskills can't pick one. Qualify it:
 
 ```bash
-zskills install firecrawl@zot24-skills        # instead of just firecrawl
+zskills plugin install firecrawl@zot24-skills        # instead of just firecrawl
 ```
 
 ## "enabled but NOT installed (broken)"
@@ -27,7 +27,7 @@ zskills install firecrawl@zot24-skills        # instead of just firecrawl
 `doctor` is flagging an `enabledPlugins` entry that has no corresponding inventory record. Three legitimate causes:
 
 1. **You just ran `sync` and haven't restarted Claude Code yet.** This is the normal post-sync state. Restart Claude Code; it'll fetch the bytes on startup. Doctor will go clean.
-2. **The plugin was removed from its marketplace upstream.** Pick a replacement or `zskills disable <name>` to silence the warning.
+2. **The plugin was removed from its marketplace upstream.** Pick a replacement or `zskills plugin disable <name>` to silence the warning.
 3. **The marketplace tap was unregistered (`marketplace remove`).** `zskills doctor --fix` will drop the orphan reference from `enabledPlugins`.
 
 ## Sync deleted agent skills I didn't expect to lose

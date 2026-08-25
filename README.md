@@ -40,7 +40,7 @@ Requires `git` on `$PATH`.
 This repo also ships an Agent Skill that teaches Claude how to use zskills. Install it directly:
 
 ```bash
-zskills install zot24/zskills
+zskills skill install zot24/zskills
 ```
 
 zskills clones this repo, finds `skills/zskills/SKILL.md`, and drops it at `~/.claude/skills/zskills/`. If you'd rather declare it in the manifest for cross-machine reproducibility:
