@@ -10,6 +10,7 @@ pub fn install(
     all: bool,
     skill: Option<String>,
     harness: Vec<crate::harness::Harness>,
+    category: String,
 ) -> Result<()> {
     if specs
         .iter()
@@ -19,7 +20,7 @@ pub fn install(
             "skill install takes owner/repo or a git URL; use `zskills plugin install` for name@marketplace"
         );
     }
-    crate::commands::install::run(specs, interactive, all, skill, harness)
+    crate::commands::install::run(specs, interactive, all, skill, harness, category)
 }
 
 pub fn upgrade(names: Vec<String>) -> Result<()> {

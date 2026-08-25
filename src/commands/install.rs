@@ -23,9 +23,10 @@ pub fn run(
     all: bool,
     skill: Option<String>,
     harness: Vec<crate::harness::Harness>,
+    category: String,
 ) -> Result<()> {
     if interactive && specs.is_empty() {
-        return run_interactive_browse_marketplaces(harness);
+        return run_interactive_browse_marketplaces(harness, category);
     }
 
     if specs.is_empty() {
@@ -43,14 +44,21 @@ pub fn run(
 
     let mut failures = 0usize;
     for spec in &repo_specs {
-        if let Err(e) = install_from_repo(spec, interactive, all, skill.as_deref(), &harness) {
+        if let Err(e) = install_from_repo(
+            spec,
+            interactive,
+            all,
+            skill.as_deref(),
+            &harness,
+            &category,
+        ) {
             eprintln!("{} {}: {}", "✗".red(), spec, e);
             failures += 1;
         }
     }
 
     if !plugin_specs.is_empty() {
-        failures += install_plugin_specs(plugin_specs, &harness)?;
+        failures += install_plugin_specs(plugin_specs, &harness, &category)?;
     }
 
     // Printing an error and exiting 0 makes every failure invisible to `set -e`,
@@ -80,6 +88,7 @@ fn install_from_repo(
     all: bool,
     skill: Option<&str>,
     harness: &[crate::harness::Harness],
+    category: &str,
 ) -> Result<()> {
     let (defaults, _) = crate::harness::load_defaults();
     let hs = crate::harness::resolve(harness, &defaults, &[], crate::harness::default_skill())?;
@@ -159,7 +168,7 @@ fn install_from_repo(
                 .collect::<Vec<_>>()
                 .join(", ")
         );
-        return install_chosen(spec, &[name.to_string()]);
+        return install_chosen(spec, &[name.to_string()], &hs, category);
     }
 
     const AUTO_INSTALL_MAX: usize = 5;
@@ -186,13 +195,19 @@ fn install_from_repo(
         return Ok(());
     }
 
-    install_chosen(spec, &chosen)
+    install_chosen(spec, &chosen, &hs, category)
 }
 
-fn install_chosen(spec: &str, chosen: &[String]) -> Result<()> {
+fn install_chosen(
+    spec: &str,
+    chosen: &[String],
+    hs: &[crate::harness::Harness],
+    category: &str,
+) -> Result<()> {
     for name in chosen {
         match crate::agent_skill::install(spec, Some(name)) {
             Ok(installed) => {
+                crate::harness::link_hub_to_harnesses(&installed, hs, category)?;
                 for n in installed {
                     println!(
                         "{} {} {}",
@@ -255,7 +270,11 @@ fn print_large_collection_summary(
     );
 }
 
-fn install_plugin_specs(specs: Vec<String>, harness: &[crate::harness::Harness]) -> Result<usize> {
+fn install_plugin_specs(
+    specs: Vec<String>,
+    harness: &[crate::harness::Harness],
+    category: &str,
+) -> Result<usize> {
     let known = crate::marketplace::load_known(&crate::paths::known_marketplaces_json()?)?;
     if known.is_empty() {
         println!(
@@ -269,7 +288,7 @@ fn install_plugin_specs(specs: Vec<String>, harness: &[crate::harness::Harness])
     let targets =
         crate::harness::resolve(harness, &defaults, &[], crate::harness::default_plugin())?;
     let want_claude = targets.contains(&crate::harness::Harness::Claude);
-    let want_hub = targets.iter().any(|h| h.uses_hub());
+    let want_hub = targets.iter().any(|h| h.needs_hub_copy());
 
     let settings_path = crate::paths::settings_json()?;
     let mut settings = crate::settings::load(&settings_path)?;
@@ -325,7 +344,7 @@ fn install_plugin_specs(specs: Vec<String>, harness: &[crate::harness::Harness])
     }
     if want_hub || targets.iter().any(|h| h.skill_skip_reason().is_some()) {
         for q in &resolved {
-            match crate::harness::materialize_hub(q, &targets) {
+            match crate::harness::materialize_hub(q, &targets, category) {
                 Ok(names) if !names.is_empty() => {
                     println!(
                         "  {} copied {} nested skill(s) from {} into the Agent Skill hub",
@@ -408,7 +427,10 @@ pub(crate) fn materialize_plugins(qualified: &[String]) -> Result<usize> {
     Ok(installed)
 }
 
-fn run_interactive_browse_marketplaces(harness: Vec<crate::harness::Harness>) -> Result<()> {
+fn run_interactive_browse_marketplaces(
+    harness: Vec<crate::harness::Harness>,
+    category: String,
+) -> Result<()> {
     use crate::interactive::Item;
 
     let known = crate::marketplace::load_known(&crate::paths::known_marketplaces_json()?)?;
@@ -457,6 +479,7 @@ fn run_interactive_browse_marketplaces(harness: Vec<crate::harness::Harness>) ->
             false,
             None,
             harness,
+            category,
         )?,
     }
     Ok(())

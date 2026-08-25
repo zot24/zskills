@@ -82,6 +82,42 @@ pub fn pi_settings_json() -> Result<PathBuf> {
     Ok(pi_home()?.join("agent").join("settings.json"))
 }
 
+/// `~/.grok/` — Grok's home. Override with `GROK_HOME`.
+pub fn grok_home() -> Result<PathBuf> {
+    if let Ok(p) = std::env::var("GROK_HOME") {
+        return Ok(PathBuf::from(p));
+    }
+    let home = dirs::home_dir().context("could not determine home directory")?;
+    Ok(home.join(".grok"))
+}
+
+/// `~/.hermes/` — Hermes home. Override with `HERMES_HOME`.
+pub fn hermes_home() -> Result<PathBuf> {
+    if let Ok(p) = std::env::var("HERMES_HOME") {
+        return Ok(PathBuf::from(p));
+    }
+    let home = dirs::home_dir().context("could not determine home directory")?;
+    Ok(home.join(".hermes"))
+}
+
+/// `~/.kimi-code/` — Kimi's home. Override with `KIMI_HOME`.
+pub fn kimi_home() -> Result<PathBuf> {
+    if let Ok(p) = std::env::var("KIMI_HOME") {
+        return Ok(PathBuf::from(p));
+    }
+    let home = dirs::home_dir().context("could not determine home directory")?;
+    Ok(home.join(".kimi-code"))
+}
+
+/// `~/.codex/` — Codex home. Override with `CODEX_HOME`.
+pub fn codex_home() -> Result<PathBuf> {
+    if let Ok(p) = std::env::var("CODEX_HOME") {
+        return Ok(PathBuf::from(p));
+    }
+    let home = dirs::home_dir().context("could not determine home directory")?;
+    Ok(home.join(".codex"))
+}
+
 /// ~/.agents/skills/.zskills.json — our inventory of which Agent Skills we manage and where they came from.
 pub fn agent_skills_inventory() -> Result<PathBuf> {
     Ok(user_skills_dir()?.join(".zskills.json"))
