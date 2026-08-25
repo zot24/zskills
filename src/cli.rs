@@ -292,6 +292,8 @@ pub enum AgentSkillCmd {
     },
     /// Refresh git/npm Agent Skills (and marketplace caches)
     Upgrade { names: Vec<String> },
+    /// Ensure the Agent Skill hub path is listed once in Pi's settings.json
+    RegisterPiHub,
     /// Hidden. `skill migrate` is not a verb. Point at `migrate-skill`.
     #[command(hide = true, disable_help_flag = true)]
     Migrate {
@@ -410,6 +412,7 @@ impl Cli {
                     crate::commands::agent_skills::remove(names, force, file)
                 }
                 AgentSkillCmd::Upgrade { names } => crate::commands::agent_skills::upgrade(names),
+                AgentSkillCmd::RegisterPiHub => crate::commands::agent_skills::register_pi_hub(),
                 AgentSkillCmd::Migrate { rest } => {
                     crate::commands::stub::run("skill-migrate", &rest)
                 }

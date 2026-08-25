@@ -15,6 +15,7 @@ fn zskills(home: &TempDir) -> Command {
     // `<tempdir>/skills/` is the install target (mirrors the production layout
     // where ~/.agents/skills/ lives alongside ~/.claude/).
     cmd.env("AGENTS_HOME", home.path());
+    // Sandbox Pi settings so tests never write the developer's `~/.pi`.
     cmd.env("PI_HOME", home.path().join("pi"));
     // Sandbox the clone cache too, so repo-install tests never touch ~/.cache.
     cmd.env("XDG_CACHE_HOME", home.path().join("cache"));
@@ -3048,4 +3049,114 @@ harnesses = ["pi"]
     assert!(settings["enabledPlugins"]
         .get("pi@zot24-skills")
         .is_none_or(|v| v == false));
+}
+
+#[test]
+fn hub_skill_is_not_visible_to_unregistered_pi() {
+    let home = fake_home();
+    stage_marketplace_plugin_with_nested_skill(&home, "zot24-skills", "pi");
+    zskills(&home)
+        .args(["plugin", "install", "pi@zot24-skills", "--harness", "grok"])
+        .assert()
+        .success();
+
+    let out = zskills(&home)
+        .args(["list", "--json"])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let v: serde_json::Value = serde_json::from_slice(&out).unwrap();
+    let vis = v["agent_skills"]["harnesses"]["pi"]["visible"]
+        .as_array()
+        .cloned()
+        .unwrap_or_default();
+    assert!(
+        vis.iter().any(|x| x == "grok"),
+        "Grok scans the hub natively: {v}"
+    );
+    assert!(
+        !vis.iter().any(|x| x == "pi"),
+        "unregistered Pi must not look hub-enough: {v}"
+    );
+    assert!(
+        !home
+            .path()
+            .join("pi")
+            .join("agent")
+            .join("settings.json")
+            .is_file(),
+        "grok-only install must not write Pi settings"
+    );
+}
+
+#[test]
+fn skill_register_pi_hub_is_idempotent_and_preserves_keys() {
+    let home = fake_home();
+    let settings_path = home.path().join("pi").join("agent").join("settings.json");
+    fs::create_dir_all(settings_path.parent().unwrap()).unwrap();
+    fs::write(
+        &settings_path,
+        r#"{
+  "defaultModel": "grok-4.6",
+  "defaultProvider": "xai",
+  "theme": "dark"
+}
+"#,
+    )
+    .unwrap();
+
+    zskills(&home)
+        .args(["skill", "register-pi-hub"])
+        .assert()
+        .success();
+    zskills(&home)
+        .args(["skill", "register-pi-hub"])
+        .assert()
+        .success();
+
+    let settings: serde_json::Value =
+        serde_json::from_slice(&fs::read(&settings_path).unwrap()).unwrap();
+    let hub = home.path().join("skills");
+    let hub_s = hub.to_string_lossy().into_owned();
+    let count = settings["skills"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|v| v.as_str() == Some(hub_s.as_str()))
+        .count();
+    assert_eq!(
+        count, 1,
+        "second run must not duplicate the hub path: {settings}"
+    );
+    assert_eq!(settings["defaultModel"], "grok-4.6");
+    assert_eq!(settings["defaultProvider"], "xai");
+    assert_eq!(settings["theme"], "dark");
+}
+
+#[test]
+fn plugin_install_harness_pi_registers_hub_in_pi_settings() {
+    let home = fake_home();
+    stage_marketplace_plugin_with_nested_skill(&home, "zot24-skills", "pi");
+    zskills(&home)
+        .args(["plugin", "install", "pi@zot24-skills", "--harness", "pi"])
+        .assert()
+        .success();
+
+    let settings_path = home.path().join("pi").join("agent").join("settings.json");
+    let settings: serde_json::Value =
+        serde_json::from_slice(&fs::read(&settings_path).unwrap()).unwrap();
+    let hub = home.path().join("skills");
+    let hub_s = hub.to_string_lossy().into_owned();
+    let count = settings["skills"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|v| v.as_str() == Some(hub_s.as_str()))
+        .count();
+    assert_eq!(
+        count, 1,
+        "plugin --harness pi must register the hub: {settings}"
+    );
 }

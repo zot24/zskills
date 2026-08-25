@@ -26,6 +26,11 @@ pub fn upgrade(names: Vec<String>) -> Result<()> {
     crate::commands::upgrade::run(names)
 }
 
+pub fn register_pi_hub() -> Result<()> {
+    crate::harness::register_pi_hub()?;
+    Ok(())
+}
+
 pub fn remove(names: Vec<String>, force: bool, file: Option<PathBuf>) -> Result<()> {
     if names.is_empty() {
         anyhow::bail!("specify at least one Agent Skill name");

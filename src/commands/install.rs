@@ -83,6 +83,7 @@ fn install_from_repo(
 ) -> Result<()> {
     let (defaults, _) = crate::harness::load_defaults();
     let hs = crate::harness::resolve(harness, &defaults, &[], crate::harness::default_skill())?;
+    crate::harness::ensure_pi_hub_if_targeted(&hs)?;
     for h in &hs {
         if let Some(reason) = h.skill_skip_reason() {
             println!("  {} {}: {reason}", "·".dimmed(), h.as_str());
@@ -268,7 +269,7 @@ fn install_plugin_specs(specs: Vec<String>, harness: &[crate::harness::Harness])
     let targets =
         crate::harness::resolve(harness, &defaults, &[], crate::harness::default_plugin())?;
     let want_claude = targets.contains(&crate::harness::Harness::Claude);
-    let want_hub = targets.iter().any(|h| h.hub_is_enough());
+    let want_hub = targets.iter().any(|h| h.uses_hub());
 
     let settings_path = crate::paths::settings_json()?;
     let mut settings = crate::settings::load(&settings_path)?;
