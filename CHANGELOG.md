@@ -2,6 +2,13 @@
 
 All notable changes to this project are documented here. The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html). Releases from this point forward are managed by [release-please](https://github.com/googleapis/release-please) based on [Conventional Commits](https://www.conventionalcommits.org/).
 
+## [1.1.0](https://github.com/zot24/zskills/compare/v1.0.0...v1.1.0) (2026-08-24)
+
+
+### Features
+
+* name which harnesses can see a plugin or Agent Skill ([#35](https://github.com/zot24/zskills/issues/35)) ([daad031](https://github.com/zot24/zskills/commit/daad031939808103e3382555d3c0f364ade241db)), closes [#34](https://github.com/zot24/zskills/issues/34)
+
 ## [1.0.0](https://github.com/zot24/zskills/compare/v0.9.0...v1.0.0) (2026-08-24)
 
 
