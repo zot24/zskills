@@ -183,7 +183,7 @@ claims = ["sometool-*"]
 ## 8. One command, refresh everything
 
 ```bash
-zskills upgrade
+zskills skill upgrade
 ```
 
 That single command:
@@ -192,7 +192,7 @@ That single command:
 - `git pull` every git-sourced agent skill and re-copy bytes
 - `npm update -g` every npm-sourced agent skill (and re-claim via `claims` globs)
 
-Pass names to limit scope: `zskills upgrade get-shit-done-cc zot24-skills`.
+Pass names to limit scope: `zskills skill upgrade get-shit-done-cc zot24-skills`.
 
 ## 9. Diagnose drift
 
