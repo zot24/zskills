@@ -29,7 +29,7 @@ Two options. Use whichever matches how you think.
 **Imperative** — flip on now, document later:
 
 ```bash
-zskills install firecrawl@zot24-skills
+zskills plugin install firecrawl@zot24-skills
 ```
 
 **Declarative** — edit the manifest, run sync:
@@ -54,7 +54,7 @@ Two paths — pick whichever fits.
 **Imperative**, one-shot:
 
 ```bash
-zskills install jakubkrehel/make-interfaces-feel-better
+zskills skill install jakubkrehel/make-interfaces-feel-better
 ```
 
 zskills clones the repo, surveys it, and installs every `skills/<name>/SKILL.md` it finds. For repos with ≤5 skills, all install by default. For one skill, it installs silently. For multi-skill repos (e.g. a collection), see ["large collections"](#large-collections-from-a-repo) below.
@@ -62,8 +62,8 @@ zskills clones the repo, surveys it, and installs every `skills/<name>/SKILL.md`
 The same command accepts full git URLs too:
 
 ```bash
-zskills install https://github.com/jakubkrehel/make-interfaces-feel-better.git
-zskills install git@github.com:jakubkrehel/make-interfaces-feel-better.git
+zskills skill install https://github.com/jakubkrehel/make-interfaces-feel-better.git
+zskills skill install git@github.com:jakubkrehel/make-interfaces-feel-better.git
 ```
 
 **Declarative**, reproducible across machines:
@@ -84,12 +84,12 @@ zskills sync
 When a repo exposes more than 5 skills (a curated collection, say), the imperative install path **won't silently flood `~/.claude/skills/`**:
 
 ```
-$ zskills install owner/big-skill-collection
+$ zskills skill install owner/big-skill-collection
 owner/big-skill-collection contains 47 Agent Skills — zskills won't install all of them by default.
 
 Options:
-  zskills install owner/big-skill-collection -i      interactive picker
-  zskills install owner/big-skill-collection --all   install all 47 skills
+  zskills skill install owner/big-skill-collection -i      interactive picker
+  zskills skill install owner/big-skill-collection --all   install all 47 skills
 
 Sample (5 of 47): skill-a, skill-b, skill-c, skill-d, skill-e, …
 ```
@@ -101,10 +101,10 @@ Sample (5 of 47): skill-a, skill-b, skill-c, skill-d, skill-e, …
 If the repo is actually a Claude Code marketplace (has `.claude-plugin/marketplace.json`), zskills redirects:
 
 ```
-$ zskills install anthropics/claude-plugins-official
+$ zskills skill install anthropics/claude-plugins-official
 This repo is a plugin marketplace. To register and install plugins from it:
   zskills marketplace add anthropics/claude-plugins-official
-  zskills install <plugin>@<marketplace>
+  zskills plugin install <plugin>@<marketplace>
 ```
 
 That's the canonical path for plugins — they go through marketplace registration, not direct install from the marketplace's repo.
@@ -183,7 +183,7 @@ claims = ["sometool-*"]
 ## 8. One command, refresh everything
 
 ```bash
-zskills upgrade
+zskills skill upgrade
 ```
 
 That single command:
@@ -192,7 +192,7 @@ That single command:
 - `git pull` every git-sourced agent skill and re-copy bytes
 - `npm update -g` every npm-sourced agent skill (and re-claim via `claims` globs)
 
-Pass names to limit scope: `zskills upgrade get-shit-done-cc zot24-skills`.
+Pass names to limit scope: `zskills skill upgrade get-shit-done-cc zot24-skills`.
 
 ## 9. Diagnose drift
 
@@ -203,7 +203,7 @@ zskills doctor
 If something's amiss:
 
 - **"enabled but NOT installed (broken)"** — Claude Code knows about the plugin via `enabledPlugins`, but the bytes aren't on disk. Restart Claude Code (it'll install on startup), or run `/plugin install <name>@<mp>` inside Claude Code. If you don't want it anymore, `zskills doctor --fix` removes the flag.
-- **"installed from a marketplace that's no longer registered"** — you `marketplace remove`-d a tap but plugins from it are still in the inventory. Run `zskills purge <name>` to clean.
+- **"installed from a marketplace that's no longer registered"** — you `marketplace remove`-d a tap but plugins from it are still in the inventory. Run `zskills plugin purge <name>` to clean.
 - **"agent skill tracked in inventory but missing on disk"** — someone deleted `~/.claude/skills/<name>/` manually. `zskills doctor --fix` removes the stale inventory entry, or re-run `sync` to reinstall.
 
 ## 10. Reproduce someone else's setup
@@ -326,4 +326,4 @@ zskills marketplace add skills.sh
 zskills search next-js                # now federates to skills.sh
 ```
 
-Once you've found the name, `zskills install <name>` flips it on (or appends `[[skills]]` to `skills.toml` for the declarative path).
+Once you've found the name, `zskills plugin install <name>` flips it on (or appends `[[skills]]` to `skills.toml` for the declarative path).

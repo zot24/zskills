@@ -9,14 +9,14 @@ allowed-tools: Bash, Read, Edit, Write
 A single Rust binary that manages three primitives for Claude Code (and, by design, future agentic CLIs like grok-cli / Codex):
 
 - **Plugins** — marketplace-distributed, controlled via `~/.claude/settings.json` → `enabledPlugins`
-- **Agent Skills** — raw `SKILL.md` directories under `~/.claude/skills/<name>/`
+- **Agent Skills** — raw `SKILL.md` directories in the shared hub `~/.agents/skills/<name>/`, symlinked into each harness root (`~/.claude/skills/`, `~/.codex/skills/`, `~/.hermes/skills/<category>/`); Pi and Grok scan the hub directly
 - **MCP servers** — declared in `~/.claude.json`, `<project>/.mcp.json`, `<project>/.claude/settings.json`, `<project>/.claude.local/settings.json`, and (read-only) `/Library/Application Support/ClaudeCode/managed-settings.json`
 
 Everything reconciles atomically from one `skills.toml` manifest. Preserves every unknown JSON field — hooks, permissions, env, anything Claude Code adds.
 
 ## When to use
 
-- **Installing things**: `zskills install <name>` (or `zskills install -i` for fuzzy picker) is faster and safer than editing `settings.json` by hand.
+- **Installing things**: `zskills plugin install <name>` / `zskills skill install <owner>/<repo>` (add `-i` for a picker) is faster and safer than editing `settings.json` by hand.
 - **Bootstrapping a machine**: drop your `skills.toml` in `~/.config/zskills/`, run `zskills sync`. Reproducible.
 - **MCP visibility**: `zskills list` aggregates every MCP across all 6 known sources with plugin attribution — no other tool surfaces plugin-injected servers separately.
 - **MCP validation**: `zskills doctor` statically checks command-on-PATH, unset `${VAR}` refs, deprecated SSE transport — without spawning anything.
@@ -37,27 +37,33 @@ zskills list --paths               # also show on-disk location of every entry
 zskills list -v                    # expand grouped npm-bundle agent skills
 zskills list --json                # machine-readable for scripting
 
-# Search + install (plugin path — via marketplaces)
+# Search (marketplaces)
 zskills search <query>             # substring-match across registered marketplaces
 zskills search <query> -i          # also opens an interactive picker; selection installs
-zskills install <name>             # name@marketplace if ambiguous
-zskills install <name>@<mp>        # explicitly qualified
-zskills install -i                 # fuzzy-pick from all marketplaces (uses fzf if available)
 
-# Install Agent Skills directly from a git repo (v0.8+)
-zskills install zot24/zskills      # owner/repo — clones, surveys, installs Agent Skills
-zskills install https://github.com/owner/repo.git    # full git URL works too
-zskills install owner/big-collection -i              # multi-select picker for many skills
-zskills install owner/big-collection --all           # confirm "install all" when >5 skills
+# Plugins (marketplace-distributed)  — group: `zskills plugin`
+zskills plugin install <name>      # name@marketplace if ambiguous
+zskills plugin install <name>@<mp> # explicitly qualified
+zskills plugin install -i          # fuzzy-pick from all marketplaces
+zskills plugin remove <name>       # apt-style: disable + drop inventory, keep bytes
+zskills plugin remove -i           # multi-select picker over enabled plugins
+zskills plugin purge <name>        # also delete bytes
+zskills plugin enable <name>       # flip on (must already be installed)
+zskills plugin disable <name>      # flip off, bytes stay
 
-# Remove
-zskills remove <name>              # apt-style: disable + drop inventory, keep bytes
-zskills remove -i                  # multi-select picker over enabled plugins
-zskills purge <name>               # also delete bytes
+# Agent Skills from a git repo — group: `zskills skill`
+zskills skill install zot24/zskills                        # owner/repo — clone, survey, install
+zskills skill install https://github.com/owner/repo.git    # full git URL works too
+zskills skill install owner/big-collection -i              # multi-select picker for many skills
+zskills skill install owner/big-collection --all           # confirm "install all" when >5 skills
+zskills skill install owner/repo --skill <name>            # just one out of the source
+zskills skill remove <name>        # delete bytes + inventory
+zskills skill upgrade [<name>...]  # refresh git/npm Agent Skills + marketplace caches
+zskills skill register-pi-hub      # list the hub path once in Pi's settings.json
 
-# Enable / disable without (un)installing
-zskills enable <name>
-zskills disable <name>
+# MCP servers — group: `zskills mcp`
+zskills mcp add <name> ...         # declare in skills.toml + the runtime map
+zskills mcp remove <name>
 
 # Declarative manifest (the headline command)
 zskills sync                       # apply ~/.config/zskills/skills.toml
@@ -65,10 +71,8 @@ zskills sync --dry-run             # preview
 zskills sync --prune               # destructive removals: delete agent skill bytes and
                                    # MCP entries not in manifest
 zskills sync --file ./skills.toml  # project-local manifest (NOT auto-loaded)
-
-# Refresh from origin
-zskills upgrade                    # marketplaces + git agent skills + npm agent skills
-zskills upgrade <name>...          # narrow to specific entries
+zskills sync --adopt               # inverse of --prune: append orphans to the manifest
+zskills sync --force               # override the silent mass-disable guard
 
 # Diagnostics
 zskills doctor                     # report plugin / inventory / MCP issues
@@ -150,6 +154,42 @@ env = { HONCHO_AUTH = "${HONCHO_AUTH}", USER_NAME = "${USER}" }
 scope = "user"
 ```
 
+### Harness visibility — the trap
+
+An install is not automatically visible to every agent CLI. **The two primitives have opposite
+defaults**, and `zskills list` prints the resolved set after each name (`[claude · pi · grok | skipped kimi]`).
+
+| Primitive | Default harnesses | Why |
+|---|---|---|
+| `[[skills]]` (plugin) | **`claude` only** | `enabledPlugins` is a Claude Code file; no other harness reads it |
+| `[[agent_skills]]` | **every harness whose home dir exists** (minus unsupported) | the hub is harness-neutral |
+
+So moving a skill from `[[agent_skills]]` to a plugin **silently drops it out of Pi, Grok, Codex and
+Hermes**. To fan a plugin out, name the harnesses explicitly — its nested `skills/<name>/` trees are
+then *copied* into the hub (copied, not linked: plugin cache paths are version-stamped and a link
+would break on upgrade):
+
+```toml
+[[skills]]
+name = "mattpocock-skills"
+marketplace = "skills"
+harnesses = ["claude", "pi", "grok", "codex", "hermes"]
+```
+
+Set it once for everything with `[defaults]`, override per entry, or one-shot with `--harness`:
+
+```toml
+[defaults]
+harnesses = ["claude", "pi", "grok", "codex", "hermes"]
+mcp_harnesses = ["claude"]
+```
+
+Support as of 1.2.0: `claude`, `pi`, `grok`, `codex`, `hermes` all take skills; **`kimi` is
+unsupported** (no cited skills directory under `~/.kimi-code/` — zskills refuses to invent one).
+MCP servers are Claude-only. Pi reads the hub only once its absolute path is in
+`~/.pi/agent/settings.json` `skills: []` — `zskills skill register-pi-hub` puts it there. Hermes
+files skills by category, defaulting to `software-development` (`--category` overrides).
+
 ### Secret handling
 
 Values in `env` / `headers` should be `${VAR}` references — the manifest is reproducible and shareable, so credentials stay in your shell environment. `${VAR}` is preserved verbatim on write; never resolved.
@@ -177,17 +217,17 @@ zskills sync
 ### Install one thing fast
 ```bash
 # Plugin from a registered marketplace
-zskills install firecrawl@zot24-skills
+zskills plugin install firecrawl@zot24-skills
 
 # Agent Skill directly from any git repo (no manifest edit required)
-zskills install zot24/zskills
+zskills skill install zot24/zskills
 
 # Browse marketplace plugins
-zskills install -i
+zskills plugin install -i
 ```
 
 ### Repo-install size policy
-When `zskills install <owner>/<repo>` discovers many skills, it doesn't silently flood `~/.claude/skills/`:
+When `zskills skill install <owner>/<repo>` discovers many skills, it does not silently flood the hub:
 
 | Skills in repo | Default behavior |
 |---|---|
@@ -198,7 +238,7 @@ When `zskills install <owner>/<repo>` discovers many skills, it doesn't silently
 Pass `-i` for a picker or `--all` for explicit consent on large collections.
 
 ### Marketplace repos vs skill repos
-If the repo is a Claude Code marketplace (has `.claude-plugin/marketplace.json`), `install <owner/repo>` redirects to `zskills marketplace add <owner/repo>` instead. That's the canonical path for plugins.
+If the repo is a Claude Code marketplace (has `.claude-plugin/marketplace.json`), `zskills skill install <owner>/<repo>` redirects to `zskills marketplace add <owner/repo>` instead. That's the canonical path for plugins.
 
 ### See what's where
 ```bash

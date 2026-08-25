@@ -15,7 +15,7 @@ The portable version of this standard is the `pr-standard` Agent Skill in
 needs the standard in another repository installs it from there:
 
 ```bash
-zskills install zot24/skills --skill pr-standard
+zskills skill install zot24/skills --skill pr-standard
 ```
 
 Do not add a copy of the skill to this repository.
