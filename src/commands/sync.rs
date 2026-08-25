@@ -64,7 +64,7 @@ pub fn run(
         }
         if targets
             .iter()
-            .any(|h| h.hub_is_enough() || h.skill_skip_reason().is_some())
+            .any(|h| h.uses_hub() || h.skill_skip_reason().is_some())
         {
             plugin_copies.push((qualified, targets));
         }
@@ -246,7 +246,7 @@ pub fn run(
     for (q, hs) in &plugin_copies {
         let dests = hs
             .iter()
-            .filter(|h| h.hub_is_enough())
+            .filter(|h| h.uses_hub())
             .map(|h| h.as_str())
             .collect::<Vec<_>>()
             .join(", ");
@@ -466,6 +466,13 @@ pub fn run(
     }
 
     for entry in &manifest.agent_skills {
+        let hs = crate::harness::resolve(
+            &[],
+            &manifest.defaults.harnesses,
+            &entry.harnesses,
+            crate::harness::default_skill(),
+        )?;
+        crate::harness::ensure_pi_hub_if_targeted(&hs)?;
         if let Some(pkg) = entry.npm.as_deref() {
             match crate::agent_skill::install_npm(pkg, entry.install_cmd.as_deref(), &entry.claims)
             {

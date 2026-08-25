@@ -1,6 +1,10 @@
 use anyhow::{Context, Result};
 use std::path::PathBuf;
 
+/// Tests that mutate `AGENTS_HOME` or `PI_HOME` must hold this for the duration.
+#[cfg(test)]
+pub(crate) static HOME_ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
 pub fn claude_home() -> Result<PathBuf> {
     if let Ok(p) = std::env::var("CLAUDE_HOME") {
         return Ok(PathBuf::from(p));
@@ -62,6 +66,20 @@ pub fn agents_home() -> Result<PathBuf> {
 /// visible to any compliant client (Claude Code, Grok CLI, …), not just Claude.
 pub fn user_skills_dir() -> Result<PathBuf> {
     Ok(agents_home()?.join("skills"))
+}
+
+/// `~/.pi/` — Pi's agent home. Override with `PI_HOME` (mirrors `CLAUDE_HOME`).
+pub fn pi_home() -> Result<PathBuf> {
+    if let Ok(p) = std::env::var("PI_HOME") {
+        return Ok(PathBuf::from(p));
+    }
+    let home = dirs::home_dir().context("could not determine home directory")?;
+    Ok(home.join(".pi"))
+}
+
+/// `~/.pi/agent/settings.json` — Pi's settings, including the `skills: []` scan roots.
+pub fn pi_settings_json() -> Result<PathBuf> {
+    Ok(pi_home()?.join("agent").join("settings.json"))
 }
 
 /// ~/.agents/skills/.zskills.json — our inventory of which Agent Skills we manage and where they came from.

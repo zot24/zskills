@@ -1,17 +1,20 @@
 //! Which coding harness can see a name.
 //!
 //! Tokens are harnesses (`claude`, `pi`, `hermes`, `kimi`, `grok`, `codex`),
-//! not directories. Pi, Grok, and the Agent Skills spec already scan the
-//! shared hub `~/.agents/skills/<name>/`. This module copies a nested
-//! marketplace `skills/<name>/` tree into that hub. It does not symlink.
-//! Extra per-harness trees are not invented when the hub is enough.
+//! not directories. Grok and Codex scan the shared hub
+//! `~/.agents/skills/<name>/`. Pi scans the hub only after the absolute hub
+//! path is listed in `~/.pi/agent/settings.json` `skills: []`. This module
+//! copies a nested marketplace `skills/<name>/` tree into that hub. It does
+//! not symlink. Extra per-harness trees are not invented when the hub is
+//! enough.
 
 use anyhow::{Context, Result};
 use clap::ValueEnum;
 use owo_colors::OwoColorize;
 use serde_json::Value;
+use sha2::{Digest, Sha256};
 use std::collections::BTreeSet;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd, Hash, ValueEnum)]
 pub enum Harness {
@@ -21,6 +24,26 @@ pub enum Harness {
     Kimi,
     Grok,
     Codex,
+}
+
+/// How a hub copy at `~/.agents/skills/<name>/` relates to this harness.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum HubSufficiency {
+    /// The harness scans the hub by itself.
+    Always,
+    /// The harness scans the hub only after the hub path is in its settings.
+    WhenRegistered,
+    /// The harness does not scan the hub.
+    Never,
+}
+
+/// Outcome of ensuring the hub path is in Pi's `skills` array.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum PiHubRegister {
+    /// Wrote the file (created the key, added the path, or dropped duplicates).
+    Wrote,
+    /// Path was already present exactly once; the file was not rewritten.
+    Already,
 }
 
 impl Harness {
@@ -49,11 +72,32 @@ impl Harness {
         }
     }
 
+    /// How this harness learns about skills that live on the hub.
+    pub fn hub_sufficiency(self) -> HubSufficiency {
+        match self {
+            Self::Grok | Self::Codex => HubSufficiency::Always,
+            Self::Pi => HubSufficiency::WhenRegistered,
+            Self::Claude | Self::Hermes | Self::Kimi => HubSufficiency::Never,
+        }
+    }
+
+    /// True when this harness can use a hub copy, possibly after registration.
+    pub fn uses_hub(self) -> bool {
+        !matches!(self.hub_sufficiency(), HubSufficiency::Never)
+    }
+
     /// True when a hub copy at `~/.agents/skills/<name>/SKILL.md` is enough
-    /// for this harness to load the skill. Cited from the harness's own docs
-    /// or from this crate's Agent Skills path. Hermes and Kimi are not.
+    /// for this harness to load the skill *right now*.
+    ///
+    /// Grok and Codex scan the hub natively. Pi scans the hub only after
+    /// [`register_pi_hub`] has listed the absolute hub path in
+    /// `~/.pi/agent/settings.json`. Returning true for unregistered Pi is a lie.
     pub fn hub_is_enough(self) -> bool {
-        matches!(self, Self::Pi | Self::Grok | Self::Codex)
+        match self.hub_sufficiency() {
+            HubSufficiency::Always => true,
+            HubSufficiency::WhenRegistered => pi_hub_is_registered(),
+            HubSufficiency::Never => false,
+        }
     }
 
     pub fn mcp_supported(self) -> bool {
@@ -264,10 +308,117 @@ fn hub_has(name: &str) -> bool {
         .unwrap_or(false)
 }
 
+fn sha256_file(path: &Path) -> Result<String> {
+    let bytes = std::fs::read(path).with_context(|| format!("reading {}", path.display()))?;
+    Ok(format!("{:x}", Sha256::digest(&bytes)))
+}
+
+fn hub_path_string() -> Result<String> {
+    Ok(crate::paths::user_skills_dir()?
+        .to_string_lossy()
+        .into_owned())
+}
+
+/// True when Pi's settings list the absolute hub path at least once.
+pub fn pi_hub_is_registered() -> bool {
+    let Ok(path) = crate::paths::pi_settings_json() else {
+        return false;
+    };
+    let Ok(hub) = hub_path_string() else {
+        return false;
+    };
+    let Ok(map) = crate::settings::load(&path) else {
+        return false;
+    };
+    map.get("skills")
+        .and_then(|v| v.as_array())
+        .is_some_and(|arr| arr.iter().any(|v| v.as_str() == Some(hub.as_str())))
+}
+
+/// If `harnesses` includes Pi, ensure the hub path is listed once in Pi settings.
+pub fn ensure_pi_hub_if_targeted(harnesses: &[Harness]) -> Result<()> {
+    if harnesses.contains(&Harness::Pi) {
+        register_pi_hub()?;
+    }
+    Ok(())
+}
+
+/// Ensure the absolute hub path is present exactly once in
+/// `~/.pi/agent/settings.json` `skills: []`. Creates the key if absent.
+/// Preserves every other key. Does not rewrite when the path is already unique.
+pub fn register_pi_hub() -> Result<PiHubRegister> {
+    let path = crate::paths::pi_settings_json()?;
+    let hub = hub_path_string()?;
+
+    if path.exists() {
+        // Hash before rewriting a file we did not last write. Failure here
+        // refuses the rewrite.
+        sha256_file(&path)?;
+    }
+
+    let mut map = crate::settings::load(&path)?;
+    match map.get("skills") {
+        None => {}
+        Some(Value::Array(_)) => {}
+        Some(_) => anyhow::bail!(
+            "{} has a non-array `skills` key; refusing to overwrite it",
+            path.display()
+        ),
+    }
+
+    let skills = map
+        .entry("skills")
+        .or_insert_with(|| Value::Array(Vec::new()));
+    let arr = skills
+        .as_array_mut()
+        .expect("skills is an array after the check above");
+
+    let n = arr
+        .iter()
+        .filter(|v| v.as_str() == Some(hub.as_str()))
+        .count();
+    if n == 1 {
+        println!(
+            "  {} hub path {} already in {} skills[]",
+            "·".dimmed(),
+            hub,
+            path.display()
+        );
+        return Ok(PiHubRegister::Already);
+    }
+
+    if n == 0 {
+        arr.push(Value::String(hub.clone()));
+    } else {
+        let mut kept = false;
+        arr.retain(|v| {
+            if v.as_str() == Some(hub.as_str()) {
+                if kept {
+                    return false;
+                }
+                kept = true;
+                true
+            } else {
+                true
+            }
+        });
+    }
+
+    crate::settings::save(&path, &map)?;
+    println!(
+        "  {} registered {} in {} skills[]",
+        "+".green(),
+        hub,
+        path.display()
+    );
+    Ok(PiHubRegister::Wrote)
+}
+
 /// Copy nested plugin skill trees into the shared Agent Skill hub.
 /// Prints a skip line for harnesses that need a tree we will not invent.
 pub fn materialize_hub(qualified: &str, harnesses: &[Harness]) -> Result<Vec<String>> {
-    let want_hub = harnesses.iter().any(|h| h.hub_is_enough());
+    ensure_pi_hub_if_targeted(harnesses)?;
+    let want_hub = harnesses.iter().any(|h| h.uses_hub());
     for h in harnesses {
         if let Some(reason) = h.skill_skip_reason() {
             println!("  {} {}: {reason}", "·".dimmed(), h.as_str());
@@ -390,7 +541,7 @@ fn visibility(claude_active: bool, on_hub: bool) -> Visibility {
         visible.push(Harness::Claude);
     }
     for h in [Harness::Pi, Harness::Grok, Harness::Codex] {
-        if on_hub {
+        if on_hub && h.hub_is_enough() {
             visible.push(h);
         }
     }
@@ -432,14 +583,111 @@ mod tests {
         assert!(Harness::parse_name("project").is_err());
     }
 
+    fn with_pi_home<T>(f: impl FnOnce(&std::path::Path) -> T) -> T {
+        let _guard = crate::paths::HOME_ENV_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let tmp = tempfile::tempdir().unwrap();
+        let home = tmp.path();
+        let agents = home.join("agents");
+        std::fs::create_dir_all(agents.join("skills")).unwrap();
+        // SAFETY: held under HOME_ENV_LOCK; restored before the guard drops.
+        let prev_pi = std::env::var_os("PI_HOME");
+        let prev_agents = std::env::var_os("AGENTS_HOME");
+        std::env::set_var("PI_HOME", home);
+        std::env::set_var("AGENTS_HOME", &agents);
+        let out = f(home);
+        match prev_pi {
+            Some(v) => std::env::set_var("PI_HOME", v),
+            None => std::env::remove_var("PI_HOME"),
+        }
+        match prev_agents {
+            Some(v) => std::env::set_var("AGENTS_HOME", v),
+            None => std::env::remove_var("AGENTS_HOME"),
+        }
+        out
+    }
+
     #[test]
-    fn hub_is_enough_for_pi_grok_codex() {
-        assert!(Harness::Pi.hub_is_enough());
-        assert!(Harness::Grok.hub_is_enough());
-        assert!(Harness::Codex.hub_is_enough());
-        assert!(!Harness::Claude.hub_is_enough());
-        assert!(!Harness::Hermes.hub_is_enough());
-        assert!(!Harness::Kimi.hub_is_enough());
+    fn hub_sufficiency_marks_pi_conditional() {
+        assert_eq!(
+            Harness::Pi.hub_sufficiency(),
+            HubSufficiency::WhenRegistered
+        );
+        assert_eq!(Harness::Grok.hub_sufficiency(), HubSufficiency::Always);
+        assert_eq!(Harness::Codex.hub_sufficiency(), HubSufficiency::Always);
+        assert_eq!(Harness::Claude.hub_sufficiency(), HubSufficiency::Never);
+        assert_eq!(Harness::Hermes.hub_sufficiency(), HubSufficiency::Never);
+        assert_eq!(Harness::Kimi.hub_sufficiency(), HubSufficiency::Never);
+    }
+
+    #[test]
+    fn hub_is_enough_for_grok_codex_not_unregistered_pi() {
+        with_pi_home(|_| {
+            assert!(!Harness::Pi.hub_is_enough());
+            assert!(Harness::Grok.hub_is_enough());
+            assert!(Harness::Codex.hub_is_enough());
+            assert!(!Harness::Claude.hub_is_enough());
+            assert!(!Harness::Hermes.hub_is_enough());
+            assert!(!Harness::Kimi.hub_is_enough());
+        });
+    }
+
+    #[test]
+    fn register_pi_hub_is_idempotent() {
+        with_pi_home(|home| {
+            assert!(!Harness::Pi.hub_is_enough());
+            assert_eq!(register_pi_hub().unwrap(), PiHubRegister::Wrote);
+            assert!(Harness::Pi.hub_is_enough());
+            assert_eq!(register_pi_hub().unwrap(), PiHubRegister::Already);
+            assert_eq!(register_pi_hub().unwrap(), PiHubRegister::Already);
+            let settings: serde_json::Value = serde_json::from_slice(
+                &std::fs::read(home.join("agent").join("settings.json")).unwrap(),
+            )
+            .unwrap();
+            let hub = hub_path_string().unwrap();
+            let count = settings["skills"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .filter(|v| v.as_str() == Some(hub.as_str()))
+                .count();
+            assert_eq!(count, 1);
+        });
+    }
+
+    #[test]
+    fn register_pi_hub_preserves_other_keys() {
+        with_pi_home(|home| {
+            let path = home.join("agent").join("settings.json");
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(
+                &path,
+                r#"{
+  "defaultModel": "grok-4.6",
+  "defaultProvider": "xai",
+  "theme": "dark"
+}
+"#,
+            )
+            .unwrap();
+            register_pi_hub().unwrap();
+            let settings: serde_json::Value =
+                serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+            assert_eq!(settings["defaultModel"], "grok-4.6");
+            assert_eq!(settings["defaultProvider"], "xai");
+            assert_eq!(settings["theme"], "dark");
+            let hub = hub_path_string().unwrap();
+            assert_eq!(
+                settings["skills"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .filter(|v| v.as_str() == Some(hub.as_str()))
+                    .count(),
+                1
+            );
+        });
     }
 
     #[test]

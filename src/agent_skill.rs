@@ -823,11 +823,10 @@ mod tests {
         assert!(!glob_match("foo", "foobar"));
     }
 
-    /// Process-global `AGENTS_HOME` must not leak across tests.
-    static AGENTS_HOME_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
-
     fn with_agents_home<T>(f: impl FnOnce(&std::path::Path) -> T) -> T {
-        let _guard = AGENTS_HOME_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let _guard = crate::paths::HOME_ENV_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         let tmp = tempfile::tempdir().unwrap();
         let home = tmp.path();
         let skills = home.join("skills");
@@ -837,7 +836,7 @@ mod tests {
         fs::write(skills.join("beta").join("SKILL.md"), "b").unwrap();
         fs::create_dir_all(home.join(".claude")).unwrap();
         fs::write(home.join(".claude").join("keep"), "x").unwrap();
-        // SAFETY: held under AGENTS_HOME_LOCK; restored before the guard drops.
+        // SAFETY: held under HOME_ENV_LOCK; restored before the guard drops.
         let prev = std::env::var_os("AGENTS_HOME");
         std::env::set_var("AGENTS_HOME", home);
         let out = f(home);
