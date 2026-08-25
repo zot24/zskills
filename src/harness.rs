@@ -1,12 +1,13 @@
 //! Which coding harness can see a name.
 //!
 //! Tokens are harnesses (`claude`, `pi`, `hermes`, `kimi`, `grok`, `codex`),
-//! not directories. Grok and Codex scan the shared hub
-//! `~/.agents/skills/<name>/`. Pi scans the hub only after the absolute hub
-//! path is listed in `~/.pi/agent/settings.json` `skills: []`. This module
-//! copies a nested marketplace `skills/<name>/` tree into that hub. It does
-//! not symlink. Extra per-harness trees are not invented when the hub is
-//! enough.
+//! not directories. Grok scans the shared hub `~/.agents/skills/<name>/`.
+//! Pi scans the hub only after the absolute hub path is listed in
+//! `~/.pi/agent/settings.json` `skills: []`. Plugin nested skills are **copied**
+//! into the hub (a plugin cache path is version-stamped, so a link would break
+//! on upgrade). Hub → harness is a **symlink** into `~/.claude/skills/<name>`,
+//! `~/.codex/skills/<name>`, or `~/.hermes/skills/<category>/<name>/`, because
+//! the hub path is stable and `skill upgrade` must propagate.
 
 use anyhow::{Context, Result};
 use clap::ValueEnum;
@@ -75,9 +76,9 @@ impl Harness {
     /// How this harness learns about skills that live on the hub.
     pub fn hub_sufficiency(self) -> HubSufficiency {
         match self {
-            Self::Grok | Self::Codex => HubSufficiency::Always,
+            Self::Grok => HubSufficiency::Always,
             Self::Pi => HubSufficiency::WhenRegistered,
-            Self::Claude | Self::Hermes | Self::Kimi => HubSufficiency::Never,
+            Self::Claude | Self::Hermes | Self::Kimi | Self::Codex => HubSufficiency::Never,
         }
     }
 
@@ -117,13 +118,69 @@ impl Harness {
 
     pub fn skill_skip_reason(self) -> Option<&'static str> {
         match self {
-            Self::Hermes => {
-                Some("unsupported (category tree ~/.hermes/skills/<cat>/<name>/; not writing)")
+            Self::Kimi => {
+                Some("unsupported (no cited skills directory under ~/.kimi-code/; not inventing a folder)")
             }
-            Self::Kimi => Some("unsupported (no cited skills directory; not inventing a folder)"),
             _ => None,
         }
     }
+
+    /// Home directory used to detect whether this harness is present.
+    pub fn home_dir(self) -> Result<PathBuf> {
+        match self {
+            Self::Claude => crate::paths::claude_home(),
+            Self::Pi => crate::paths::pi_home(),
+            Self::Grok => crate::paths::grok_home(),
+            Self::Hermes => crate::paths::hermes_home(),
+            Self::Kimi => crate::paths::kimi_home(),
+            Self::Codex => crate::paths::codex_home(),
+        }
+    }
+
+    pub fn home_dir_exists(self) -> bool {
+        self.home_dir().map(|p| p.is_dir()).unwrap_or(false)
+    }
+
+    /// Per-harness skill directory for `name`, or `None` when the hub is enough
+    /// (Pi, Grok) or the harness is unsupported (Kimi).
+    pub fn skill_root(self, name: &str, category: &str) -> Result<Option<PathBuf>> {
+        crate::agent_skill::validate_skill_name(name)?;
+        match self {
+            Self::Pi | Self::Grok | Self::Kimi => Ok(None),
+            Self::Claude => Ok(Some(crate::paths::claude_home()?.join("skills").join(name))),
+            Self::Codex => Ok(Some(crate::paths::codex_home()?.join("skills").join(name))),
+            Self::Hermes => {
+                validate_hermes_category(category)?;
+                Ok(Some(
+                    crate::paths::hermes_home()?
+                        .join("skills")
+                        .join(category)
+                        .join(name),
+                ))
+            }
+        }
+    }
+
+    /// True when a hub copy is required as the symlink source or as the scan root.
+    pub fn needs_hub_copy(self) -> bool {
+        self.uses_hub() || matches!(self, Self::Codex | Self::Hermes)
+    }
+}
+
+/// Default Hermes category. `--category` overrides this. Do not invent others.
+pub const DEFAULT_HERMES_CATEGORY: &str = "software-development";
+
+pub fn validate_hermes_category(category: &str) -> Result<()> {
+    anyhow::ensure!(!category.is_empty(), "category must not be empty");
+    anyhow::ensure!(
+        category != "." && category != "..",
+        "category must not be . or .."
+    );
+    anyhow::ensure!(
+        !category.contains('/') && !category.contains('\\'),
+        "category must be a single path segment"
+    );
+    Ok(())
 }
 
 pub fn parse_names(names: &[String]) -> Result<Vec<Harness>> {
@@ -152,9 +209,20 @@ pub fn default_plugin() -> Vec<Harness> {
     vec![Harness::Claude]
 }
 
-/// Agent Skill with no `[defaults].harnesses` and no `--harness`: hub only.
+/// Agent Skill with no `[defaults].harnesses` and no `--harness`: every
+/// harness whose home directory exists, minus those with `skill_skip_reason`.
 pub fn default_skill() -> Vec<Harness> {
-    vec![Harness::Pi, Harness::Grok, Harness::Codex]
+    [
+        Harness::Claude,
+        Harness::Pi,
+        Harness::Hermes,
+        Harness::Kimi,
+        Harness::Grok,
+        Harness::Codex,
+    ]
+    .into_iter()
+    .filter(|h| h.home_dir_exists() && h.skill_skip_reason().is_none())
+    .collect()
 }
 
 /// CLI `--harness` wins. Else `[defaults].harnesses`. Else today's default.
@@ -414,11 +482,115 @@ pub fn register_pi_hub() -> Result<PiHubRegister> {
     Ok(PiHubRegister::Wrote)
 }
 
+fn skill_md_resolves(dir: &Path) -> bool {
+    dir.join("SKILL.md").is_file()
+}
+
+fn claude_skills_dir() -> Result<PathBuf> {
+    Ok(crate::paths::claude_home()?.join("skills"))
+}
+
+/// True when Claude's user-skill root has `name`. A hub copy sitting at the
+/// same path (collapsed `CLAUDE_HOME`/`AGENTS_HOME` in tests) does not count
+/// unless that path is a symlink.
+fn claude_has_skill(name: &str) -> bool {
+    let Ok(dest) = claude_skills_dir().map(|d| d.join(name)) else {
+        return false;
+    };
+    if !skill_md_resolves(&dest) {
+        return false;
+    }
+    let Ok(hub) = crate::paths::user_skills_dir() else {
+        return true;
+    };
+    if dest.parent() == Some(hub.as_path()) {
+        return dest
+            .symlink_metadata()
+            .map(|m| m.file_type().is_symlink())
+            .unwrap_or(false);
+    }
+    true
+}
+
+/// Symlink hub `<name>` into each targeted harness that has a `skill_root`.
+/// Plugin → hub stays a copy; this is hub → harness only.
+pub fn link_hub_to_harnesses(
+    names: &[String],
+    harnesses: &[Harness],
+    category: &str,
+) -> Result<()> {
+    let hub_root = crate::paths::user_skills_dir()?;
+    for h in unique(harnesses) {
+        if h.skill_skip_reason().is_some() {
+            continue;
+        }
+        for name in names {
+            let hub = hub_root.join(name);
+            if !skill_md_resolves(&hub) {
+                continue;
+            }
+            let Some(dest) = h.skill_root(name, category)? else {
+                continue;
+            };
+            symlink_hub_into(&hub, &dest)?;
+        }
+    }
+    Ok(())
+}
+
+fn symlink_hub_into(hub: &Path, dest: &Path) -> Result<()> {
+    if dest == hub {
+        return Ok(());
+    }
+    if let Ok(meta) = dest.symlink_metadata() {
+        if meta.file_type().is_symlink() {
+            if let Ok(target) = std::fs::read_link(dest) {
+                if target == hub {
+                    return Ok(());
+                }
+            }
+            std::fs::remove_file(dest)
+                .with_context(|| format!("replacing symlink at {}", dest.display()))?;
+        } else {
+            println!(
+                "  {} leaving {} (not a symlink; hub → harness will not clobber it)",
+                "·".dimmed(),
+                dest.display()
+            );
+            return Ok(());
+        }
+    }
+    if let Some(parent) = dest.parent() {
+        std::fs::create_dir_all(parent)
+            .with_context(|| format!("creating {}", parent.display()))?;
+    }
+    #[cfg(unix)]
+    std::os::unix::fs::symlink(hub, dest)
+        .with_context(|| format!("linking {} → {}", dest.display(), hub.display()))?;
+    #[cfg(not(unix))]
+    anyhow::bail!(
+        "hub → harness symlink is not supported on this OS ({} → {})",
+        dest.display(),
+        hub.display()
+    );
+    println!(
+        "  {} {} → {} (link)",
+        "+".green(),
+        dest.display(),
+        hub.display()
+    );
+    Ok(())
+}
+
 /// Copy nested plugin skill trees into the shared Agent Skill hub.
 /// Prints a skip line for harnesses that need a tree we will not invent.
-pub fn materialize_hub(qualified: &str, harnesses: &[Harness]) -> Result<Vec<String>> {
+pub fn materialize_hub(
+    qualified: &str,
+    harnesses: &[Harness],
+    category: &str,
+) -> Result<Vec<String>> {
     ensure_pi_hub_if_targeted(harnesses)?;
-    let want_hub = harnesses.iter().any(|h| h.uses_hub());
+    let want_hub = harnesses.iter().any(|h| h.needs_hub_copy());
     for h in harnesses {
         if let Some(reason) = h.skill_skip_reason() {
             println!("  {} {}: {reason}", "·".dimmed(), h.as_str());
@@ -442,6 +614,8 @@ pub fn materialize_hub(qualified: &str, harnesses: &[Harness]) -> Result<Vec<Str
     }
     if !copied.is_empty() {
         record_plugin_copies(qualified, &copied)?;
+        let names: Vec<String> = copied.iter().cloned().collect();
+        link_hub_to_harnesses(&names, harnesses, category)?;
     }
     Ok(copied.into_iter().collect())
 }
@@ -527,28 +701,44 @@ impl Visibility {
 pub fn visibility_for_plugin(qualified: &str, active: bool) -> Visibility {
     let names = plugin_skill_names(qualified);
     let on_hub = names.iter().any(|n| hub_has(n));
-    visibility(active, on_hub)
+    visibility(active, on_hub, &names)
 }
 
 pub fn visibility_for_skill(name: &str) -> Visibility {
-    visibility(false, hub_has(name))
+    visibility(claude_has_skill(name), hub_has(name), &[name.to_string()])
 }
 
-fn visibility(claude_active: bool, on_hub: bool) -> Visibility {
+fn visibility(claude_active: bool, on_hub: bool, names: &[String]) -> Visibility {
     let mut visible = Vec::new();
     let mut skipped = Vec::new();
     if claude_active {
         visible.push(Harness::Claude);
     }
-    for h in [Harness::Pi, Harness::Grok, Harness::Codex] {
+    for h in [Harness::Pi, Harness::Grok] {
         if on_hub && h.hub_is_enough() {
             visible.push(h);
         }
     }
-    for h in [Harness::Hermes, Harness::Kimi] {
-        if let Some(r) = h.skill_skip_reason() {
-            skipped.push((h, r));
-        }
+    if names.iter().any(|n| {
+        Harness::Codex
+            .skill_root(n, DEFAULT_HERMES_CATEGORY)
+            .ok()
+            .flatten()
+            .is_some_and(|p| skill_md_resolves(&p))
+    }) {
+        visible.push(Harness::Codex);
+    }
+    if names.iter().any(|n| {
+        Harness::Hermes
+            .skill_root(n, DEFAULT_HERMES_CATEGORY)
+            .ok()
+            .flatten()
+            .is_some_and(|p| skill_md_resolves(&p))
+    }) {
+        visible.push(Harness::Hermes);
+    }
+    if let Some(r) = Harness::Kimi.skill_skip_reason() {
+        skipped.push((Harness::Kimi, r));
     }
     Visibility { visible, skipped }
 }
@@ -615,22 +805,30 @@ mod tests {
             HubSufficiency::WhenRegistered
         );
         assert_eq!(Harness::Grok.hub_sufficiency(), HubSufficiency::Always);
-        assert_eq!(Harness::Codex.hub_sufficiency(), HubSufficiency::Always);
+        assert_eq!(Harness::Codex.hub_sufficiency(), HubSufficiency::Never);
         assert_eq!(Harness::Claude.hub_sufficiency(), HubSufficiency::Never);
         assert_eq!(Harness::Hermes.hub_sufficiency(), HubSufficiency::Never);
         assert_eq!(Harness::Kimi.hub_sufficiency(), HubSufficiency::Never);
     }
 
     #[test]
-    fn hub_is_enough_for_grok_codex_not_unregistered_pi() {
+    fn hub_is_enough_for_grok_not_unregistered_pi_or_codex() {
         with_pi_home(|_| {
             assert!(!Harness::Pi.hub_is_enough());
             assert!(Harness::Grok.hub_is_enough());
-            assert!(Harness::Codex.hub_is_enough());
+            assert!(!Harness::Codex.hub_is_enough());
             assert!(!Harness::Claude.hub_is_enough());
             assert!(!Harness::Hermes.hub_is_enough());
             assert!(!Harness::Kimi.hub_is_enough());
         });
+    }
+
+    #[test]
+    fn kimi_skip_reason_names_kimi_code_not_kimi() {
+        let reason = Harness::Kimi.skill_skip_reason().unwrap();
+        assert!(reason.contains("~/.kimi-code/"), "{reason}");
+        assert!(!reason.contains("~/.kimi/"), "{reason}");
+        assert!(Harness::Hermes.skill_skip_reason().is_none());
     }
 
     #[test]
@@ -688,6 +886,112 @@ mod tests {
                 1
             );
         });
+    }
+
+    #[test]
+    fn default_skill_hybrid_present_homes_minus_skipped() {
+        let _guard = crate::paths::HOME_ENV_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        std::fs::create_dir_all(root.join("claude")).unwrap();
+        std::fs::create_dir_all(root.join("grok")).unwrap();
+        std::fs::create_dir_all(root.join("kimi-code")).unwrap();
+        let keys = [
+            ("CLAUDE_HOME", root.join("claude")),
+            ("PI_HOME", root.join("pi")),
+            ("GROK_HOME", root.join("grok")),
+            ("HERMES_HOME", root.join("hermes")),
+            ("KIMI_HOME", root.join("kimi-code")),
+            ("CODEX_HOME", root.join("codex")),
+        ];
+        // SAFETY: held under HOME_ENV_LOCK; restored before the guard drops.
+        let prev: Vec<_> = keys
+            .iter()
+            .map(|(k, v)| {
+                let old = std::env::var_os(k);
+                std::env::set_var(k, v);
+                (*k, old)
+            })
+            .collect();
+        let got = default_skill();
+        for (k, old) in prev {
+            match old {
+                Some(v) => std::env::set_var(k, v),
+                None => std::env::remove_var(k),
+            }
+        }
+        assert_eq!(got, vec![Harness::Claude, Harness::Grok]);
+    }
+
+    #[test]
+    fn skill_root_paths() {
+        let _guard = crate::paths::HOME_ENV_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        let keys = [
+            ("CLAUDE_HOME", root.join("claude")),
+            ("CODEX_HOME", root.join("codex")),
+            ("HERMES_HOME", root.join("hermes")),
+        ];
+        // SAFETY: held under HOME_ENV_LOCK; restored before the guard drops.
+        let prev: Vec<_> = keys
+            .iter()
+            .map(|(k, v)| {
+                let old = std::env::var_os(k);
+                std::env::set_var(k, v);
+                (*k, old)
+            })
+            .collect();
+        let claude = Harness::Claude
+            .skill_root("demo", DEFAULT_HERMES_CATEGORY)
+            .unwrap()
+            .unwrap();
+        let codex = Harness::Codex
+            .skill_root("demo", DEFAULT_HERMES_CATEGORY)
+            .unwrap()
+            .unwrap();
+        let hermes = Harness::Hermes
+            .skill_root("demo", DEFAULT_HERMES_CATEGORY)
+            .unwrap()
+            .unwrap();
+        let custom = Harness::Hermes
+            .skill_root("demo", "devops")
+            .unwrap()
+            .unwrap();
+        assert!(Harness::Pi
+            .skill_root("demo", DEFAULT_HERMES_CATEGORY)
+            .unwrap()
+            .is_none());
+        assert!(Harness::Grok
+            .skill_root("demo", DEFAULT_HERMES_CATEGORY)
+            .unwrap()
+            .is_none());
+        for (k, old) in prev {
+            match old {
+                Some(v) => std::env::set_var(k, v),
+                None => std::env::remove_var(k),
+            }
+        }
+        assert_eq!(claude, root.join("claude").join("skills").join("demo"));
+        assert_eq!(codex, root.join("codex").join("skills").join("demo"));
+        assert_eq!(
+            hermes,
+            root.join("hermes")
+                .join("skills")
+                .join("software-development")
+                .join("demo")
+        );
+        assert_eq!(
+            custom,
+            root.join("hermes")
+                .join("skills")
+                .join("devops")
+                .join("demo")
+        );
     }
 
     #[test]

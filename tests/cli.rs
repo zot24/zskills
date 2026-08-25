@@ -17,6 +17,13 @@ fn zskills(home: &TempDir) -> Command {
     cmd.env("AGENTS_HOME", home.path());
     // Sandbox Pi settings so tests never write the developer's `~/.pi`.
     cmd.env("PI_HOME", home.path().join("pi"));
+    // Sandbox every other harness home. Directories are not created here, so
+    // `default_skill()` hybrid detection does not pick them up unless a test
+    // mkdirs them, and visibility never reads the developer's real roots.
+    cmd.env("GROK_HOME", home.path().join("grok"));
+    cmd.env("HERMES_HOME", home.path().join("hermes"));
+    cmd.env("CODEX_HOME", home.path().join("codex"));
+    cmd.env("KIMI_HOME", home.path().join("kimi-code"));
     // Sandbox the clone cache too, so repo-install tests never touch ~/.cache.
     cmd.env("XDG_CACHE_HOME", home.path().join("cache"));
     // Sandbox manifest discovery. `manifest::discover()` reads
@@ -622,6 +629,10 @@ fn zskills_nested(parent: &TempDir, claude_home: &std::path::Path) -> Command {
     // Pin the cross-client Agent Skills home next to CLAUDE_HOME so tests stay sandboxed.
     cmd.env("AGENTS_HOME", parent.path().join(".agents"));
     cmd.env("PI_HOME", parent.path().join(".pi-home"));
+    cmd.env("GROK_HOME", parent.path().join(".grok-home"));
+    cmd.env("HERMES_HOME", parent.path().join(".hermes-home"));
+    cmd.env("CODEX_HOME", parent.path().join(".codex-home"));
+    cmd.env("KIMI_HOME", parent.path().join(".kimi-code-home"));
     cmd.env("NO_COLOR", "1");
     cmd.env("ZSKILLS_NO_CLAUDE_CLI", "1");
     cmd.env("XDG_CONFIG_HOME", parent.path().join("config"));
@@ -2992,7 +3003,28 @@ fn unknown_harness_is_refused() {
 }
 
 #[test]
-fn hermes_and_kimi_are_skipped_not_invented() {
+fn kimi_is_skipped_not_invented() {
+    let home = fake_home();
+    stage_marketplace_plugin_with_nested_skill(&home, "zot24-skills", "pi");
+    zskills(&home)
+        .args(["plugin", "install", "pi@zot24-skills", "--harness", "kimi"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("unsupported"))
+        .stdout(predicate::str::contains("~/.kimi-code/"));
+    assert!(
+        !home
+            .path()
+            .join("skills")
+            .join("pi")
+            .join("SKILL.md")
+            .is_file(),
+        "kimi must not invent a hub copy"
+    );
+}
+
+#[test]
+fn hermes_links_hub_under_default_category() {
     let home = fake_home();
     stage_marketplace_plugin_with_nested_skill(&home, "zot24-skills", "pi");
     zskills(&home)
@@ -3001,20 +3033,61 @@ fn hermes_and_kimi_are_skipped_not_invented() {
             "install",
             "pi@zot24-skills",
             "--harness",
-            "hermes,kimi",
+            "hermes",
         ])
         .assert()
-        .success()
-        .stdout(predicate::str::contains("unsupported"));
+        .success();
+    let hub = home.path().join("skills").join("pi");
+    assert!(hub.join("SKILL.md").is_file(), "plugin → hub is a copy");
+    let meta = fs::symlink_metadata(&hub).unwrap();
+    assert!(!meta.file_type().is_symlink(), "plugin → hub stays a copy");
+    let linked = home
+        .path()
+        .join("hermes")
+        .join("skills")
+        .join("software-development")
+        .join("pi");
+    let link_meta = fs::symlink_metadata(&linked).unwrap();
     assert!(
-        !home
-            .path()
-            .join("skills")
-            .join("pi")
-            .join("SKILL.md")
-            .is_file(),
-        "unsupported harnesses must not invent a hub copy"
+        link_meta.file_type().is_symlink(),
+        "hub → hermes is a symlink"
     );
+    assert!(linked.join("SKILL.md").is_file());
+}
+
+#[test]
+fn hermes_category_flag_overrides_default() {
+    let home = fake_home();
+    stage_marketplace_plugin_with_nested_skill(&home, "zot24-skills", "pi");
+    zskills(&home)
+        .args([
+            "plugin",
+            "install",
+            "pi@zot24-skills",
+            "--harness",
+            "hermes",
+            "--category",
+            "devops",
+        ])
+        .assert()
+        .success();
+    let linked = home
+        .path()
+        .join("hermes")
+        .join("skills")
+        .join("devops")
+        .join("pi");
+    assert!(fs::symlink_metadata(&linked)
+        .unwrap()
+        .file_type()
+        .is_symlink());
+    assert!(!home
+        .path()
+        .join("hermes")
+        .join("skills")
+        .join("software-development")
+        .join("pi")
+        .exists());
 }
 
 #[test]
@@ -3159,4 +3232,106 @@ fn plugin_install_harness_pi_registers_hub_in_pi_settings() {
         count, 1,
         "plugin --harness pi must register the hub: {settings}"
     );
+}
+
+fn zskills_split_hub(home: &TempDir) -> Command {
+    fs::create_dir_all(home.path().join(".agents").join("skills")).unwrap();
+    fs::create_dir_all(home.path().join("grok")).unwrap();
+    fs::create_dir_all(home.path().join("hermes")).unwrap();
+    fs::create_dir_all(home.path().join("codex")).unwrap();
+    fs::create_dir_all(home.path().join("pi")).unwrap();
+    let mut cmd = zskills(home);
+    cmd.env("AGENTS_HOME", home.path().join(".agents"));
+    cmd
+}
+
+/// G6: every harness printed as visible must resolve the skill on its real root.
+/// A filter matching zero tests fails the CHECK (`[1-9][0-9]* passed`).
+#[test]
+fn harness_visibility() {
+    let home = fake_home();
+    let repo = home.path().join("src-repo");
+    write_skill(&repo, "demo", "d");
+    git_init_and_commit(&repo);
+    zskills_split_hub(&home)
+        .args([
+            "skill",
+            "install",
+            &file_url(&repo),
+            "--harness",
+            "claude,pi,grok,hermes,codex",
+        ])
+        .assert()
+        .success();
+
+    let out = zskills_split_hub(&home)
+        .args(["list", "--json"])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let v: serde_json::Value = serde_json::from_slice(&out).unwrap();
+    let vis = v["agent_skills"]["harnesses"]["demo"]["visible"]
+        .as_array()
+        .cloned()
+        .unwrap_or_default();
+    assert!(
+        !vis.is_empty(),
+        "harness_visibility must observe at least one visible harness: {v}"
+    );
+
+    let name = "demo";
+    let hub = home.path().join(".agents").join("skills").join(name);
+    for h in &vis {
+        let label = h.as_str().expect("visible entry is a string");
+        let skill_md = match label {
+            "claude" => home.path().join("skills").join(name).join("SKILL.md"),
+            "pi" | "grok" => hub.join("SKILL.md"),
+            "codex" => home
+                .path()
+                .join("codex")
+                .join("skills")
+                .join(name)
+                .join("SKILL.md"),
+            "hermes" => home
+                .path()
+                .join("hermes")
+                .join("skills")
+                .join("software-development")
+                .join(name)
+                .join("SKILL.md"),
+            other => panic!("unexpected visible harness {other}: {v}"),
+        };
+        assert!(
+            skill_md.is_file(),
+            "{label} is visible but {} does not resolve: {v}",
+            skill_md.display()
+        );
+    }
+    assert!(
+        !vis.iter().any(|x| x == "kimi"),
+        "kimi stays unsupported: {v}"
+    );
+}
+
+#[test]
+fn hub_to_claude_is_symlink_plugin_to_hub_is_copy() {
+    let home = fake_home();
+    let repo = home.path().join("src-repo");
+    write_skill(&repo, "demo", "d");
+    git_init_and_commit(&repo);
+    zskills_split_hub(&home)
+        .args(["skill", "install", &file_url(&repo), "--harness", "claude"])
+        .assert()
+        .success();
+    let hub = home.path().join(".agents").join("skills").join("demo");
+    assert!(hub.join("SKILL.md").is_file());
+    assert!(!fs::symlink_metadata(&hub).unwrap().file_type().is_symlink());
+    let claude = home.path().join("skills").join("demo");
+    assert!(fs::symlink_metadata(&claude)
+        .unwrap()
+        .file_type()
+        .is_symlink());
+    assert!(claude.join("SKILL.md").is_file());
 }

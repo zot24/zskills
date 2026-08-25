@@ -64,7 +64,7 @@ pub fn run(
         }
         if targets
             .iter()
-            .any(|h| h.uses_hub() || h.skill_skip_reason().is_some())
+            .any(|h| h.needs_hub_copy() || h.skill_skip_reason().is_some())
         {
             plugin_copies.push((qualified, targets));
         }
@@ -246,7 +246,7 @@ pub fn run(
     for (q, hs) in &plugin_copies {
         let dests = hs
             .iter()
-            .filter(|h| h.uses_hub())
+            .filter(|h| h.needs_hub_copy())
             .map(|h| h.as_str())
             .collect::<Vec<_>>()
             .join(", ");
@@ -450,7 +450,7 @@ pub fn run(
     }
 
     for (q, hs) in &plugin_copies {
-        match crate::harness::materialize_hub(q, hs) {
+        match crate::harness::materialize_hub(q, hs, crate::harness::DEFAULT_HERMES_CATEGORY) {
             Ok(names) => {
                 if !names.is_empty() {
                     println!(
@@ -477,6 +477,11 @@ pub fn run(
             match crate::agent_skill::install_npm(pkg, entry.install_cmd.as_deref(), &entry.claims)
             {
                 Ok(names) => {
+                    crate::harness::link_hub_to_harnesses(
+                        &names,
+                        &hs,
+                        crate::harness::DEFAULT_HERMES_CATEGORY,
+                    )?;
                     println!(
                         "  {} npm:{}  ({} skill{})",
                         "✓".green(),
@@ -508,6 +513,11 @@ pub fn run(
                 };
                 if already_present {
                     if let Some(n) = name {
+                        crate::harness::link_hub_to_harnesses(
+                            &[n.to_string()],
+                            &hs,
+                            crate::harness::DEFAULT_HERMES_CATEGORY,
+                        )?;
                         println!(
                             "  {} {}  {}",
                             "·".dimmed(),
@@ -519,6 +529,11 @@ pub fn run(
                 }
                 match crate::agent_skill::install(src, name) {
                     Ok(names) => {
+                        crate::harness::link_hub_to_harnesses(
+                            &names,
+                            &hs,
+                            crate::harness::DEFAULT_HERMES_CATEGORY,
+                        )?;
                         for n in &names {
                             println!("  installed agent skill {}", n.bold());
                         }

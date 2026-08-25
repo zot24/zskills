@@ -227,6 +227,9 @@ pub enum PluginCmd {
             value_name = "HARNESS"
         )]
         harness: Vec<crate::harness::Harness>,
+        /// Hermes skills category. Default: software-development.
+        #[arg(long, default_value = "software-development", value_name = "CATEGORY")]
+        category: String,
         skills: Vec<String>,
     },
     /// Drop enabledPlugins + inventory; keep bytes
@@ -275,6 +278,9 @@ pub enum AgentSkillCmd {
             value_name = "HARNESS"
         )]
         harness: Vec<crate::harness::Harness>,
+        /// Hermes skills category. Default: software-development.
+        #[arg(long, default_value = "software-development", value_name = "CATEGORY")]
+        category: String,
         #[arg(
             value_name = "SOURCE",
             help = "owner/repo, https://, git@ or file:// URL"
@@ -379,6 +385,7 @@ impl Cli {
                     skills,
                     interactive,
                     harness,
+                    category,
                 } => {
                     if skills
                         .iter()
@@ -388,7 +395,14 @@ impl Cli {
                             "plugin install takes name or name@marketplace; use `zskills skill install` for owner/repo"
                         );
                     }
-                    crate::commands::install::run(skills, interactive, false, None, harness)
+                    crate::commands::install::run(
+                        skills,
+                        interactive,
+                        false,
+                        None,
+                        harness,
+                        category,
+                    )
                 }
                 PluginCmd::Remove {
                     skills,
@@ -405,9 +419,15 @@ impl Cli {
                     all,
                     skill,
                     harness,
-                } => {
-                    crate::commands::agent_skills::install(skills, interactive, all, skill, harness)
-                }
+                    category,
+                } => crate::commands::agent_skills::install(
+                    skills,
+                    interactive,
+                    all,
+                    skill,
+                    harness,
+                    category,
+                ),
                 AgentSkillCmd::Remove { names, force, file } => {
                     crate::commands::agent_skills::remove(names, force, file)
                 }
