@@ -376,6 +376,16 @@ zskills marketplace update [<name>]
 
 `add` clones the marketplace repo into `~/.claude/plugins/marketplaces/<name>/` and writes both `known_marketplaces.json` and `settings.json`'s `extraKnownMarketplaces`. Mirrors what `/plugin marketplace add` does inside Claude Code.
 
+Adding a marketplace does **not** install plugins and does **not** change the manifest. `sync` only applies `[[skills]]` entries already in `skills.toml`. After a successful add, zskills reads `.claude-plugin/marketplace.json` and prints the plugins the marketplace offers, plus the next command:
+
+```
+✓ added marketplace llm-wiki
+  1 plugin: wiki
+  Next: zskills plugin install wiki@llm-wiki
+```
+
+If `marketplace.json` is missing, add still registers the clone and warns. `list` also prints a dimmed hint when no plugins are active and a registered marketplace offers at least one.
+
 `add-recommended` seeds the trusted defaults (currently just `anthropics/claude-plugins-official`). Idempotent — safe to re-run; existing marketplaces are left as-is.
 
 ### Pinning a marketplace

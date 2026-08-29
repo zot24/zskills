@@ -82,7 +82,54 @@ fn add(source: String) -> Result<()> {
     crate::settings::save(&settings_path, &settings)?;
 
     println!("{} added marketplace {}", "✓".green(), name);
+    print_add_followup(&name, &install_location);
     Ok(())
+}
+
+/// After a marketplace is registered, say what it offers and how to install it.
+///
+/// `marketplace add` only writes `known_marketplaces.json` and
+/// `extraKnownMarketplaces`. It does not install plugins and it does not
+/// change the manifest. Users who then run `sync` / `list` see no plugins
+/// and no next command (zot24/zskills#55).
+fn print_add_followup(name: &str, install_location: &std::path::Path) {
+    let manifest_path = install_location
+        .join(".claude-plugin")
+        .join("marketplace.json");
+    if !manifest_path.exists() {
+        println!(
+            "  {} no .claude-plugin/marketplace.json — plugin install and search will not find anything here",
+            "!".yellow()
+        );
+        return;
+    }
+    match crate::marketplace::load_manifest(&manifest_path) {
+        Ok(m) if m.plugins.is_empty() => {
+            println!("  {} marketplace.json lists 0 plugins", "!".yellow());
+        }
+        Ok(m) => {
+            let names: Vec<&str> = m.plugins.iter().map(|p| p.name.as_str()).collect();
+            if names.len() <= 8 {
+                println!(
+                    "  {} plugin{}: {}",
+                    names.len(),
+                    if names.len() == 1 { "" } else { "s" },
+                    names.join(", ")
+                );
+            } else {
+                println!("  {} plugins", names.len());
+            }
+            if names.len() == 1 {
+                println!("  Next: zskills plugin install {}@{}", names[0], name);
+            } else {
+                println!("  Next: zskills plugin install <plugin>@{}", name);
+                println!("        zskills plugin install -i");
+            }
+        }
+        Err(e) => {
+            println!("  {} could not read marketplace.json ({e})", "!".yellow());
+        }
+    }
 }
 
 fn add_recommended() -> Result<()> {

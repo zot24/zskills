@@ -22,6 +22,29 @@ Two registered marketplaces both expose a skill with the same name. zskills can'
 zskills plugin install firecrawl@zot24-skills        # instead of just firecrawl
 ```
 
+## `marketplace add` succeeded but `list` shows no plugins
+
+`marketplace add` registers a catalog. It does not install plugins and it does not add a `[[skills]]` entry to the manifest. `sync` then reports no changes. `list` reports plugins that are enabled and installed, so it stays empty.
+
+Install the plugin the marketplace offers:
+
+```bash
+zskills marketplace list              # how many plugins the clone lists
+zskills plugin install wiki@llm-wiki  # nvk/llm-wiki offers `wiki`
+# or
+zskills plugin install -i             # browse every registered marketplace
+```
+
+To keep the plugin across later `sync` runs, also add it to `skills.toml`:
+
+```toml
+[[skills]]
+name = "wiki"
+marketplace = "llm-wiki"
+```
+
+`marketplace add` now prints the plugins and the `plugin install` command. `list` prints a dimmed hint when a registered marketplace offers a plugin and none are active.
+
 ## "enabled but NOT installed (broken)"
 
 `doctor` is flagging an `enabledPlugins` entry that has no corresponding inventory record. Three legitimate causes:
