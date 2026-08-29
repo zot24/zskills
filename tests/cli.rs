@@ -1662,6 +1662,71 @@ fn marketplace_add_writes_last_updated_as_a_string() {
     assert!(entry["installLocation"].is_string());
 }
 
+#[test]
+fn marketplace_add_prints_plugins_and_the_next_install_command() {
+    let upstream = tempfile::tempdir().unwrap();
+    let repo = write_marketplace_repo(upstream.path(), "llm-wiki", "wiki");
+
+    let home = fake_home();
+    zskills(&home)
+        .args(["marketplace", "add", &file_url(&repo)])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("added marketplace llm-wiki"))
+        .stdout(predicate::str::contains("1 plugin: wiki"))
+        .stdout(predicate::str::contains(
+            "zskills plugin install wiki@llm-wiki",
+        ));
+}
+
+#[test]
+fn marketplace_add_warns_when_marketplace_json_is_missing() {
+    let upstream = tempfile::tempdir().unwrap();
+    let repo = upstream.path().join("not-a-marketplace");
+    fs::create_dir_all(&repo).unwrap();
+    fs::write(repo.join("README.md"), "not a plugin catalog").unwrap();
+    git_init_and_commit(&repo);
+
+    let home = fake_home();
+    zskills(&home)
+        .args(["marketplace", "add", &file_url(&repo)])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains(
+            "added marketplace not-a-marketplace",
+        ))
+        .stdout(predicate::str::contains("marketplace.json"));
+}
+
+#[test]
+fn list_hints_when_a_marketplace_offers_a_plugin_but_none_are_active() {
+    let home = fake_home();
+    let settings_path = home.path().join("settings.json");
+    let mut settings: serde_json::Value =
+        serde_json::from_slice(&fs::read(&settings_path).unwrap()).unwrap();
+    settings["enabledPlugins"] = json!({});
+    fs::write(
+        &settings_path,
+        serde_json::to_string_pretty(&settings).unwrap(),
+    )
+    .unwrap();
+    fs::write(
+        home.path().join("plugins").join("installed_plugins.json"),
+        serde_json::to_string_pretty(&json!({ "version": 2, "plugins": {} })).unwrap(),
+    )
+    .unwrap();
+    register_marketplace(&home, "llm-wiki", "wiki", Some("2026-08-20T00:00:00.000Z"));
+
+    zskills(&home)
+        .arg("list")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("(none)"))
+        .stdout(predicate::str::contains(
+            "zskills plugin install wiki@llm-wiki",
+        ));
+}
+
 // --- Fix 2: doctor reports a missing `lastUpdated`, and --fix stamps it ------
 
 #[test]

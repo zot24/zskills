@@ -1,7 +1,7 @@
 use anyhow::Result;
 use owo_colors::OwoColorize;
 use serde_json::json;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 pub fn run(json_out: bool, verbose: bool, paths: bool) -> Result<()> {
     let report = crate::reconcile::run()?;
@@ -116,6 +116,7 @@ pub fn run(json_out: bool, verbose: bool, paths: bool) -> Result<()> {
     );
     if report.active.is_empty() {
         println!("  (none)");
+        print_empty_plugin_hint();
     } else {
         for k in &report.active {
             print_plugin_line("✓", k, paths, &plugin_inv, true);
@@ -197,6 +198,56 @@ pub fn run(json_out: bool, verbose: bool, paths: bool) -> Result<()> {
     }
 
     Ok(())
+}
+
+/// When nothing is active, point at plugins a registered marketplace already offers.
+///
+/// `marketplace add` does not install plugins (zot24/zskills#55). Users then run
+/// `list` and see `(none)` with no path to `plugin install`.
+fn print_empty_plugin_hint() {
+    let Ok(path) = crate::paths::known_marketplaces_json() else {
+        return;
+    };
+    let Ok(known) = crate::marketplace::load_known(&path) else {
+        return;
+    };
+    let mut offered: Vec<(String, String)> = Vec::new();
+    for (mp_name, entry) in &known {
+        if crate::commands::marketplace::is_remote_index(entry) {
+            continue;
+        }
+        let Ok(manifest_path) = crate::paths::marketplace_manifest(mp_name) else {
+            continue;
+        };
+        let Ok(m) = crate::marketplace::load_manifest(&manifest_path) else {
+            continue;
+        };
+        for p in m.plugins {
+            offered.push((p.name, mp_name.clone()));
+        }
+    }
+    if offered.is_empty() {
+        return;
+    }
+    if offered.len() == 1 {
+        let (plugin, mp) = &offered[0];
+        println!(
+            "  {}",
+            format!("marketplace {mp} offers {plugin} — zskills plugin install {plugin}@{mp}")
+                .dimmed()
+        );
+        return;
+    }
+    let mp_count = offered
+        .iter()
+        .map(|(_, mp)| mp.as_str())
+        .collect::<BTreeSet<_>>()
+        .len();
+    println!(
+        "  {}",
+        format!("{mp_count} marketplace(s) registered. Browse with `zskills plugin install -i`.")
+            .dimmed()
+    );
 }
 
 fn print_group(
