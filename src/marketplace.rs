@@ -215,6 +215,43 @@ pub fn register(name: &str, source: &str) -> Result<PathBuf> {
     Ok(install_location)
 }
 
+/// Registered marketplace whose clone source is `spec` (`owner/repo` or a git URL).
+///
+/// `skill install --path` uses this to reuse the marketplace clone and write
+/// `marketplace` rather than `source`. Checks `known_marketplaces.json` first,
+/// then `extraKnownMarketplaces`.
+pub fn name_for_source_spec(spec: &str) -> Option<String> {
+    let path = crate::paths::known_marketplaces_json().ok()?;
+    let known = load_known(&path).ok()?;
+    let extra = extra_known();
+    name_in_map(&known, spec).or_else(|| name_in_map(&extra, spec))
+}
+
+fn name_in_map(map: &Map<String, Value>, spec: &str) -> Option<String> {
+    let spec_github = if is_github_owner_repo(spec) {
+        Some(spec.to_string())
+    } else {
+        github_from_url(spec)
+    };
+    for (name, entry) in map {
+        if is_remote_index(entry) {
+            continue;
+        }
+        let Some((repo, url)) = source_for_manifest(entry) else {
+            continue;
+        };
+        if repo.as_deref() == Some(spec) || url.as_deref() == Some(spec) {
+            return Some(name.clone());
+        }
+        if let (Some(r), Some(g)) = (repo.as_deref(), spec_github.as_deref()) {
+            if r == g {
+                return Some(name.clone());
+            }
+        }
+    }
+    None
+}
+
 /// Shareable `repo` / `url` from a `known_marketplaces.json` or
 /// `extraKnownMarketplaces` entry. `None` for remote indexes and unreadable shapes —
 /// `--adopt` must not write a `[[marketplaces]]` row a fresh machine cannot clone.

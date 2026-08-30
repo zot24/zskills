@@ -270,6 +270,12 @@ pub enum AgentSkillCmd {
             help = "Install only this one skill out of the source"
         )]
         skill: Option<String>,
+        #[arg(
+            long,
+            value_name = "REL",
+            help = "Relative path inside the clone to a directory of Agent Skills (skips the marketplace redirect)"
+        )]
+        path: Option<String>,
         /// One-shot harness override (comma-separated). Omitted: `[defaults].harnesses`.
         #[arg(
             long = "harness",
@@ -400,6 +406,7 @@ impl Cli {
                         interactive,
                         false,
                         None,
+                        None,
                         harness,
                         category,
                     )
@@ -418,6 +425,7 @@ impl Cli {
                     interactive,
                     all,
                     skill,
+                    path,
                     harness,
                     category,
                 } => crate::commands::agent_skills::install(
@@ -425,6 +433,7 @@ impl Cli {
                     interactive,
                     all,
                     skill,
+                    path,
                     harness,
                     category,
                 ),

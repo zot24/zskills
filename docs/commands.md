@@ -45,14 +45,16 @@ zskills plugin install <name>@<marketplace>         # qualified plugin
 zskills plugin install <name> --harness pi,grok     # copy nested skills/<name>/ into the shared Agent Skill hub
 zskills skill install <owner>/<repo>                # Agent Skill(s) from a git repo
 zskills skill install <git-url>                     # same, for https://, git@, file://
+zskills skill install <owner>/<repo> --path REL     # Agent Skills under a non-conventional root
 zskills plugin install -i                           # interactive picker over marketplace plugins
 ```
 
 **Plugin path (`<name>` / `<name>@<marketplace>`).** Resolves against registered marketplaces. `--harness` is a one-shot override of `[defaults].harnesses` (comma-separated: `claude`, `pi`, `hermes`, `kimi`, `grok`, `codex`). Missing `[defaults]` and missing `--harness` keep 1.0 behaviour: Claude only. `claude` in the set flips `enabledPlugins` in `~/.claude/settings.json` and materializes the marketplace plugin. `pi` / `grok` / `codex` / `hermes` copy each nested `skills/<name>/` tree into the shared hub `~/.agents/skills/<name>/` so `SKILL.md` sits at the scan root. Pi and Grok scan the hub itself; Codex and Hermes are symlinked from it into `~/.codex/skills/<name>` and `~/.hermes/skills/<category>/<name>`. Copies into the hub are real directories — a plugin cache path is version-stamped, so a link there would break on upgrade. `kimi` prints `unsupported` and does not invent a folder.
 
 **Repo path (`<owner>/<repo>` or git URL).** Clones the repo via `git clone --depth 1` into `~/.cache/zskills/agent-skills/<owner>-<repo>/`, surveys the tree, and:
-- **Agent Skills** (any directory under `skills/<name>/SKILL.md`) — installed to `~/.agents/skills/<name>/` (the cross-client convention; visible to Claude Code, Grok CLI, and any other compliant client). Inventory tagged with the source.
-- **Marketplace** (`.claude-plugin/marketplace.json` at repo root) — prints a redirect: `use zskills marketplace add <owner/repo>` and installs nothing from this repo.
+- **Agent Skills** (any directory under `skills/<name>/SKILL.md` or `.agents/skills/<name>/SKILL.md`) — installed to `~/.agents/skills/<name>/` (the cross-client convention; visible to Claude Code, Grok CLI, and any other compliant client). Inventory tagged with the source.
+- **`--path REL`** — walk `REL` inside the clone instead of those default roots. If `REL/SKILL.md` exists, that directory is the skill. Else every child with `SKILL.md` is a skill. `--path` is sparse-intent: a repo with `.claude-plugin/marketplace.json` still installs from that path instead of redirecting to `marketplace add`. After a successful install, zskills appends an `[[agent_skills]]` row: `marketplace` when the spec matches a registered marketplace (and the copy reuses that clone), else `source`.
+- **Marketplace** (`.claude-plugin/marketplace.json` at repo root) — without `--path` / `--skill` / `-i`, prints a redirect: `use zskills marketplace add <owner/repo>` and installs nothing from this repo.
 - **MCP servers** (`.mcp.json` or `mcpServers` in `plugin.json`) — surfaced as a hint; not auto-installed (use `[[mcps]]` in `skills.toml` + `zskills sync`).
 
 | Flag | Default | Description |
@@ -60,6 +62,7 @@ zskills plugin install -i                           # interactive picker over ma
 | `-i`, `--interactive` | off | For plugin specs: without any `<name>`, browse all marketplace plugins with a fuzzy picker. For repo specs: always opens a multi-select picker over the Agent Skills found in the repo. |
 | `--all` | off | For repo specs only: when the repo contains more than 5 Agent Skills, confirm "yes, install every one." Without `--all`, large collections abort with a sample summary so they don't silently flood `~/.agents/skills/`. Ignored for repos with ≤5 skills (those install everything by default). |
 | `--skill <name>` | none | For repo specs only: install exactly one skill by name (the manifest `name` field) — the non-interactive counterpart to `-i` for multi-skill repos. Bypasses the >5-skill size policy (the selection is explicit) and conflicts with `--all`. |
+| `--path <rel>` | none | For repo specs only: relative path inside the clone to a directory of Agent Skills. Replaces the default walk of `.agents/skills` and `skills/`. Sparse-intent like `--skill` / `-i`: do not redirect a marketplace root. Writes `[[agent_skills]]` with `marketplace` or `source`. Ban `..`, absolute form, `\`, `:`. |
 | `--harness <list>` | `[defaults].harnesses`, or Claude only | Comma-separated harness names. One-shot override. Not `--to`. |
 
 **Repo-path count behavior**:
@@ -103,10 +106,12 @@ zskills plugin disable <name>...
 Agent Skills live in `~/.agents/skills/`. The group writes `[[agent_skills]]`, not `[[skills]]`.
 
 ```
-zskills skill install <owner/repo> [--skill NAME | --all | -i]
+zskills skill install <owner/repo> [--path REL] [--skill NAME | --all | -i]
 zskills skill remove <name> [--force] [--file path]
 zskills skill upgrade [<name>...]
 ```
+
+`--path REL` installs Agent Skills that do not live at `.agents/skills` or `skills/`. Example: `zskills skill install nvk/llm-wiki --path plugins/llm-wiki-opencode/skills --skill wiki-manager`. That command does not redirect to `marketplace add`. After install, the manifest row uses `marketplace` when the spec matches a registered marketplace, else `source`.
 
 `skill remove` deletes bytes. It is not `plugin remove`. `--force` is required when inventory `source` starts with `plugin:`, or when a source-only `[[agent_skills]]` row owns the name. A `marketplace:` hub copy of the same name removes without `--force` and without disabling the plugin.
 

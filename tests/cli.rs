@@ -4792,3 +4792,288 @@ harnesses = ["pi", "grok"]
         .stdout(predicate::str::contains("ghost-mp"))
         .stdout(predicate::str::contains("known_marketplaces.json"));
 }
+
+#[test]
+fn skill_install_llm_wiki_without_path_redirects() {
+    let up = tempfile::tempdir().unwrap();
+    let repo = write_llm_wiki_repo(up.path());
+    let home = fake_home();
+    zskills(&home)
+        .args(["skill", "install", &file_url(&repo)])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("marketplace add"));
+    assert!(
+        !home.path().join("skills/wiki-manager").exists(),
+        "bare install of a marketplace repo must not copy OpenCode Agent Skills"
+    );
+}
+
+#[test]
+fn skill_install_path_does_not_redirect_on_marketplace_repo() {
+    let up = tempfile::tempdir().unwrap();
+    let repo = write_llm_wiki_repo(up.path());
+    let home = fake_home();
+    zskills(&home)
+        .args([
+            "skill",
+            "install",
+            &file_url(&repo),
+            "--path",
+            "plugins/llm-wiki-opencode/skills",
+            "--skill",
+            "wiki-manager",
+        ])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("wiki-manager"))
+        .stdout(predicate::str::contains("marketplace add").not());
+
+    assert_eq!(
+        fs::read_to_string(home.path().join("skills/wiki-manager/SKILL.md")).unwrap(),
+        OPENCODE_WIKI_SKILL
+    );
+    assert!(
+        !home.path().join("skills/wiki-query").exists(),
+        "--skill must install exactly one skill"
+    );
+    let copied = home
+        .path()
+        .join("skills/wiki-manager/references/hub-resolution.md");
+    assert!(copied.is_file(), "in-clone symlink must be a regular file");
+    assert!(!copied.symlink_metadata().unwrap().file_type().is_symlink());
+
+    let tag = format!(
+        "source:{}:plugins/llm-wiki-opencode/skills",
+        file_url(&repo)
+    );
+    assert_eq!(
+        read_inv(&home)["agent_skills"]["wiki-manager"]["source"],
+        tag
+    );
+
+    let raw = fs::read_to_string(home.path().join("config/zskills/skills.toml")).unwrap();
+    assert!(
+        raw.contains(&format!("source = \"{}\"", file_url(&repo))),
+        "unregistered spec must write source: {raw}"
+    );
+    assert!(raw.contains("path = \"plugins/llm-wiki-opencode/skills\""));
+    assert!(raw.contains("name = \"wiki-manager\""));
+    assert!(
+        !raw.contains("marketplace ="),
+        "unregistered spec must not write marketplace: {raw}"
+    );
+}
+
+#[test]
+fn skill_install_path_uses_registered_marketplace_not_source() {
+    let (home, _up, repo) = setup_llm_wiki_home();
+    zskills(&home)
+        .args([
+            "skill",
+            "install",
+            &file_url(&repo),
+            "--path",
+            "plugins/llm-wiki-opencode/skills",
+            "--skill",
+            "wiki-manager",
+        ])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("marketplace add").not());
+
+    assert_eq!(
+        fs::read_to_string(home.path().join("skills/wiki-manager/SKILL.md")).unwrap(),
+        OPENCODE_WIKI_SKILL
+    );
+    assert_eq!(
+        read_inv(&home)["agent_skills"]["wiki-manager"]["source"],
+        "marketplace:llm-wiki:plugins/llm-wiki-opencode/skills"
+    );
+
+    let raw = fs::read_to_string(home.path().join("config/zskills/skills.toml")).unwrap();
+    assert!(
+        raw.contains("marketplace = \"llm-wiki\""),
+        "registered spec must write marketplace: {raw}"
+    );
+    assert!(raw.contains("path = \"plugins/llm-wiki-opencode/skills\""));
+    assert!(raw.contains("name = \"wiki-manager\""));
+    assert!(
+        !raw.contains("source ="),
+        "registered spec must not write source: {raw}"
+    );
+
+    let cache = home.path().join("cache/zskills/agent-skills");
+    assert!(
+        !cache.exists()
+            || fs::read_dir(&cache)
+                .map(|rd| rd.count() == 0)
+                .unwrap_or(true),
+        "must reuse the marketplace clone, not clone into the Agent Skill cache"
+    );
+}
+
+#[test]
+fn skill_install_path_parent_installs_every_skill_under_path() {
+    let up = tempfile::tempdir().unwrap();
+    let repo = write_llm_wiki_repo(up.path());
+    let home = fake_home();
+    zskills(&home)
+        .args([
+            "skill",
+            "install",
+            &file_url(&repo),
+            "--path",
+            "plugins/llm-wiki-opencode/skills",
+        ])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("marketplace add").not());
+
+    assert!(home.path().join("skills/wiki-manager/SKILL.md").is_file());
+    assert!(home.path().join("skills/wiki-query/SKILL.md").is_file());
+
+    let raw = fs::read_to_string(home.path().join("config/zskills/skills.toml")).unwrap();
+    assert!(raw.contains("path = \"plugins/llm-wiki-opencode/skills\""));
+    assert!(
+        !raw.contains("name ="),
+        "all-under-path must write one unnamed row, not skills = []: {raw}"
+    );
+}
+
+#[test]
+fn skill_install_path_skill_dir_installs_one() {
+    let up = tempfile::tempdir().unwrap();
+    let repo = write_llm_wiki_repo(up.path());
+    let home = fake_home();
+    zskills(&home)
+        .args([
+            "skill",
+            "install",
+            &file_url(&repo),
+            "--path",
+            "plugins/llm-wiki-opencode/skills/wiki-manager",
+        ])
+        .assert()
+        .success();
+
+    assert!(home.path().join("skills/wiki-manager/SKILL.md").is_file());
+    assert!(
+        !home.path().join("skills/wiki-query").exists(),
+        "a skill-dir path must not also install sibling skills"
+    );
+}
+
+#[test]
+fn skill_install_path_unknown_skill_lists_available() {
+    let up = tempfile::tempdir().unwrap();
+    let repo = write_llm_wiki_repo(up.path());
+    let home = fake_home();
+    let out = zskills(&home)
+        .args([
+            "skill",
+            "install",
+            &file_url(&repo),
+            "--path",
+            "plugins/llm-wiki-opencode/skills",
+            "--skill",
+            "nope",
+        ])
+        .assert()
+        .failure()
+        .get_output()
+        .stderr
+        .clone();
+    let stderr = String::from_utf8_lossy(&out);
+    assert!(stderr.contains("'nope' not found"), "{stderr}");
+    assert!(
+        stderr.contains("wiki-manager") && stderr.contains("wiki-query"),
+        "survey must walk --path: {stderr}"
+    );
+}
+
+#[test]
+fn skill_install_path_rejects_escape() {
+    let home = fake_home();
+    zskills(&home)
+        .args(["skill", "install", "owner/repo", "--path", "../escape"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("invalid path"));
+}
+
+#[test]
+fn skill_install_path_missing_in_clone() {
+    let up = tempfile::tempdir().unwrap();
+    let repo = write_llm_wiki_repo(up.path());
+    let home = fake_home();
+    zskills(&home)
+        .args([
+            "skill",
+            "install",
+            &file_url(&repo),
+            "--path",
+            "does-not-exist",
+        ])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("not found"));
+}
+
+#[test]
+fn skill_install_path_large_collection_next_steps_repeat_path() {
+    // >5 under --path still aborts. Next-step commands must keep --path, or a
+    // marketplace repo redirects / surveys SKILL_ROOTS and finds nothing.
+    let up = tempfile::tempdir().unwrap();
+    let repo = up.path().join("odd-layout");
+    fs::create_dir_all(repo.join(".claude-plugin")).unwrap();
+    fs::write(
+        repo.join(".claude-plugin").join("marketplace.json"),
+        r#"{"name":"odd","plugins":[]}"#,
+    )
+    .unwrap();
+    for i in 0..7 {
+        let d = repo
+            .join("packages")
+            .join("foo")
+            .join("skills")
+            .join(format!("skill-{i}"));
+        fs::create_dir_all(&d).unwrap();
+        fs::write(d.join("SKILL.md"), format!("---\nname: skill-{i}\n---\n")).unwrap();
+    }
+    git_init_and_commit(&repo);
+
+    let home = fake_home();
+    let out = zskills(&home)
+        .args([
+            "skill",
+            "install",
+            &file_url(&repo),
+            "--path",
+            "packages/foo/skills",
+        ])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("won't install all"))
+        .stdout(predicate::str::contains("marketplace add").not())
+        .get_output()
+        .stdout
+        .clone();
+    let stdout = String::from_utf8_lossy(&out);
+    let path_flag = "--path packages/foo/skills";
+    assert!(
+        stdout.contains(&format!("skill install {} {path_flag} -i", file_url(&repo))),
+        "-i next step must repeat --path: {stdout}"
+    );
+    assert!(
+        stdout.contains(&format!(
+            "skill install {} {path_flag} --all",
+            file_url(&repo)
+        )),
+        "--all next step must repeat --path: {stdout}"
+    );
+    assert!(
+        !home.path().join("skills/skill-0").exists(),
+        "a large --path collection must install nothing"
+    );
+}

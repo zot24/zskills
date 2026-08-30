@@ -36,10 +36,31 @@ pub struct RepoSurvey {
 }
 
 pub fn survey(cache: &Path) -> Result<RepoSurvey> {
+    survey_with_path(cache, None)
+}
+
+/// Survey a clone. When `path` is set, walk that relative directory instead of
+/// `.agents/skills` and `skills/`. Marketplace / plugin / MCP detection still
+/// uses the clone root.
+pub fn survey_with_path(cache: &Path, path: Option<&str>) -> Result<RepoSurvey> {
     let mut out = RepoSurvey::default();
 
-    // Agent Skills — reuse the existing skills_in_cache logic and enrich.
-    for (name, dir) in crate::agent_skill::skills_in_cache(cache) {
+    let found = match path {
+        Some(rel) => {
+            let rel = crate::manifest::normalize_skill_path(rel)?;
+            let root = cache.join(&rel);
+            if root.join("SKILL.md").is_file() {
+                match root.file_name().and_then(|n| n.to_str()) {
+                    Some(name) => vec![(name.to_string(), root)],
+                    None => Vec::new(),
+                }
+            } else {
+                crate::agent_skill::skills_in_dir(&root)
+            }
+        }
+        None => crate::agent_skill::skills_in_cache(cache),
+    };
+    for (name, dir) in found {
         let description = extract_description(&dir.join("SKILL.md"));
         out.agent_skills.push(SkillSummary {
             name,
@@ -367,5 +388,72 @@ mod tests {
         let s = survey(tmp.path()).unwrap();
         let names: Vec<&str> = s.agent_skills.iter().map(|k| k.name.as_str()).collect();
         assert_eq!(names, vec!["real"]);
+    }
+
+    #[test]
+    fn survey_with_path_walks_non_conventional_root() {
+        let tmp = tempfile::tempdir().unwrap();
+        let oc = tmp
+            .path()
+            .join("plugins")
+            .join("llm-wiki-opencode")
+            .join("skills");
+        for name in ["wiki-manager", "wiki-query"] {
+            let d = oc.join(name);
+            fs::create_dir_all(&d).unwrap();
+            fs::write(d.join("SKILL.md"), skill_md(None)).unwrap();
+        }
+        let mp = tmp.path().join(".claude-plugin");
+        fs::create_dir_all(&mp).unwrap();
+        fs::write(mp.join("marketplace.json"), "{}").unwrap();
+
+        let default = survey(tmp.path()).unwrap();
+        assert!(default.marketplace);
+        assert!(
+            default.agent_skills.is_empty(),
+            "SKILL_ROOTS must not see plugins/*/skills"
+        );
+
+        let s = survey_with_path(tmp.path(), Some("plugins/llm-wiki-opencode/skills")).unwrap();
+        assert!(s.marketplace);
+        let names: Vec<&str> = s.agent_skills.iter().map(|k| k.name.as_str()).collect();
+        assert_eq!(names, vec!["wiki-manager", "wiki-query"]);
+    }
+
+    #[test]
+    fn survey_with_path_skill_dir_is_the_skill() {
+        let tmp = tempfile::tempdir().unwrap();
+        let d = tmp
+            .path()
+            .join("plugins")
+            .join("llm-wiki-opencode")
+            .join("skills")
+            .join("wiki-manager");
+        fs::create_dir_all(&d).unwrap();
+        fs::write(d.join("SKILL.md"), skill_md(Some("OpenCode"))).unwrap();
+        let sibling = tmp
+            .path()
+            .join("plugins")
+            .join("llm-wiki-opencode")
+            .join("skills")
+            .join("wiki-query");
+        fs::create_dir_all(&sibling).unwrap();
+        fs::write(sibling.join("SKILL.md"), skill_md(None)).unwrap();
+
+        let s = survey_with_path(
+            tmp.path(),
+            Some("plugins/llm-wiki-opencode/skills/wiki-manager"),
+        )
+        .unwrap();
+        assert_eq!(s.agent_skills.len(), 1);
+        assert_eq!(s.agent_skills[0].name, "wiki-manager");
+        assert_eq!(s.agent_skills[0].description.as_deref(), Some("OpenCode"));
+    }
+
+    #[test]
+    fn survey_with_path_rejects_escape() {
+        let tmp = tempfile::tempdir().unwrap();
+        let err = survey_with_path(tmp.path(), Some("../escape")).unwrap_err();
+        assert!(err.to_string().contains("invalid path"), "err={err}");
     }
 }
