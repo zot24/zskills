@@ -48,7 +48,7 @@ pub fn run(query: String, limit: u32, as_json: bool, interactive: bool) -> Resul
     let query_lc = query.to_lowercase();
 
     for (mp_name, entry) in &known {
-        if crate::commands::marketplace::is_remote_index(entry) {
+        if crate::marketplace::is_remote_index(entry) {
             #[cfg(feature = "skills-sh")]
             dispatch_remote_index(mp_name, entry, &query, limit, &mut hits);
             #[cfg(not(feature = "skills-sh"))]

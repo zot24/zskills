@@ -1698,6 +1698,205 @@ fn marketplace_add_warns_when_marketplace_json_is_missing() {
         .stdout(predicate::str::contains("marketplace.json"));
 }
 
+/// Empty `known_marketplaces.json` and `enabledPlugins` — a wiped machine.
+fn wipe_plugins(home: &TempDir) {
+    let settings_path = home.path().join("settings.json");
+    let mut settings: serde_json::Value =
+        serde_json::from_slice(&fs::read(&settings_path).unwrap()).unwrap();
+    settings["enabledPlugins"] = json!({});
+    settings["extraKnownMarketplaces"] = json!({});
+    fs::write(
+        &settings_path,
+        serde_json::to_string_pretty(&settings).unwrap(),
+    )
+    .unwrap();
+    fs::write(
+        home.path().join("plugins").join("known_marketplaces.json"),
+        "{}\n",
+    )
+    .unwrap();
+}
+
+#[test]
+fn sync_registers_declared_marketplace_and_enables_plugin() {
+    let upstream = tempfile::tempdir().unwrap();
+    let repo = write_marketplace_repo(upstream.path(), "skills", "foo");
+
+    let home = fake_home();
+    wipe_plugins(&home);
+    write_manifest(
+        &home,
+        &format!(
+            "[[marketplaces]]\nname = \"zot24-skills\"\nurl = \"{}\"\n\n[[skills]]\nname = \"foo\"\nmarketplace = \"zot24-skills\"\n",
+            file_url(&repo)
+        ),
+    );
+
+    zskills(&home)
+        .args(["sync"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("register marketplace"))
+        .stdout(predicate::str::contains("zot24-skills"))
+        .stdout(predicate::str::contains("enable  plugin  foo@zot24-skills"))
+        .stdout(predicate::str::contains("applied."));
+
+    let known = read_known(&home);
+    let entry = &known["zot24-skills"];
+    assert!(entry.is_object(), "marketplace not registered: {known:#}");
+    assert!(
+        entry["lastUpdated"].is_string(),
+        "lastUpdated must be a string: {entry:#}"
+    );
+    assert_eq!(entry["source"]["source"], json!("git"));
+    assert!(home
+        .path()
+        .join("plugins")
+        .join("marketplaces")
+        .join("zot24-skills")
+        .join(".claude-plugin")
+        .join("marketplace.json")
+        .is_file());
+
+    let settings = read_settings(&home);
+    assert_eq!(settings["enabledPlugins"]["foo@zot24-skills"], true);
+    assert!(
+        settings["extraKnownMarketplaces"]["zot24-skills"]
+            .get("source")
+            .is_some(),
+        "extraKnownMarketplaces must mirror the clone: {settings:#}"
+    );
+}
+
+#[test]
+fn sync_dry_run_does_not_register_marketplace() {
+    let upstream = tempfile::tempdir().unwrap();
+    let repo = write_marketplace_repo(upstream.path(), "skills", "foo");
+
+    let home = fake_home();
+    wipe_plugins(&home);
+    write_manifest(
+        &home,
+        &format!(
+            "[[marketplaces]]\nname = \"zot24-skills\"\nurl = \"{}\"\n\n[[skills]]\nname = \"foo\"\nmarketplace = \"zot24-skills\"\n",
+            file_url(&repo)
+        ),
+    );
+
+    zskills(&home)
+        .args(["sync", "--dry-run"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("register marketplace"))
+        .stdout(predicate::str::contains("dry-run"));
+
+    let known = read_known(&home);
+    assert!(
+        known.get("zot24-skills").is_none(),
+        "dry-run must not write known_marketplaces.json: {known:#}"
+    );
+    assert!(!home
+        .path()
+        .join("plugins")
+        .join("marketplaces")
+        .join("zot24-skills")
+        .exists());
+    let settings = read_settings(&home);
+    assert!(
+        settings["enabledPlugins"].get("foo@zot24-skills").is_none(),
+        "dry-run must not write enabledPlugins: {settings:#}"
+    );
+}
+
+#[test]
+fn sync_refuses_dangling_enabled_plugins_when_marketplace_is_unknown() {
+    let home = fake_home();
+    wipe_plugins(&home);
+    write_manifest(
+        &home,
+        "[[skills]]\nname = \"foo\"\nmarketplace = \"ghost\"\n",
+    );
+
+    zskills(&home)
+        .args(["sync"])
+        .assert()
+        .failure()
+        .stdout(predicate::str::contains("foo@ghost"))
+        .stdout(predicate::str::contains("not registered"))
+        .stdout(predicate::str::contains("applied.").not())
+        .stderr(predicate::str::contains("enabledPlugins"));
+
+    let settings = read_settings(&home);
+    assert!(
+        settings["enabledPlugins"].get("foo@ghost").is_none(),
+        "must not write a dangling enable: {settings:#}"
+    );
+}
+
+#[test]
+fn sync_refuses_when_declared_marketplace_has_no_source() {
+    let home = fake_home();
+    wipe_plugins(&home);
+    write_manifest(
+        &home,
+        "[[marketplaces]]\nname = \"ghost\"\npin = \"v1\"\n\n[[skills]]\nname = \"foo\"\nmarketplace = \"ghost\"\n",
+    );
+
+    zskills(&home)
+        .args(["sync"])
+        .assert()
+        .failure()
+        .stdout(predicate::str::contains("no repo or url"))
+        .stderr(predicate::str::contains("not registered"));
+
+    let settings = read_settings(&home);
+    assert!(settings["enabledPlugins"].get("foo@ghost").is_none());
+}
+
+#[test]
+fn sync_adopt_appends_marketplace_source() {
+    let home = fake_home();
+    write_manifest(
+        &home,
+        "[[skills]]\nname = \"foo\"\nmarketplace = \"test-mp\"\n",
+    );
+
+    zskills(&home)
+        .args(["sync", "--adopt"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("adopt   marketplace  test-mp"));
+
+    let body = fs::read_to_string(home.path().join("config/zskills/skills.toml")).unwrap();
+    assert!(
+        body.contains("[[marketplaces]]"),
+        "adopt must declare the marketplace: {body}"
+    );
+    assert!(
+        body.contains("name = \"test-mp\""),
+        "adopt must keep the registered name: {body}"
+    );
+    assert!(
+        body.contains("repo = \"owner/test-mp\""),
+        "adopt must write the github source: {body}"
+    );
+}
+
+#[test]
+fn sync_skips_register_when_marketplace_is_already_known() {
+    let home = fake_home();
+    write_manifest(
+        &home,
+        "[[marketplaces]]\nname = \"test-mp\"\nrepo = \"owner/test-mp\"\n\n[[skills]]\nname = \"foo\"\nmarketplace = \"test-mp\"\n",
+    );
+
+    zskills(&home)
+        .args(["sync"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("register marketplace").not());
+}
+
 #[test]
 fn list_hints_when_a_marketplace_offers_a_plugin_but_none_are_active() {
     let home = fake_home();

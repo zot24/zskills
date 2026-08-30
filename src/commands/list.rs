@@ -213,7 +213,7 @@ fn print_empty_plugin_hint() {
     };
     let mut offered: Vec<(String, String)> = Vec::new();
     for (mp_name, entry) in &known {
-        if crate::commands::marketplace::is_remote_index(entry) {
+        if crate::marketplace::is_remote_index(entry) {
             continue;
         }
         let Ok(manifest_path) = crate::paths::marketplace_manifest(mp_name) else {

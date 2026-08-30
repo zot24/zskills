@@ -446,7 +446,7 @@ fn run_interactive_browse_marketplaces(
     let mut items: Vec<Item> = Vec::new();
 
     for (mp_name, entry) in &known {
-        if crate::commands::marketplace::is_remote_index(entry) {
+        if crate::marketplace::is_remote_index(entry) {
             continue;
         }
         let manifest_path = match crate::paths::marketplace_manifest(mp_name) {
@@ -491,7 +491,7 @@ fn run_interactive_browse_marketplaces(
 #[cfg(feature = "skills-sh")]
 fn try_install_from_remote(spec: &str, known: &serde_json::Map<String, Value>) -> Result<bool> {
     let has_skills_sh = known.values().any(|entry| {
-        crate::commands::marketplace::is_remote_index(entry)
+        crate::marketplace::is_remote_index(entry)
             && entry
                 .get("source")
                 .and_then(|s| s.get("url"))
