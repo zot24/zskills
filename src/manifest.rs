@@ -19,7 +19,7 @@
 
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 
 #[derive(Debug, Deserialize, Serialize, Default)]
 pub struct Manifest {
@@ -287,6 +287,10 @@ impl McpEntry {
 ///
 /// - `source`: `owner/repo` (GitHub) or a git URL. `sync` clones/pulls and copies
 ///   skills under `skills/<name>/` into `~/.agents/skills/<name>/`.
+/// - `path`: relative directory inside the cloned `source`. Replaces the default
+///   walk of `.agents/skills` and `skills/`. If `path/SKILL.md` exists, that
+///   directory is the skill (name = last segment). Else every child with
+///   `SKILL.md` is a skill. Requires `source`. Ban `..`, absolute form, `\`, `:`.
 /// - `npm`: npm package name. `sync` runs `npm install -g <pkg>` and trusts the
 ///   package's post-install to place files under `~/.agents/skills/`. After install,
 ///   zskills diffs the directory and tags every new skill with `source: "npm:<pkg>"`.
@@ -304,6 +308,9 @@ pub struct AgentSkillEntry {
     pub install_cmd: Option<String>,
     #[serde(default)]
     pub name: Option<String>,
+    /// Relative path inside the clone. Stored with a leading `./` stripped.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub path: Option<String>,
     /// Optional glob patterns matching skill directory names in `~/.agents/skills/`.
     /// After install, every match gets tagged with this entry's source — useful when
     /// the install command updates pre-existing files (no diff) but you want zskills
@@ -313,6 +320,103 @@ pub struct AgentSkillEntry {
     /// Harnesses this Agent Skill should be visible to. Empty = inherit `[defaults].harnesses`.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub harnesses: Vec<String>,
+}
+
+impl AgentSkillEntry {
+    /// Strip a leading `./` from `path` and reject a selector that would escape
+    /// the clone. `:` is banned so inventory tags can rsplit on it later.
+    pub fn validate(&mut self) -> Result<()> {
+        if let Some(raw) = self.path.take() {
+            let normalized = normalize_skill_path(&raw)?;
+            if self.source.is_none() {
+                anyhow::bail!("path requires source");
+            }
+            if self.npm.is_some() {
+                anyhow::bail!("path is not valid on an npm entry");
+            }
+            self.path = Some(normalized);
+        }
+        Ok(())
+    }
+
+    /// Inventory `source` tag this row owns. `source` + `path` uses
+    /// `source:<source>:<path>` so two paths from one repo do not collide.
+    pub fn inventory_tag(&self) -> Option<String> {
+        if let Some(pkg) = &self.npm {
+            return Some(format!("npm:{pkg}"));
+        }
+        let src = self.source.as_deref()?;
+        match &self.path {
+            Some(p) => Some(format!("source:{src}:{p}")),
+            None => Some(src.to_string()),
+        }
+    }
+}
+
+/// Reject a relative path that would escape the clone or break inventory tags.
+/// Drops `.` segments and a trailing `/` so `././packages/foo` and
+/// `packages/foo` share one inventory tag.
+pub fn normalize_skill_path(path: &str) -> Result<String> {
+    let p = path.trim();
+    let p = p.trim_end_matches('/');
+    if p.is_empty() || p == "." || p == ".." {
+        anyhow::bail!("invalid path");
+    }
+    if p.starts_with('/') || p.contains('\\') || p.contains(':') {
+        anyhow::bail!("invalid path");
+    }
+    let mut parts: Vec<&str> = Vec::new();
+    for c in Path::new(p).components() {
+        match c {
+            Component::Normal(s) => {
+                let s = s.to_str().ok_or_else(|| anyhow::anyhow!("invalid path"))?;
+                parts.push(s);
+            }
+            Component::CurDir => {}
+            _ => anyhow::bail!("invalid path"),
+        }
+    }
+    if parts.is_empty() {
+        anyhow::bail!("invalid path");
+    }
+    Ok(parts.join("/"))
+}
+
+/// Rebuild an `[[agent_skills]]` row from an inventory `source` tag.
+///
+/// `source:<git>:<path>` rsplit on the last `:` so a git URL that contains `:`
+/// stays intact. Path cannot contain `:`.
+pub fn agent_skill_from_inventory_tag(name: &str, tag: &str) -> AgentSkillEntry {
+    if tag == "local" {
+        return AgentSkillEntry {
+            name: Some(name.to_string()),
+            ..Default::default()
+        };
+    }
+    if let Some(pkg) = tag.strip_prefix("npm:") {
+        return AgentSkillEntry {
+            npm: Some(pkg.to_string()),
+            name: Some(name.to_string()),
+            ..Default::default()
+        };
+    }
+    if let Some(rest) = tag.strip_prefix("source:") {
+        if let Some((src, path)) = rest.rsplit_once(':') {
+            if !src.is_empty() && !path.is_empty() {
+                return AgentSkillEntry {
+                    source: Some(src.to_string()),
+                    path: Some(path.to_string()),
+                    name: Some(name.to_string()),
+                    ..Default::default()
+                };
+            }
+        }
+    }
+    AgentSkillEntry {
+        source: Some(tag.to_string()),
+        name: Some(name.to_string()),
+        ..Default::default()
+    }
 }
 
 /// Find the user-level manifest. Does NOT look at `./skills.toml` — that path
@@ -345,8 +449,11 @@ pub fn cwd_skills_toml() -> Option<PathBuf> {
 pub fn load(path: &Path) -> Result<Manifest> {
     let raw = std::fs::read_to_string(path)
         .with_context(|| format!("reading manifest {}", path.display()))?;
-    let m: Manifest =
+    let mut m: Manifest =
         toml::from_str(&raw).with_context(|| format!("parsing {}", path.display()))?;
+    for entry in &mut m.agent_skills {
+        entry.validate()?;
+    }
     Ok(m)
 }
 
@@ -370,12 +477,13 @@ pub fn append_agent_skill(path: &Path, entry: &AgentSkillEntry) -> Result<bool> 
         .parse()
         .with_context(|| format!("parsing manifest {} as TOML", path.display()))?;
 
-    // Check for duplicates
+    // Check for duplicates: (source, path, name)
     if let Some(Item::ArrayOfTables(existing)) = doc.get("agent_skills") {
         for t in existing.iter() {
             let src = t.get("source").and_then(|v| v.as_str()).map(str::to_string);
+            let path = t.get("path").and_then(|v| v.as_str()).map(str::to_string);
             let name = t.get("name").and_then(|v| v.as_str()).map(str::to_string);
-            if src == entry.source && name == entry.name {
+            if src == entry.source && path == entry.path && name == entry.name {
                 return Ok(false);
             }
         }
@@ -398,6 +506,9 @@ pub fn append_agent_skill(path: &Path, entry: &AgentSkillEntry) -> Result<bool> 
     let mut t = Table::new();
     if let Some(src) = &entry.source {
         t["source"] = value(src);
+    }
+    if let Some(p) = &entry.path {
+        t["path"] = value(p);
     }
     if let Some(n) = &entry.name {
         t["name"] = value(n);
@@ -980,5 +1091,112 @@ mod marketplace_pin_tests {
         assert!(raw.contains("repo = \"nvk/llm-wiki\""));
         assert!(!raw.contains("other/repo"));
         assert!(raw.contains("pin = \"v0.23.0\""));
+    }
+}
+
+#[cfg(test)]
+mod agent_skill_path_tests {
+    use super::*;
+
+    fn validate_toml(toml_src: &str) -> Result<Manifest> {
+        let mut m: Manifest = toml::from_str(toml_src).expect("manifest parses");
+        for e in &mut m.agent_skills {
+            e.validate()?;
+        }
+        Ok(m)
+    }
+
+    #[test]
+    fn path_requires_source() {
+        let err = validate_toml("[[agent_skills]]\nname = \"x\"\npath = \"skills\"\n")
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("path requires source"), "{err}");
+    }
+
+    #[test]
+    fn path_is_not_valid_on_npm() {
+        let err = validate_toml(
+            "[[agent_skills]]\nnpm = \"pkg\"\npath = \"skills\"\nsource = \"owner/repo\"\n",
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(err.contains("path is not valid on an npm entry"), "{err}");
+    }
+
+    #[test]
+    fn path_strips_dot_slash() {
+        for raw in ["./packages/foo/skills", "././packages/foo/skills"] {
+            let m = validate_toml(&format!(
+                "[[agent_skills]]\nsource = \"owner/repo\"\npath = \"{raw}\"\n"
+            ))
+            .unwrap();
+            assert_eq!(
+                m.agent_skills[0].path.as_deref(),
+                Some("packages/foo/skills"),
+                "{raw}"
+            );
+        }
+    }
+
+    #[test]
+    fn path_rejects_parent_absolute_backslash_and_colon() {
+        for bad in [
+            "../escape",
+            "foo/../bar",
+            "/abs",
+            "foo\\bar",
+            "foo:bar",
+            "",
+            ".",
+            "..",
+        ] {
+            let err = normalize_skill_path(bad).unwrap_err().to_string();
+            assert!(err.contains("invalid path"), "{bad:?} → {err}");
+        }
+    }
+
+    #[test]
+    fn source_plus_path_inventory_tag() {
+        let m = validate_toml(
+            "[[agent_skills]]\nsource = \"owner/odd-layout\"\npath = \"packages/foo/skills\"\n",
+        )
+        .unwrap();
+        assert_eq!(
+            m.agent_skills[0].inventory_tag().as_deref(),
+            Some("source:owner/odd-layout:packages/foo/skills")
+        );
+    }
+
+    #[test]
+    fn source_without_path_inventory_tag_is_the_git_string() {
+        let m = validate_toml("[[agent_skills]]\nsource = \"owner/repo\"\n").unwrap();
+        assert_eq!(
+            m.agent_skills[0].inventory_tag().as_deref(),
+            Some("owner/repo")
+        );
+    }
+
+    #[test]
+    fn inventory_tag_rsplit_keeps_colon_in_git_source() {
+        let https = agent_skill_from_inventory_tag(
+            "foo",
+            "source:https://github.com/o/r.git:packages/foo/skills",
+        );
+        assert_eq!(https.source.as_deref(), Some("https://github.com/o/r.git"));
+        assert_eq!(https.path.as_deref(), Some("packages/foo/skills"));
+        assert_eq!(https.name.as_deref(), Some("foo"));
+
+        let ssh =
+            agent_skill_from_inventory_tag("foo", "source:git@github.com:o/r:packages/foo/skills");
+        assert_eq!(ssh.source.as_deref(), Some("git@github.com:o/r"));
+        assert_eq!(ssh.path.as_deref(), Some("packages/foo/skills"));
+    }
+
+    #[test]
+    fn inventory_tag_plain_git_stays_source_only() {
+        let e = agent_skill_from_inventory_tag("foo", "owner/repo");
+        assert_eq!(e.source.as_deref(), Some("owner/repo"));
+        assert!(e.path.is_none());
     }
 }

@@ -205,7 +205,10 @@ fn install_chosen(
     category: &str,
 ) -> Result<()> {
     for name in chosen {
-        match crate::agent_skill::install(spec, Some(name)) {
+        match crate::agent_skill::install_from(
+            &crate::agent_skill::SkillOrigin::git(spec, None),
+            Some(name),
+        ) {
             Ok(installed) => {
                 crate::harness::link_hub_to_harnesses(&installed, hs, category)?;
                 for n in installed {

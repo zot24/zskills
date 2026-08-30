@@ -83,13 +83,15 @@ pub fn run(filter: Vec<String>) -> Result<()> {
                 // the survey (a new skill root, or upstream simply adding skills) would
                 // otherwise make an unattended `upgrade` install things nobody asked for.
                 // Refresh the names already in the inventory instead.
+                let tag = entry.inventory_tag().unwrap_or_else(|| src.to_string());
+                let origin = crate::agent_skill::SkillOrigin::git(src, entry.path.clone());
                 let owned: Vec<String> = match entry.name.as_deref() {
                     Some(n) => vec![n.to_string()],
                     None => {
                         let inv = crate::agent_skill::load_inventory().unwrap_or_default();
                         inv.agent_skills
                             .iter()
-                            .filter(|(_, e)| e.source == src)
+                            .filter(|(_, e)| e.source == tag)
                             .map(|(n, _)| n.clone())
                             .collect()
                     }
@@ -107,7 +109,7 @@ pub fn run(filter: Vec<String>) -> Result<()> {
 
                 let mut failures = 0;
                 for name in &owned {
-                    if let Err(e) = crate::agent_skill::install(src, Some(name)) {
+                    if let Err(e) = crate::agent_skill::install_from(&origin, Some(name)) {
                         eprintln!("\n  {} {}: {}", "✗".red(), name, e);
                         failures += 1;
                     }

@@ -11,7 +11,7 @@
 
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::io::Write;
 use std::path::{Path, PathBuf};
 
@@ -31,6 +31,29 @@ pub struct Entry {
     /// Empty means today's default: `agents` only.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub to: Vec<String>,
+}
+
+/// Where an Agent Skill tree is copied from.
+#[derive(Debug, Clone)]
+pub struct SkillOrigin {
+    pub kind: OriginKind,
+    pub path: Option<String>,
+}
+
+#[derive(Debug, Clone)]
+pub enum OriginKind {
+    Git { source: String },
+}
+
+impl SkillOrigin {
+    pub fn git(source: impl Into<String>, path: Option<String>) -> Self {
+        Self {
+            kind: OriginKind::Git {
+                source: source.into(),
+            },
+            path,
+        }
+    }
 }
 
 pub fn load_inventory() -> Result<Inventory> {
@@ -101,20 +124,6 @@ pub fn ensure_cache(source: &str) -> Result<PathBuf> {
     Ok(cache)
 }
 
-/// List the skill directories present under <cache>/skills/.
-/// Returns `(name, source_dir)` pairs, sorted by name.
-///
-/// Two layouts are supported:
-/// - flat:   `skills/<name>/SKILL.md`
-/// - nested: `skills/<category>/<name>/SKILL.md`
-///
-/// Nested is what larger collections use to group skills (e.g. `engineering/`,
-/// `productivity/`). A directory holding its own `SKILL.md` is always treated as
-/// a skill and is never descended into, so a skill containing helper
-/// subdirectories cannot be mistaken for a category.
-///
-/// Names are unique in the result: if two categories expose the same skill name,
-/// the first by sorted path wins and the other is dropped.
 /// Roots a repository may keep its Agent Skills under, in precedence order.
 ///
 /// `.agents/skills/` is the cross-client convention from the Agent Skills spec and is
@@ -152,6 +161,36 @@ pub fn skills_in_cache(cache: &Path) -> Vec<(String, PathBuf)> {
     out.sort_by(|a, b| a.0.cmp(&b.0).then_with(|| a.1.cmp(&b.1)));
     out.dedup_by(|a, b| a.0 == b.0);
     out
+}
+
+/// Walk one directory the same way `skills_in_cache` walks each `SKILL_ROOTS`
+/// entry: a dir with `SKILL.md` is a skill; a dir without is a one-level category.
+pub fn skills_in_dir(root: &Path) -> Vec<(String, PathBuf)> {
+    let mut out = Vec::new();
+    collect_skills_under(root, &mut out);
+    out.sort_by(|a, b| a.0.cmp(&b.0).then_with(|| a.1.cmp(&b.1)));
+    out.dedup_by(|a, b| a.0 == b.0);
+    out
+}
+
+/// Discover Agent Skills under an explicit `path` selector.
+///
+/// If `root/SKILL.md` exists, `root` itself is the skill (name = last segment).
+/// `collect_skills_under` would miss that case because it lists children, not the root.
+pub fn skills_at_path(root: &Path) -> Result<Vec<(String, PathBuf)>> {
+    if root.join("SKILL.md").is_file() {
+        let name = root
+            .file_name()
+            .and_then(|n| n.to_str())
+            .ok_or_else(|| anyhow::anyhow!("invalid skill directory name"))?;
+        validate_skill_name(name)?;
+        return Ok(vec![(name.to_string(), root.to_path_buf())]);
+    }
+    let found = skills_in_dir(root);
+    if found.is_empty() {
+        anyhow::bail!("no Agent Skills under path {}", root.display());
+    }
+    Ok(found)
 }
 
 /// Walk one skill root, appending every skill directory it holds.
@@ -196,13 +235,26 @@ fn collect_skills_under(root: &Path, out: &mut Vec<(String, PathBuf)>) {
 }
 
 /// Copy a skill directory into ~/.agents/skills/<name>/ (deletes existing first).
+/// `allowed_root` for this helper is `src_dir` itself (local migrate copies).
 pub fn install_to_user_dir(skill_name: &str, src_dir: &Path) -> Result<()> {
-    install_to_root(&crate::paths::user_skills_dir()?, skill_name, src_dir)
+    install_to_root(
+        &crate::paths::user_skills_dir()?,
+        skill_name,
+        src_dir,
+        src_dir,
+    )
 }
 
 /// Copy a skill directory into `<root>/<name>/`. Replaces an existing directory
-/// or leftover symlink. Never creates a symlink.
-pub fn install_to_root(root: &Path, skill_name: &str, src_dir: &Path) -> Result<()> {
+/// or leftover symlink. Never creates a symlink. Follows in-tree symlinks only
+/// when the canonical target stays inside `allowed_root`. On copy error the
+/// dest is removed so a half-written hub name is not left behind.
+pub fn install_to_root(
+    root: &Path,
+    skill_name: &str,
+    src_dir: &Path,
+    allowed_root: &Path,
+) -> Result<()> {
     validate_skill_name(skill_name)?;
     let dest = root.join(skill_name);
     if let Ok(meta) = dest.symlink_metadata() {
@@ -216,7 +268,10 @@ pub fn install_to_root(root: &Path, skill_name: &str, src_dir: &Path) -> Result<
         }
     }
     std::fs::create_dir_all(&dest)?;
-    copy_dir_recursive(src_dir, &dest)?;
+    if let Err(e) = copy_dir_recursive(src_dir, &dest, allowed_root) {
+        let _ = std::fs::remove_dir_all(&dest);
+        return Err(e);
+    }
     anyhow::ensure!(
         !dest
             .symlink_metadata()
@@ -242,12 +297,30 @@ pub fn install_root_skill_sparse_to(root: &Path, skill_name: &str, cache: &Path)
         std::fs::remove_dir_all(&dest)?;
     }
     std::fs::create_dir_all(&dest)?;
+    if let Err(e) = copy_sparse_root(cache, &dest) {
+        let _ = std::fs::remove_dir_all(&dest);
+        return Err(e);
+    }
+    Ok(())
+}
+
+fn copy_sparse_root(cache: &Path, dest: &Path) -> Result<()> {
+    let allowed = cache
+        .canonicalize()
+        .with_context(|| format!("canonicalizing allowed_root {}", cache.display()))?;
+    let mut visiting = BTreeSet::new();
     for rel in sparse_root_paths(cache) {
         let src = cache.join(&rel);
         let target = dest.join(&rel);
-        if src.is_dir() {
-            copy_dir_recursive(&src, &target)?;
-        } else {
+        let meta = src
+            .symlink_metadata()
+            .with_context(|| format!("reading {}", src.display()))?;
+        let ft = meta.file_type();
+        if ft.is_symlink() {
+            copy_symlink(&src, &target, &allowed, &mut visiting)?;
+        } else if ft.is_dir() {
+            copy_dir_recursive(&src, &target, cache)?;
+        } else if ft.is_file() {
             if let Some(parent) = target.parent() {
                 std::fs::create_dir_all(parent)?;
             }
@@ -341,7 +414,42 @@ pub(crate) fn referenced_relative_paths(skill_md: &str) -> Vec<String> {
     out
 }
 
-fn copy_dir_recursive(src: &Path, dst: &Path) -> Result<()> {
+/// Copy `src` into `dst`. Follow a file or directory symlink only when its
+/// canonical target stays inside `allowed_root`. Copy those targets as real
+/// files, never as a symlink.
+pub(crate) fn copy_dir_recursive(src: &Path, dst: &Path, allowed_root: &Path) -> Result<()> {
+    let allowed = allowed_root
+        .canonicalize()
+        .with_context(|| format!("canonicalizing allowed_root {}", allowed_root.display()))?;
+    let mut visiting = BTreeSet::new();
+    copy_dir_recursive_inner(src, dst, &allowed, &mut visiting)
+}
+
+fn copy_dir_recursive_inner(
+    src: &Path,
+    dst: &Path,
+    allowed: &Path,
+    visiting: &mut BTreeSet<PathBuf>,
+) -> Result<()> {
+    let src_canon = src.canonicalize().ok();
+    if let Some(c) = &src_canon {
+        if !visiting.insert(c.clone()) {
+            anyhow::bail!("symlink cycle at {}", src.display());
+        }
+    }
+    let result = copy_dir_recursive_walk(src, dst, allowed, visiting);
+    if let Some(c) = src_canon {
+        visiting.remove(&c);
+    }
+    result
+}
+
+fn copy_dir_recursive_walk(
+    src: &Path,
+    dst: &Path,
+    allowed: &Path,
+    visiting: &mut BTreeSet<PathBuf>,
+) -> Result<()> {
     let walker = walkdir::WalkDir::new(src)
         .follow_links(false)
         .into_iter()
@@ -350,9 +458,12 @@ fn copy_dir_recursive(src: &Path, dst: &Path) -> Result<()> {
         let entry = entry?;
         let rel = entry.path().strip_prefix(src)?;
         let target = dst.join(rel);
-        if entry.file_type().is_dir() {
+        let ft = entry.file_type();
+        if ft.is_symlink() {
+            copy_symlink(entry.path(), &target, allowed, visiting)?;
+        } else if ft.is_dir() {
             std::fs::create_dir_all(&target)?;
-        } else if entry.file_type().is_file() {
+        } else if ft.is_file() {
             if let Some(parent) = target.parent() {
                 std::fs::create_dir_all(parent)?;
             }
@@ -360,6 +471,69 @@ fn copy_dir_recursive(src: &Path, dst: &Path) -> Result<()> {
         }
     }
     Ok(())
+}
+
+fn copy_symlink(
+    src: &Path,
+    dst: &Path,
+    allowed: &Path,
+    visiting: &mut BTreeSet<PathBuf>,
+) -> Result<()> {
+    let canon = src
+        .canonicalize()
+        .with_context(|| format!("resolving symlink {}", src.display()))?;
+    if !is_within(&canon, allowed) {
+        anyhow::bail!(
+            "symlink {} escapes allowed root {} (target {})",
+            src.display(),
+            allowed.display(),
+            canon.display()
+        );
+    }
+    let meta = std::fs::metadata(&canon)?;
+    if meta.is_dir() {
+        std::fs::create_dir_all(dst)?;
+        copy_dir_recursive_inner(&canon, dst, allowed, visiting)?;
+    } else if meta.is_file() {
+        if let Some(parent) = dst.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        std::fs::copy(&canon, dst)?;
+    }
+    Ok(())
+}
+
+/// Component-wise prefix on canonical paths. Avoids the `/foo` vs `/foo-evil`
+/// string-prefix hole and the macOS `/tmp` vs `/private/tmp` alias.
+fn is_within(path: &Path, root: &Path) -> bool {
+    path == root || path.starts_with(root)
+}
+
+/// Join `rel` onto `clone` and require the canonical result to stay inside
+/// the canonical clone root.
+pub fn resolve_path_in_clone(clone: &Path, rel: &str) -> Result<PathBuf> {
+    let rel = crate::manifest::normalize_skill_path(rel)?;
+    let joined = clone.join(&rel);
+    let clone_canon = clone
+        .canonicalize()
+        .with_context(|| format!("canonicalizing clone {}", clone.display()))?;
+    let dest_canon = joined
+        .canonicalize()
+        .with_context(|| format!("path {rel} not found in clone"))?;
+    if !is_within(&dest_canon, &clone_canon) {
+        anyhow::bail!("path {rel} is not inside the clone");
+    }
+    Ok(dest_canon)
+}
+
+/// HEAD of an already-cloned Agent Skill cache, if any. Does not clone or pull.
+pub fn cached_head(source: &str) -> Option<String> {
+    let (_, name) = parse_source(source).ok()?;
+    let cache = crate::paths::agent_skills_cache_dir().ok()?.join(name);
+    if !cache.exists() {
+        return None;
+    }
+    crate::git::head_sha(&cache).ok()
 }
 
 /// Reject names that would make `user_skills_dir().join(name)` escape that
@@ -648,20 +822,34 @@ pub fn installed_on_disk() -> Result<Vec<String>> {
     Ok(out)
 }
 
-/// Install (or refresh) an Agent Skill from a source repo. If `name` is given,
-/// only that skill is installed; otherwise all skills under `skills/` are.
-/// Returns the list of installed skill names.
+/// Install (or refresh) an Agent Skill from a git source with no `path`.
+/// Thin wrapper around [`install_from`].
 pub fn install(source: &str, name: Option<&str>) -> Result<Vec<String>> {
+    install_from(&SkillOrigin::git(source, None), name)
+}
+
+/// Install (or refresh) an Agent Skill from `origin`. If `name` is given, only
+/// that skill is installed; otherwise every skill the origin yields.
+pub fn install_from(origin: &SkillOrigin, name: Option<&str>) -> Result<Vec<String>> {
+    let OriginKind::Git { source } = &origin.kind;
     let cache = ensure_cache(source)?;
     let head_sha = crate::git::head_sha(&cache).unwrap_or_else(|_| "unknown".to_string());
     let installed_at = chrono_now_iso();
-    let available = skills_in_cache(&cache);
-    if available.is_empty() {
-        anyhow::bail!(
-            "no skills found in {} (expected skills/<name>/SKILL.md)",
-            source
-        );
-    }
+    let (available, source_tag) = if let Some(rel) = origin.path.as_deref() {
+        let rel = crate::manifest::normalize_skill_path(rel)?;
+        let root = resolve_path_in_clone(&cache, &rel)?;
+        let found = skills_at_path(&root)?;
+        (found, format!("source:{source}:{rel}"))
+    } else {
+        let found = skills_in_cache(&cache);
+        if found.is_empty() {
+            anyhow::bail!(
+                "no skills found in {} (expected skills/<name>/SKILL.md)",
+                source
+            );
+        }
+        (found, source.clone())
+    };
     let chosen: Vec<_> = match name {
         Some(n) => available
             .into_iter()
@@ -670,26 +858,35 @@ pub fn install(source: &str, name: Option<&str>) -> Result<Vec<String>> {
         None => available,
     };
     if chosen.is_empty() {
+        if let Some(rel) = origin.path.as_deref() {
+            anyhow::bail!(
+                "skill '{}' not found under path '{}' in {}",
+                name.unwrap_or("?"),
+                rel,
+                source
+            );
+        }
         anyhow::bail!(
             "skill '{}' not found in {} (skills/<name>/ not present)",
             name.unwrap_or("?"),
             source
         );
     }
+    let hub = crate::paths::user_skills_dir()?;
     let mut inv = load_inventory()?;
     let mut installed_names = Vec::new();
     for (skill_name, src_dir) in &chosen {
         if src_dir == &cache {
             // Root-level SKILL.md in a larger project — materialize sparsely
             // instead of copying the whole source tree.
-            install_root_skill_sparse_to(&crate::paths::user_skills_dir()?, skill_name, &cache)?;
+            install_root_skill_sparse_to(&hub, skill_name, &cache)?;
         } else {
-            install_to_user_dir(skill_name, src_dir)?;
+            install_to_root(&hub, skill_name, src_dir, &cache)?;
         }
         inv.agent_skills.insert(
             skill_name.clone(),
             Entry {
-                source: source.to_string(),
+                source: source_tag.clone(),
                 installed_at: installed_at.clone(),
                 head_sha: head_sha.clone(),
                 to: vec!["agents".into()],
@@ -897,5 +1094,109 @@ mod tests {
             assert_eq!(surviving_skills(home), ["beta"]);
             assert!(!super::remove("alpha").unwrap());
         });
+    }
+
+    #[test]
+    fn skills_at_path_treats_skill_dir_as_one_and_parent_as_children() {
+        let tmp = tempfile::tempdir().unwrap();
+        let parent = tmp.path().join("packages/foo/skills");
+        fs::create_dir_all(parent.join("wiki-manager")).unwrap();
+        fs::write(parent.join("wiki-manager").join("SKILL.md"), "wm").unwrap();
+        fs::create_dir_all(parent.join("wiki-query")).unwrap();
+        fs::write(parent.join("wiki-query").join("SKILL.md"), "wq").unwrap();
+
+        let parent_found = super::skills_at_path(&parent).unwrap();
+        let names: Vec<_> = parent_found.iter().map(|(n, _)| n.as_str()).collect();
+        assert_eq!(names, ["wiki-manager", "wiki-query"]);
+
+        let one = super::skills_at_path(&parent.join("wiki-manager")).unwrap();
+        assert_eq!(one.len(), 1);
+        assert_eq!(one[0].0, "wiki-manager");
+    }
+
+    #[test]
+    fn copy_follows_in_clone_symlink_as_regular_file() {
+        // Previously copy_dir_recursive dropped symlinks (is_file/is_dir false
+        // when follow_links is false). Dest references/hub-resolution.md must
+        // now be a regular file, not a symlink and not missing.
+        let tmp = tempfile::tempdir().unwrap();
+        let clone = tmp.path().join("clone");
+        let refs = clone.join("claude-plugin/skills/wiki-manager/references");
+        fs::create_dir_all(&refs).unwrap();
+        fs::write(refs.join("hub-resolution.md"), "notes\n").unwrap();
+        let skill = clone.join("packages/foo/skills/wiki-manager");
+        fs::create_dir_all(&skill).unwrap();
+        fs::write(skill.join("SKILL.md"), "openc\n").unwrap();
+        std::os::unix::fs::symlink(
+            "../../../../claude-plugin/skills/wiki-manager/references",
+            skill.join("references"),
+        )
+        .unwrap();
+
+        let dest = tmp.path().join("hub/wiki-manager");
+        super::copy_dir_recursive(&skill, &dest, &clone).unwrap();
+        let copied = dest.join("references/hub-resolution.md");
+        assert!(copied.is_file(), "dereferenced contents must be present");
+        assert!(
+            !copied.symlink_metadata().unwrap().file_type().is_symlink(),
+            "hub copy must be a regular file, not a symlink"
+        );
+        assert_eq!(fs::read_to_string(&copied).unwrap(), "notes\n");
+    }
+
+    #[test]
+    fn copy_refuses_symlink_escape_and_leaves_no_partial_dest() {
+        let tmp = tempfile::tempdir().unwrap();
+        let clone = tmp.path().join("clone");
+        let skill = clone.join("skills/evil");
+        fs::create_dir_all(&skill).unwrap();
+        fs::write(skill.join("SKILL.md"), "x\n").unwrap();
+        std::os::unix::fs::symlink("/etc/passwd", skill.join("secret")).unwrap();
+
+        let hub = tmp.path().join("hub");
+        let err = super::install_to_root(&hub, "evil", &skill, &clone)
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("escapes allowed root"), "{err}");
+        assert!(
+            !hub.join("evil").exists(),
+            "failed copy must not leave a partial dest"
+        );
+    }
+
+    #[test]
+    fn sparse_copy_refuses_file_symlink_escape() {
+        let tmp = tempfile::tempdir().unwrap();
+        let cache = tmp.path().join("cache");
+        fs::create_dir_all(&cache).unwrap();
+        std::os::unix::fs::symlink("/etc/passwd", cache.join("SKILL.md")).unwrap();
+        let hub = tmp.path().join("hub");
+        let err = super::install_root_skill_sparse_to(&hub, "evil", &cache)
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("escapes allowed root"), "{err}");
+        assert!(
+            !hub.join("evil").exists(),
+            "failed sparse copy must not leave a partial dest"
+        );
+    }
+
+    #[test]
+    fn copy_refuses_in_clone_symlink_cycle() {
+        let tmp = tempfile::tempdir().unwrap();
+        let clone = tmp.path().join("clone");
+        let skill = clone.join("skills/loop");
+        fs::create_dir_all(&skill).unwrap();
+        fs::write(skill.join("SKILL.md"), "x\n").unwrap();
+        std::os::unix::fs::symlink("..", skill.join("parent")).unwrap();
+        let hub = tmp.path().join("hub");
+        let err = super::install_to_root(&hub, "loop", &skill, &clone)
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("cycle"), "{err}");
+        assert!(
+            !hub.join("loop").exists(),
+            "cycle must not leave a partial dest"
+        );
     }
 }
