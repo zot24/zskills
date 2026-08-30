@@ -157,10 +157,24 @@ pub fn run(
         })
         .unwrap_or_default();
 
-    let plugins_to_enable: Vec<_> = desired_plugins.difference(&current_plugins).collect();
-    let plugins_to_disable: Vec<_> = current_plugins
+    let plugins_to_enable: Vec<String> = desired_plugins
+        .difference(&current_plugins)
+        .cloned()
+        .collect();
+    // Name-only rows resolve after register. Until then, do not plan to disable
+    // an already-enabled `name@marketplace` that the pending row may still want.
+    let pending_names: BTreeSet<&str> = pending_unqualified
+        .iter()
+        .map(|e| e.name.as_str())
+        .collect();
+    let mut plugins_to_disable: Vec<String> = current_plugins
         .difference(&desired_plugins)
         .filter(|k| !unresolved.contains(*k))
+        .filter(|k| {
+            let name = k.split_once('@').map(|(n, _)| n).unwrap_or(k.as_str());
+            !pending_names.contains(name)
+        })
+        .cloned()
         .collect();
     let skip_plugin_diff = desired_plugins.is_empty()
         && pending_unqualified.is_empty()
@@ -516,7 +530,7 @@ pub fn run(
             let (name, mp) = k
                 .split_once('@')
                 .map(|(n, m)| (n.to_string(), Some(m.to_string())))
-                .unwrap_or_else(|| ((*k).clone(), None));
+                .unwrap_or_else(|| (k.clone(), None));
             let entry = crate::manifest::SkillEntry {
                 name,
                 marketplace: mp,
@@ -622,10 +636,12 @@ pub fn run(
                         continue;
                     }
                 };
-                if targets.contains(&crate::harness::Harness::Claude)
-                    && !current_plugins.contains(&q)
-                {
-                    late_enables.push(q.clone());
+                if targets.contains(&crate::harness::Harness::Claude) {
+                    desired_plugins.insert(q.clone());
+                    plugins_to_disable.retain(|k| k != &q);
+                    if !current_plugins.contains(&q) {
+                        late_enables.push(q.clone());
+                    }
                 }
                 if targets
                     .iter()
@@ -660,10 +676,10 @@ pub fn run(
     if !skip_plugin_diff {
         let ep = crate::settings::enabled_plugins_mut(&mut settings);
         for k in &plugins_to_enable {
-            if unresolved.contains(*k) {
+            if unresolved.contains(k) {
                 continue;
             }
-            ep.insert((*k).clone(), Value::Bool(true));
+            ep.insert(k.clone(), Value::Bool(true));
         }
         for k in &late_enables {
             if unresolved.contains(k) {
@@ -672,7 +688,7 @@ pub fn run(
             ep.insert(k.clone(), Value::Bool(true));
         }
         for k in &plugins_to_disable {
-            ep.insert((*k).clone(), Value::Bool(false));
+            ep.insert(k.clone(), Value::Bool(false));
         }
         crate::settings::save(&settings_path, &settings)?;
     }

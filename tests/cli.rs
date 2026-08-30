@@ -1969,6 +1969,48 @@ fn sync_resolves_unqualified_plugin_after_register() {
 }
 
 #[test]
+fn sync_late_resolve_keeps_already_enabled_plugin_on() {
+    let upstream = tempfile::tempdir().unwrap();
+    let repo = write_marketplace_repo(upstream.path(), "skills", "foo");
+
+    let home = fake_home();
+    wipe_plugins(&home);
+    let settings_path = home.path().join("settings.json");
+    let mut settings = read_settings(&home);
+    settings["enabledPlugins"] = json!({ "foo@zot24-skills": true });
+    fs::write(
+        &settings_path,
+        serde_json::to_string_pretty(&settings).unwrap(),
+    )
+    .unwrap();
+    write_manifest(
+        &home,
+        &format!(
+            "[[marketplaces]]\nname = \"zot24-skills\"\nurl = \"{}\"\n\n[[skills]]\nname = \"foo\"\n",
+            file_url(&repo)
+        ),
+    );
+
+    zskills(&home)
+        .args(["sync", "--dry-run"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("disable plugin").not());
+
+    zskills(&home)
+        .args(["sync"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("disable plugin").not());
+
+    let after = read_settings(&home);
+    assert_eq!(
+        after["enabledPlugins"]["foo@zot24-skills"], true,
+        "late resolve must not flip an already-enabled match off: {after:#}"
+    );
+}
+
+#[test]
 fn sync_skips_register_when_marketplace_is_already_known() {
     let home = fake_home();
     write_manifest(
