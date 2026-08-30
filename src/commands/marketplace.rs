@@ -3,6 +3,7 @@ use owo_colors::OwoColorize;
 use serde_json::Value;
 #[cfg(feature = "skills-sh")]
 use serde_json::{json, Map};
+use std::path::Path;
 
 use crate::cli::MarketplaceCmd;
 
@@ -34,48 +35,134 @@ fn add(source: String) -> Result<()> {
     Ok(())
 }
 
-/// After a marketplace is registered, say what it offers and how to install it.
-///
-/// `marketplace add` only writes `known_marketplaces.json` and
-/// `extraKnownMarketplaces`. It does not install plugins and it does not
-/// change the manifest. Users who then run `sync` / `list` see no plugins
-/// and no next command (zot24/zskills#55).
-fn print_add_followup(name: &str, install_location: &std::path::Path) {
+/// Print plugins from marketplace.json and extra Agent Skill trees under
+/// `plugins/*/skills/`. Do not write the manifest.
+fn print_add_followup(name: &str, install_location: &Path) {
     let manifest_path = install_location
         .join(".claude-plugin")
         .join("marketplace.json");
+    let mut plugin_sources: Vec<String> = Vec::new();
     if !manifest_path.exists() {
         println!(
             "  {} no .claude-plugin/marketplace.json — plugin install and search will not find anything here",
             "!".yellow()
         );
-        return;
+    } else {
+        match crate::marketplace::load_manifest(&manifest_path) {
+            Ok(m) if m.plugins.is_empty() => {
+                println!("  {} marketplace.json lists 0 plugins", "!".yellow());
+            }
+            Ok(m) => {
+                plugin_sources = m
+                    .plugins
+                    .iter()
+                    .filter_map(|p| local_plugin_source(&p.source))
+                    .collect();
+                let names: Vec<&str> = m.plugins.iter().map(|p| p.name.as_str()).collect();
+                if names.len() <= 8 {
+                    println!(
+                        "  {} plugin{}: {}",
+                        names.len(),
+                        if names.len() == 1 { "" } else { "s" },
+                        names.join(", ")
+                    );
+                } else {
+                    println!("  {} plugins", names.len());
+                }
+                if names.len() == 1 {
+                    println!("  Next: zskills plugin install {}@{}", names[0], name);
+                } else {
+                    println!("  Next: zskills plugin install <plugin>@{}", name);
+                    println!("        zskills plugin install -i");
+                }
+            }
+            Err(e) => {
+                println!("  {} could not read marketplace.json ({e})", "!".yellow());
+            }
+        }
     }
-    match crate::marketplace::load_manifest(&manifest_path) {
-        Ok(m) if m.plugins.is_empty() => {
-            println!("  {} marketplace.json lists 0 plugins", "!".yellow());
+    print_agent_skill_hint(name, install_location, &plugin_sources);
+}
+
+/// Local relative plugin source from marketplace.json (`"./claude-plugin"`).
+/// Remote object sources have no tree in this clone to exclude.
+fn local_plugin_source(source: &Option<Value>) -> Option<String> {
+    let Value::String(s) = source.as_ref()? else {
+        return None;
+    };
+    let s = s.trim().trim_start_matches("./").trim_end_matches('/');
+    if s.is_empty() || s == "." || s.starts_with('/') || s.contains("://") {
+        return None;
+    }
+    Some(s.to_string())
+}
+
+/// Walk `plugins/` only: nested skills of the Claude plugin live under its
+/// source tree (`claude-plugin/skills/`, `./p/skills/`, …), not this glob.
+fn extra_agent_skill_trees(
+    install_location: &Path,
+    plugin_sources: &[String],
+) -> Vec<(String, Vec<String>)> {
+    let plugins_dir = install_location.join("plugins");
+    let Ok(entries) = std::fs::read_dir(&plugins_dir) else {
+        return Vec::new();
+    };
+    let mut packs: Vec<_> = entries
+        .flatten()
+        .map(|e| e.path())
+        .filter(|p| p.is_dir())
+        .collect();
+    packs.sort();
+
+    let mut out = Vec::new();
+    for pack in packs {
+        let Some(pack_name) = pack.file_name().and_then(|n| n.to_str()) else {
+            continue;
+        };
+        if pack_name.starts_with('.') {
+            continue;
         }
-        Ok(m) => {
-            let names: Vec<&str> = m.plugins.iter().map(|p| p.name.as_str()).collect();
-            if names.len() <= 8 {
-                println!(
-                    "  {} plugin{}: {}",
-                    names.len(),
-                    if names.len() == 1 { "" } else { "s" },
-                    names.join(", ")
-                );
-            } else {
-                println!("  {} plugins", names.len());
-            }
-            if names.len() == 1 {
-                println!("  Next: zskills plugin install {}@{}", names[0], name);
-            } else {
-                println!("  Next: zskills plugin install <plugin>@{}", name);
-                println!("        zskills plugin install -i");
-            }
+        let skills_dir = pack.join("skills");
+        if !skills_dir.is_dir() {
+            continue;
         }
-        Err(e) => {
-            println!("  {} could not read marketplace.json ({e})", "!".yellow());
+        let rel = format!("plugins/{pack_name}/skills");
+        if plugin_sources.iter().any(|src| path_is_inside(&rel, src)) {
+            continue;
+        }
+        let Ok(children) = std::fs::read_dir(&skills_dir) else {
+            continue;
+        };
+        let mut names: Vec<String> = children
+            .flatten()
+            .map(|e| e.path())
+            .filter(|p| p.is_dir() && p.join("SKILL.md").is_file())
+            .filter_map(|p| p.file_name()?.to_str().map(str::to_string))
+            .collect();
+        names.sort();
+        if !names.is_empty() {
+            out.push((rel, names));
+        }
+    }
+    out
+}
+
+fn path_is_inside(rel: &str, src: &str) -> bool {
+    let src = src.trim_end_matches('/');
+    rel == src
+        || rel
+            .strip_prefix(src)
+            .is_some_and(|rest| rest.starts_with('/'))
+}
+
+fn print_agent_skill_hint(marketplace: &str, install_location: &Path, plugin_sources: &[String]) {
+    for (path, names) in extra_agent_skill_trees(install_location, plugin_sources) {
+        println!("  Agent Skills under {path}: {}", names.join(", "));
+        for skill in &names {
+            println!("    [[agent_skills]]");
+            println!("    marketplace = \"{marketplace}\"");
+            println!("    path = \"{path}\"");
+            println!("    name = \"{skill}\"");
         }
     }
 }

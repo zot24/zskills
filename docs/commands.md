@@ -395,12 +395,23 @@ zskills marketplace update [<name>]
 
 `add` clones the marketplace repo into `~/.claude/plugins/marketplaces/<name>/` and writes both `known_marketplaces.json` and `settings.json`'s `extraKnownMarketplaces`. Mirrors what `/plugin marketplace add` does inside Claude Code.
 
-Adding a marketplace does **not** install plugins and does **not** change the manifest. After a successful add, zskills reads `.claude-plugin/marketplace.json` and prints the plugins the marketplace offers, plus the next command:
+Adding a marketplace does **not** install plugins and does **not** change the manifest. After a successful add, zskills reads `.claude-plugin/marketplace.json` and prints the plugins the marketplace offers, plus the next command.
+
+If the clone also has Agent Skill trees at `plugins/*/skills/` that are not inside a plugin source from `marketplace.json`, add prints those Agent Skill names and a `[[agent_skills]]` stanza. It does not write the stanza to the manifest.
 
 ```
 ✓ added marketplace llm-wiki
   1 plugin: wiki
   Next: zskills plugin install wiki@llm-wiki
+  Agent Skills under plugins/llm-wiki-opencode/skills: wiki-manager, wiki-query
+    [[agent_skills]]
+    marketplace = "llm-wiki"
+    path = "plugins/llm-wiki-opencode/skills"
+    name = "wiki-manager"
+    [[agent_skills]]
+    marketplace = "llm-wiki"
+    path = "plugins/llm-wiki-opencode/skills"
+    name = "wiki-query"
 ```
 
 If `marketplace.json` is missing, add still registers the clone and warns. `list` also prints a dimmed hint when no plugins are active and a registered marketplace offers at least one.
