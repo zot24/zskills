@@ -202,6 +202,16 @@ harnesses = ["pi", "grok"]
 
 `--fix` does not rewrite SKILL.md. `sync` takes over a same-marketplace `plugin:` hub copy.
 
+## Pi says skill description exceeds 1024 characters
+
+Pi prints `[Skill conflicts]` when `SKILL.md` frontmatter `description` is longer than 1024 characters. OpenCode `wiki-manager` from `nvk/llm-wiki` is over that limit (~1157). zskills copied the file as-is.
+
+This is not a zskills bug. Do not shorten the hub copy. `zskills sync` and `zskills skill upgrade` overwrite it from the marketplace clone.
+
+Fix the description in `nvk/llm-wiki` `plugins/llm-wiki-opencode/skills/wiki-manager/SKILL.md`. Then `zskills marketplace update llm-wiki` and `zskills sync`.
+
+`wiki-query` is under the limit. It is the read-only lookup Agent Skill. It is not a Pi prompt under `~/.pi/agent/prompts/`.
+
 ## `doctor` says `[[agent_skills]]` path is not on disk
 
 The `path` in the manifest does not exist inside the clone. Check the relative path (`plugins/llm-wiki-opencode/skills` for llm-wiki). Then `zskills marketplace update` or fix the selector.

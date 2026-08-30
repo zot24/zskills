@@ -178,7 +178,7 @@ zskills sync --dry-run     # preview
 
 `zskills sync` is idempotent. Run it anywhere — same machine, new machine — and the result matches the manifest. Plugins flip via `enabledPlugins`. Agent Skills get `git clone`d and copied into `~/.claude/skills/<name>/`. Run it on every fresh checkout.
 
-The llm-wiki rows require zskills 1.3.0 or later. Set `harnesses` on both the plugin and the Agent Skill rows. Claude Code consumes plugin `wiki@llm-wiki` (`/wiki:*`). Pi and Grok consume hub Agent Skills `wiki-manager` and `wiki-query`. zskills does not install `scripts/pi-wiki-query`. zskills does not provide Grok slash `/wiki:*`. A 1.2 binary ignores `marketplace` and `path` on `[[agent_skills]]` and treats those rows as local-only. Full recipe: [Use cases](docs/use-cases.md#18-declare-llm-wiki-for-claude-code-pi-and-grok).
+The llm-wiki rows require zskills 1.3.0 or later. Set `harnesses` on both the plugin and the Agent Skill rows. Claude Code consumes plugin `wiki@llm-wiki` (`/wiki:*`). Pi and Grok consume hub Agent Skills `wiki-manager` and `wiki-query`. Pi lists those names under [Skills]. zskills does not write `~/.pi/agent/prompts/wiki-query.md`. zskills does not install `scripts/pi-wiki-query`. zskills does not provide Grok slash `/wiki:*`. A 1.2 binary ignores `marketplace` and `path` on `[[agent_skills]]` and treats those rows as local-only. Full recipe: [Use cases](docs/use-cases.md#18-declare-llm-wiki-for-claude-code-pi-and-grok).
 
 ## Scanning project-scope skills
 
