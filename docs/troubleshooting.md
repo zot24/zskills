@@ -178,6 +178,46 @@ zskills sync
 zskills doctor --fix
 ```
 
+## `doctor` says hub Agent Skill is Claude-flavored
+
+Pi or Grok can see `~/.agents/skills/wiki-manager/SKILL.md`, and that file matches Claude flavour:
+
+- YAML frontmatter contains `Activates for /wiki commands`, or
+- a `tools:` list with Claude Code names (`Read`, `Write`, `Edit`), or
+- the body contains `Claude Code is both the compiler`
+
+That happens when a plugin nested skill was copied onto the hub. Pi and Grok do not load `/wiki:*` slash commands, so they need the OpenCode tree.
+
+OpenCode `wiki-manager` still contains `/wiki:*` as documented shorthand. That string alone is **not** this finding. `doctor` does not substring `/wiki:`.
+
+Fix: point `[[agent_skills]]` at the OpenCode tree and `sync`:
+
+```toml
+[[agent_skills]]
+marketplace = "llm-wiki"
+path = "plugins/llm-wiki-opencode/skills"
+name = "wiki-manager"
+harnesses = ["pi", "grok"]
+```
+
+`--fix` does not rewrite SKILL.md. `sync` takes over a same-marketplace `plugin:` hub copy.
+
+## `doctor` says `[[agent_skills]]` path is not on disk
+
+The `path` in the manifest does not exist inside the clone. Check the relative path (`plugins/llm-wiki-opencode/skills` for llm-wiki). Then `zskills marketplace update` or fix the selector.
+
+`--fix` does not create the directory.
+
+## `doctor` says marketplace is not in known_marketplaces.json
+
+The `marketplace` name on an `[[agent_skills]]` row is not a key in `~/.claude/plugins/known_marketplaces.json`. Register it:
+
+```bash
+zskills marketplace add nvk/llm-wiki
+```
+
+Or add `repo = "nvk/llm-wiki"` on `[[marketplaces]]` and run `sync`. `--fix` does not register a marketplace.
+
 ## "unrecognized marketplace source: skills.sh"
 
 You ran `zskills marketplace add skills.sh` against a default build. The skills.sh driver is gated behind the `skills-sh` cargo feature and not compiled into vanilla binaries. Reinstall with the feature on:

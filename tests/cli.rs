@@ -4688,3 +4688,107 @@ fn plugin_install_skips_hub_names_claimed_by_agent_skills() {
         "marketplace:llm-wiki:plugins/llm-wiki-opencode/skills"
     );
 }
+
+#[test]
+fn doctor_warns_when_hub_wiki_manager_is_claude_flavored_for_pi_or_grok() {
+    let (home, _up, _repo) = setup_llm_wiki_home();
+    write_manifest(
+        &home,
+        &format!(
+            r#"[[marketplaces]]
+name = "llm-wiki"
+url = "{url}"
+
+[[skills]]
+name = "wiki"
+marketplace = "llm-wiki"
+harnesses = ["pi"]
+"#,
+            url = file_url(&home.path().join("plugins/marketplaces/llm-wiki"))
+        ),
+    );
+    zskills(&home).arg("sync").assert().success();
+    assert_eq!(
+        fs::read_to_string(home.path().join("skills/wiki-manager/SKILL.md")).unwrap(),
+        CLAUDE_WIKI_SKILL
+    );
+
+    zskills(&home)
+        .arg("doctor")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Claude-flavored"))
+        .stdout(predicate::str::contains("wiki-manager"));
+}
+
+#[test]
+fn doctor_does_not_warn_on_opencode_wiki_shorthand() {
+    let (home, _up, _repo) = setup_llm_wiki_home();
+    write_manifest(
+        &home,
+        &llm_wiki_recipe(
+            &file_url(&home.path().join("plugins/marketplaces/llm-wiki")),
+            r#"["claude"]"#,
+        ),
+    );
+    zskills(&home).arg("sync").assert().success();
+    let skill = fs::read_to_string(home.path().join("skills/wiki-manager/SKILL.md")).unwrap();
+    assert!(
+        skill.contains("/wiki:"),
+        "fixture must contain /wiki: shorthand so this is a real negative"
+    );
+    assert_eq!(skill, OPENCODE_WIKI_SKILL);
+
+    zskills(&home)
+        .arg("doctor")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Claude-flavored").not());
+}
+
+#[test]
+fn doctor_warns_when_agent_skill_path_is_missing_on_disk() {
+    let (home, _up, _repo) = setup_llm_wiki_home();
+    write_manifest(
+        &home,
+        &format!(
+            r#"[[marketplaces]]
+name = "llm-wiki"
+url = "{url}"
+
+[[agent_skills]]
+marketplace = "llm-wiki"
+path = "plugins/does-not-exist/skills"
+name = "wiki-manager"
+harnesses = ["pi", "grok"]
+"#,
+            url = file_url(&home.path().join("plugins/marketplaces/llm-wiki"))
+        ),
+    );
+    zskills(&home)
+        .arg("doctor")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("does-not-exist"))
+        .stdout(predicate::str::contains("not on disk"));
+}
+
+#[test]
+fn doctor_warns_when_marketplace_is_not_in_known_marketplaces() {
+    let home = fake_home();
+    write_manifest(
+        &home,
+        r#"[[agent_skills]]
+marketplace = "ghost-mp"
+path = "plugins/llm-wiki-opencode/skills"
+name = "wiki-manager"
+harnesses = ["pi", "grok"]
+"#,
+    );
+    zskills(&home)
+        .arg("doctor")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("ghost-mp"))
+        .stdout(predicate::str::contains("known_marketplaces.json"));
+}
