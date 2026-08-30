@@ -195,17 +195,13 @@ pub fn run(
     let mut desired_named: BTreeSet<String> = BTreeSet::new();
     let mut deferred_sources: Vec<&crate::manifest::AgentSkillEntry> = Vec::new();
     for entry in &manifest.agent_skills {
-        match (&entry.name, &entry.source) {
-            (Some(n), _) => {
-                desired_named.insert(n.clone());
-            }
-            (None, Some(_)) => {
-                // Source without an explicit name — every skill in `skills/` of that repo.
-                deferred_sources.push(entry);
-            }
-            (None, None) => {
-                // Invalid: report below at apply time
-            }
+        if let Some(n) = &entry.name {
+            desired_named.insert(n.clone());
+        } else if entry.source.is_some() || entry.marketplace.is_some() {
+            // Unnamed git-source, source+path, or marketplace+path — install
+            // every skill the origin yields. Marketplace+path is first-class
+            // deferred: prune must not delete it.
+            deferred_sources.push(entry);
         }
     }
 
@@ -270,46 +266,49 @@ pub fn run(
             {
                 return true;
             }
-            if e.path.is_some() {
-                if let Some(src) = &e.source {
-                    if let Some(head) = crate::agent_skill::cached_head(src) {
-                        return inventoried_from_source
-                            .iter()
-                            .any(|(_, ent)| ent.head_sha != head);
-                    }
+            // Missing clone must still apply so the hard error fires.
+            if e.marketplace.is_some() && crate::agent_skill::live_head(e).is_none() {
+                return true;
+            }
+            if e.path.is_some() || e.marketplace.is_some() {
+                if let Some(head) = crate::agent_skill::live_head(e) {
+                    return inventoried_from_source
+                        .iter()
+                        .any(|(_, ent)| ent.head_sha != head);
                 }
             }
             false
         })
         .copied()
         .collect();
-    // Named source+path rows whose bytes are on disk but the clone HEAD moved.
-    let mut path_refresh: Vec<(&str, &str, &str)> = Vec::new();
+    // Named origin rows whose bytes are on disk but the clone HEAD moved.
+    let mut path_refresh: Vec<(&str, String, &str)> = Vec::new();
+    // On disk, tag mismatch or no inventory — takeover / refuse / first tag.
+    let mut named_retag: Vec<(&str, String, Option<&str>)> = Vec::new();
     for entry in &manifest.agent_skills {
-        let (Some(n), Some(src), Some(p)) = (
-            entry.name.as_deref(),
-            entry.source.as_deref(),
-            entry.path.as_deref(),
-        ) else {
+        let Some(n) = entry.name.as_deref() else {
             continue;
         };
+        if crate::agent_skill::SkillOrigin::from_entry(entry).is_none() {
+            continue;
+        }
         if !on_disk.contains(n) {
             continue;
         }
-        let Some(tag) = entry.inventory_tag() else {
-            continue;
-        };
-        let Some(inv_e) = inv.agent_skills.get(n) else {
-            continue;
-        };
-        if inv_e.source != tag {
+        if already_present_named(entry, n, &on_disk, &inv) {
             continue;
         }
-        if let Some(head) = crate::agent_skill::cached_head(src) {
-            if inv_e.head_sha != head {
-                path_refresh.push((n, src, p));
+        let label = origin_plan_label(entry);
+        let path = entry.path.as_deref();
+        let tag = entry.inventory_tag();
+        let inv_e = inv.agent_skills.get(n);
+        if let (Some(tag), Some(inv_e), Some(p)) = (tag.as_deref(), inv_e, path) {
+            if inv_e.source == tag {
+                path_refresh.push((n, label, p));
+                continue;
             }
         }
+        named_retag.push((n, label, path));
     }
     // Don't propose removing a skill that's owned by any manifest entry — either:
     //   (a) it came from a source-only [[agent_skills]] entry (we'll re-resolve), or
@@ -383,6 +382,7 @@ pub fn run(
         && agent_to_remove.is_empty()
         && deferred_sources_to_install.is_empty()
         && path_refresh.is_empty()
+        && named_retag.is_empty()
         && mcps_to_install.is_empty()
         && mcps_to_update.is_empty()
         && mcps_to_remove.is_empty()
@@ -484,14 +484,22 @@ pub fn run(
             .iter()
             .find(|e| e.name.as_deref() == Some(n.as_str()))
         {
-            if let (Some(src), Some(p)) = (&entry.source, &entry.path) {
-                println!("  {} install {} ← source:{} ({})", "+".green(), n, src, p);
+            if let Some(line) = path_plan_line(entry, n) {
+                println!("  {} install {line}", "+".green());
                 continue;
             }
         }
         println!("  {} install agent   {}", "+".green(), n);
     }
     for entry in &deferred_sources_to_install {
+        if let Some(mp) = &entry.marketplace {
+            if let Some(p) = &entry.path {
+                println!("  {} install all ← marketplace:{} ({})", "+".green(), mp, p);
+                continue;
+            }
+            println!("  {} install all ← marketplace:{}", "+".green(), mp);
+            continue;
+        }
         if let (Some(s), Some(p)) = (&entry.source, &entry.path) {
             println!("  {} install all ← source:{} ({})", "+".green(), s, p);
             continue;
@@ -505,8 +513,14 @@ pub fn run(
             );
         }
     }
-    for (n, src, p) in &path_refresh {
-        println!("  {} refresh {} ← source:{} ({})", "~".cyan(), n, src, p);
+    for (n, label, p) in &path_refresh {
+        println!("  {} refresh {} ← {} ({})", "~".cyan(), n, label, p);
+    }
+    for (n, label, p) in &named_retag {
+        match p {
+            Some(p) => println!("  {} install {} ← {} ({})", "+".green(), n, label, p),
+            None => println!("  {} install {} ← {}", "+".green(), n, label),
+        }
     }
     for n in &agent_to_remove {
         if adopt {
@@ -625,6 +639,9 @@ pub fn run(
                 .get(n)
                 .map(|e| e.source.as_str())
                 .unwrap_or("local");
+            if tag.starts_with("plugin:") {
+                continue;
+            }
             let manifest_entry = crate::manifest::agent_skill_from_inventory_tag(n, tag);
             if crate::manifest::append_agent_skill(&path, &manifest_entry)? {
                 adopted += 1;
@@ -760,12 +777,18 @@ pub fn run(
     }
 
     let mut failures = 0usize;
+    let claimed = crate::agent_skill::names_claimed_by(&manifest.agent_skills);
 
     for (q, hs) in &plugin_copies {
         if unresolved.contains(q) {
             continue;
         }
-        match crate::harness::materialize_hub(q, hs, crate::harness::DEFAULT_HERMES_CATEGORY) {
+        match crate::harness::materialize_hub(
+            q,
+            hs,
+            crate::harness::DEFAULT_HERMES_CATEGORY,
+            &claimed,
+        ) {
             Ok(names) => {
                 if !names.is_empty() {
                     println!(
@@ -815,71 +838,56 @@ pub fn run(
             }
             continue;
         }
-        match (entry.source.as_deref(), entry.name.as_deref()) {
-            (Some(src), name) => {
-                // Skip the (re-)install if the skill is already on disk + tagged
-                // with this same source. Path-backed rows also skip only when
-                // head_sha still matches the clone HEAD; otherwise re-copy.
-                // `upgrade` is the deliberate refresh path for git-source without path.
-                let origin = crate::agent_skill::SkillOrigin::git(src, entry.path.clone());
-                let tag = entry.inventory_tag().unwrap_or_else(|| src.to_string());
-                let inv_now = crate::agent_skill::load_inventory()?;
-                let on_disk: std::collections::BTreeSet<String> =
-                    crate::agent_skill::installed_on_disk()
-                        .unwrap_or_default()
-                        .into_iter()
-                        .collect();
-                let already_present = match name {
-                    Some(n) => {
-                        let tagged = on_disk.contains(n)
-                            && inv_now.agent_skills.get(n).is_some_and(|e| e.source == tag);
-                        if tagged && entry.path.is_some() {
-                            let cache_ok = crate::agent_skill::ensure_cache(src).ok();
-                            let head = cache_ok.as_ref().and_then(|c| crate::git::head_sha(c).ok());
-                            inv_now
-                                .agent_skills
-                                .get(n)
-                                .is_some_and(|e| head.as_deref().is_some_and(|h| e.head_sha == h))
-                        } else {
-                            tagged
-                        }
-                    }
-                    None => false,
-                };
-                if already_present {
-                    if let Some(n) = name {
-                        crate::harness::link_hub_to_harnesses(
-                            &[n.to_string()],
-                            &hs,
-                            crate::harness::DEFAULT_HERMES_CATEGORY,
-                        )?;
-                        println!(
-                            "  {} {}  {}",
-                            "·".dimmed(),
-                            n,
-                            format!("← {}  (already present)", src).dimmed()
-                        );
-                    }
-                    continue;
+        if let Some(origin) = crate::agent_skill::SkillOrigin::from_entry(entry) {
+            // Skip the (re-)install if the skill is already on disk + tagged
+            // with this same source. Path-backed and marketplace rows also skip
+            // only when head_sha still matches the clone HEAD; otherwise re-copy.
+            let inv_now = crate::agent_skill::load_inventory()?;
+            let on_disk_now: std::collections::BTreeSet<String> =
+                crate::agent_skill::installed_on_disk()
+                    .unwrap_or_default()
+                    .into_iter()
+                    .collect();
+            let already = match entry.name.as_deref() {
+                Some(n) => already_present_named(entry, n, &on_disk_now, &inv_now),
+                None => false,
+            };
+            if already {
+                if let Some(n) = entry.name.as_deref() {
+                    crate::harness::link_hub_to_harnesses(
+                        &[n.to_string()],
+                        &hs,
+                        crate::harness::DEFAULT_HERMES_CATEGORY,
+                    )?;
+                    println!(
+                        "  {} {}  {}",
+                        "·".dimmed(),
+                        n,
+                        format!("← {}  (already present)", origin_plan_label(entry)).dimmed()
+                    );
                 }
-                match crate::agent_skill::install_from(&origin, name) {
-                    Ok(names) => {
-                        crate::harness::link_hub_to_harnesses(
-                            &names,
-                            &hs,
-                            crate::harness::DEFAULT_HERMES_CATEGORY,
-                        )?;
-                        for n in &names {
-                            println!("  installed agent skill {}", n.bold());
-                        }
+                continue;
+            }
+            match crate::agent_skill::install_from(&origin, entry.name.as_deref()) {
+                Ok(names) => {
+                    crate::harness::link_hub_to_harnesses(
+                        &names,
+                        &hs,
+                        crate::harness::DEFAULT_HERMES_CATEGORY,
+                    )?;
+                    for n in &names {
+                        println!("  installed agent skill {}", n.bold());
                     }
-                    Err(e) => {
-                        eprintln!("{} {}: {}", "✗".red(), src, e);
-                        failures += 1;
-                    }
+                }
+                Err(e) => {
+                    eprintln!("{} {}: {}", "✗".red(), origin_plan_label(entry), e);
+                    failures += 1;
                 }
             }
-            (None, Some(name)) if entry.npm.is_none() => {
+            continue;
+        }
+        match entry.name.as_deref() {
+            Some(name) if entry.npm.is_none() => {
                 // Local-only entry: register in inventory if present on disk; don't fetch.
                 //
                 // The disk check is the point. Tracking a name that is not there writes an
@@ -941,17 +949,15 @@ pub fn run(
                     crate::agent_skill::save_inventory(&inv)?;
                 }
             }
-            (None, None) => {
+            None => {
                 eprintln!(
-                    "{} agent_skill entry needs either `source` or `name`",
+                    "{} agent_skill entry needs `source`, `marketplace`, `npm`, or `name`",
                     "✗".red()
                 );
                 failures += 1;
             }
-            (None, Some(_)) => {
+            Some(_) => {
                 // npm path; already handled by the early `if let Some(pkg) = entry.npm` continue.
-                // Reachable only if npm = Some(_) AND name = Some(_) — name is informational
-                // for npm entries.
             }
         }
     }
@@ -1088,4 +1094,53 @@ fn mcp_entry_from_raw(
         }
     }
     e
+}
+
+fn origin_plan_label(entry: &crate::manifest::AgentSkillEntry) -> String {
+    if let Some(mp) = &entry.marketplace {
+        return format!("marketplace:{mp}");
+    }
+    if let Some(src) = &entry.source {
+        return format!("source:{src}");
+    }
+    String::new()
+}
+
+fn path_plan_line(entry: &crate::manifest::AgentSkillEntry, name: &str) -> Option<String> {
+    let p = entry.path.as_deref()?;
+    if let Some(mp) = &entry.marketplace {
+        return Some(format!("{name} ← marketplace:{mp} ({p})"));
+    }
+    if let Some(src) = &entry.source {
+        return Some(format!("{name} ← source:{src} ({p})"));
+    }
+    None
+}
+
+fn already_present_named(
+    entry: &crate::manifest::AgentSkillEntry,
+    name: &str,
+    on_disk: &BTreeSet<String>,
+    inv: &crate::agent_skill::Inventory,
+) -> bool {
+    if !on_disk.contains(name) {
+        return false;
+    }
+    let Some(tag) = entry.inventory_tag() else {
+        return false;
+    };
+    let Some(inv_e) = inv.agent_skills.get(name) else {
+        return false;
+    };
+    if inv_e.source != tag {
+        return false;
+    }
+    if entry.path.is_some() || entry.marketplace.is_some() {
+        return match crate::agent_skill::live_head(entry) {
+            Some(head) => inv_e.head_sha == head,
+            // Missing clone: do not skip — apply must hard-error.
+            None => false,
+        };
+    }
+    true
 }

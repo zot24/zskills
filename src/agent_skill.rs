@@ -10,6 +10,7 @@
 //! Repo convention we recognize: `skills/<skill-name>/SKILL.md` under the source repo.
 
 use anyhow::{Context, Result};
+use owo_colors::OwoColorize;
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 use std::io::Write;
@@ -43,6 +44,7 @@ pub struct SkillOrigin {
 #[derive(Debug, Clone)]
 pub enum OriginKind {
     Git { source: String },
+    Marketplace { name: String },
 }
 
 impl SkillOrigin {
@@ -53,6 +55,27 @@ impl SkillOrigin {
             },
             path,
         }
+    }
+
+    pub fn marketplace(name: impl Into<String>, path: Option<String>) -> Self {
+        Self {
+            kind: OriginKind::Marketplace { name: name.into() },
+            path,
+        }
+    }
+
+    /// Origin for a git or marketplace row. `npm` and local-only rows return `None`.
+    pub fn from_entry(entry: &crate::manifest::AgentSkillEntry) -> Option<Self> {
+        if entry.npm.is_some() {
+            return None;
+        }
+        if let Some(mp) = &entry.marketplace {
+            return Some(Self::marketplace(mp, entry.path.clone()));
+        }
+        if let Some(src) = &entry.source {
+            return Some(Self::git(src, entry.path.clone()));
+        }
+        None
     }
 }
 
@@ -536,6 +559,82 @@ pub fn cached_head(source: &str) -> Option<String> {
     crate::git::head_sha(&cache).ok()
 }
 
+/// Marketplace clone directory. Hard error if the clone is missing — this
+/// must not fall through to the local-only apply arm.
+pub fn resolve_marketplace_clone(name: &str) -> Result<PathBuf> {
+    let dir = crate::paths::marketplaces_dir()?.join(name);
+    if !dir.is_dir() {
+        anyhow::bail!(
+            "marketplace '{name}' is not registered — add repo = on [[marketplaces]] and run sync, or: zskills marketplace add <owner/repo>"
+        );
+    }
+    Ok(dir)
+}
+
+/// HEAD of a registered marketplace clone, or `"unknown"` for a tarball.
+/// `None` when the clone directory is missing.
+pub fn marketplace_head(name: &str) -> Option<String> {
+    let dir = crate::paths::marketplaces_dir().ok()?.join(name);
+    if !dir.is_dir() {
+        return None;
+    }
+    Some(crate::git::head_sha(&dir).unwrap_or_else(|_| "unknown".to_string()))
+}
+
+/// Live clone HEAD for plan/apply skip. `None` if the clone is not on disk.
+pub fn live_head(entry: &crate::manifest::AgentSkillEntry) -> Option<String> {
+    if let Some(mp) = entry.marketplace.as_deref() {
+        return marketplace_head(mp);
+    }
+    entry.source.as_deref().and_then(cached_head)
+}
+
+/// Names an `[[agent_skills]]` row claims on the hub. Explicit `name` wins;
+/// unnamed path rows walk the clone. A missing clone claims nothing so the
+/// later hard error can fire.
+pub fn names_claimed_by(entries: &[crate::manifest::AgentSkillEntry]) -> BTreeSet<String> {
+    let mut out = BTreeSet::new();
+    for entry in entries {
+        if let Some(n) = &entry.name {
+            out.insert(n.clone());
+            continue;
+        }
+        let Some(origin) = SkillOrigin::from_entry(entry) else {
+            continue;
+        };
+        if let Some(names) = try_discover_names(&origin) {
+            out.extend(names);
+        }
+    }
+    out
+}
+
+fn try_discover_names(origin: &SkillOrigin) -> Option<Vec<String>> {
+    let clone = existing_clone(origin)?;
+    let found = match origin.path.as_deref() {
+        Some(rel) => {
+            let root = resolve_path_in_clone(&clone, rel).ok()?;
+            skills_at_path(&root).ok()?
+        }
+        None => skills_in_cache(&clone),
+    };
+    Some(found.into_iter().map(|(n, _)| n).collect())
+}
+
+fn existing_clone(origin: &SkillOrigin) -> Option<PathBuf> {
+    match &origin.kind {
+        OriginKind::Git { source } => {
+            let (_, name) = parse_source(source).ok()?;
+            let cache = crate::paths::agent_skills_cache_dir().ok()?.join(name);
+            cache.is_dir().then_some(cache)
+        }
+        OriginKind::Marketplace { name } => {
+            let dir = crate::paths::marketplaces_dir().ok()?.join(name);
+            dir.is_dir().then_some(dir)
+        }
+    }
+}
+
 /// Reject names that would make `user_skills_dir().join(name)` escape that
 /// directory. Empty, `.`, `..`, and any path separator are refused before
 /// `remove_dir_all`. `sync --prune` calls this through [`remove`].
@@ -828,34 +927,144 @@ pub fn install(source: &str, name: Option<&str>) -> Result<Vec<String>> {
     install_from(&SkillOrigin::git(source, None), name)
 }
 
+struct ResolvedOrigin {
+    clone: PathBuf,
+    head_sha: String,
+    source_tag: String,
+    available: Vec<(String, PathBuf)>,
+    label: String,
+}
+
+fn resolve_origin(origin: &SkillOrigin) -> Result<ResolvedOrigin> {
+    match &origin.kind {
+        OriginKind::Git { source } => {
+            let cache = ensure_cache(source)?;
+            let head_sha = crate::git::head_sha(&cache).unwrap_or_else(|_| "unknown".to_string());
+            if let Some(rel) = origin.path.as_deref() {
+                let rel = crate::manifest::normalize_skill_path(rel)?;
+                let root = resolve_path_in_clone(&cache, &rel)?;
+                let found = skills_at_path(&root)?;
+                Ok(ResolvedOrigin {
+                    clone: cache,
+                    head_sha,
+                    source_tag: format!("source:{source}:{rel}"),
+                    available: found,
+                    label: source.clone(),
+                })
+            } else {
+                let found = skills_in_cache(&cache);
+                if found.is_empty() {
+                    anyhow::bail!(
+                        "no skills found in {} (expected skills/<name>/SKILL.md)",
+                        source
+                    );
+                }
+                Ok(ResolvedOrigin {
+                    clone: cache,
+                    head_sha,
+                    source_tag: source.clone(),
+                    available: found,
+                    label: source.clone(),
+                })
+            }
+        }
+        OriginKind::Marketplace { name } => {
+            let clone = resolve_marketplace_clone(name)?;
+            let head_sha = crate::git::head_sha(&clone).unwrap_or_else(|_| "unknown".to_string());
+            if let Some(rel) = origin.path.as_deref() {
+                let rel = crate::manifest::normalize_skill_path(rel)?;
+                let root = resolve_path_in_clone(&clone, &rel)?;
+                let found = skills_at_path(&root)?;
+                Ok(ResolvedOrigin {
+                    clone,
+                    head_sha,
+                    source_tag: format!("marketplace:{name}:{rel}"),
+                    available: found,
+                    label: format!("marketplace:{name}"),
+                })
+            } else {
+                let found = skills_in_cache(&clone);
+                if found.is_empty() {
+                    anyhow::bail!(
+                        "no Agent Skills in marketplace '{name}' (expected skills/<name>/SKILL.md)"
+                    );
+                }
+                Ok(ResolvedOrigin {
+                    clone,
+                    head_sha,
+                    source_tag: format!("marketplace:{name}"),
+                    available: found,
+                    label: format!("marketplace:{name}"),
+                })
+            }
+        }
+    }
+}
+
+/// Disk ∩ inventory decision before `install_to_root` deletes dest.
+#[derive(Clone, Copy)]
+enum DestAction {
+    Copy,
+    Skip,
+    Takeover,
+}
+
+fn dest_action(
+    hub: &Path,
+    skill_name: &str,
+    origin: &SkillOrigin,
+    inv: &Inventory,
+    tag: &str,
+    head_sha: &str,
+) -> Result<DestAction> {
+    let dest = hub.join(skill_name);
+    if !dest.exists() {
+        return Ok(DestAction::Copy);
+    }
+    match inv.agent_skills.get(skill_name).map(|e| e.source.as_str()) {
+        None => anyhow::bail!(
+            "Agent Skill '{skill_name}' already exists on the hub with no inventory entry; \
+             run `zskills skill remove --force {skill_name}` or rename it"
+        ),
+        Some(src) if src == tag => {
+            if inv
+                .agent_skills
+                .get(skill_name)
+                .is_some_and(|e| e.head_sha == head_sha)
+            {
+                Ok(DestAction::Skip)
+            } else {
+                Ok(DestAction::Copy)
+            }
+        }
+        Some(src) if is_same_marketplace_plugin(origin, src) => Ok(DestAction::Takeover),
+        Some(src) => {
+            anyhow::bail!("refusing to overwrite Agent Skill '{skill_name}' (source {src})")
+        }
+    }
+}
+
+fn is_same_marketplace_plugin(origin: &SkillOrigin, inv_source: &str) -> bool {
+    let OriginKind::Marketplace { name } = &origin.kind else {
+        return false;
+    };
+    inv_source
+        .strip_prefix("plugin:")
+        .and_then(|q| q.rsplit_once('@'))
+        .is_some_and(|(_, mp)| mp == name)
+}
+
 /// Install (or refresh) an Agent Skill from `origin`. If `name` is given, only
 /// that skill is installed; otherwise every skill the origin yields.
 pub fn install_from(origin: &SkillOrigin, name: Option<&str>) -> Result<Vec<String>> {
-    let OriginKind::Git { source } = &origin.kind;
-    let cache = ensure_cache(source)?;
-    let head_sha = crate::git::head_sha(&cache).unwrap_or_else(|_| "unknown".to_string());
-    let installed_at = chrono_now_iso();
-    let (available, source_tag) = if let Some(rel) = origin.path.as_deref() {
-        let rel = crate::manifest::normalize_skill_path(rel)?;
-        let root = resolve_path_in_clone(&cache, &rel)?;
-        let found = skills_at_path(&root)?;
-        (found, format!("source:{source}:{rel}"))
-    } else {
-        let found = skills_in_cache(&cache);
-        if found.is_empty() {
-            anyhow::bail!(
-                "no skills found in {} (expected skills/<name>/SKILL.md)",
-                source
-            );
-        }
-        (found, source.clone())
-    };
+    let resolved = resolve_origin(origin)?;
     let chosen: Vec<_> = match name {
-        Some(n) => available
+        Some(n) => resolved
+            .available
             .into_iter()
             .filter(|(k, _)| k == n)
             .collect::<Vec<_>>(),
-        None => available,
+        None => resolved.available,
     };
     if chosen.is_empty() {
         if let Some(rel) = origin.path.as_deref() {
@@ -863,32 +1072,62 @@ pub fn install_from(origin: &SkillOrigin, name: Option<&str>) -> Result<Vec<Stri
                 "skill '{}' not found under path '{}' in {}",
                 name.unwrap_or("?"),
                 rel,
-                source
+                resolved.label
             );
         }
         anyhow::bail!(
             "skill '{}' not found in {} (skills/<name>/ not present)",
             name.unwrap_or("?"),
-            source
+            resolved.label
         );
     }
     let hub = crate::paths::user_skills_dir()?;
     let mut inv = load_inventory()?;
-    let mut installed_names = Vec::new();
+    let installed_at = chrono_now_iso();
+    // Decide every dest before any copy. An unnamed row that yields
+    // wiki-manager then wiki-query must not copy wiki-manager if wiki-query
+    // will refuse: dest_action? after a copy would leave that dest untagged.
+    let mut planned: Vec<(&String, &PathBuf, DestAction)> = Vec::new();
     for (skill_name, src_dir) in &chosen {
-        if src_dir == &cache {
+        let action = dest_action(
+            &hub,
+            skill_name,
+            origin,
+            &inv,
+            &resolved.source_tag,
+            &resolved.head_sha,
+        )?;
+        planned.push((skill_name, src_dir, action));
+    }
+    let mut installed_names = Vec::new();
+    for (skill_name, src_dir, action) in planned {
+        match action {
+            DestAction::Skip => {
+                installed_names.push(skill_name.clone());
+                continue;
+            }
+            DestAction::Takeover => {
+                println!(
+                    "  {} {}: hub taken over by [[agent_skills]] path",
+                    "·".dimmed(),
+                    skill_name
+                );
+            }
+            DestAction::Copy => {}
+        }
+        if src_dir == &resolved.clone {
             // Root-level SKILL.md in a larger project — materialize sparsely
             // instead of copying the whole source tree.
-            install_root_skill_sparse_to(&hub, skill_name, &cache)?;
+            install_root_skill_sparse_to(&hub, skill_name, &resolved.clone)?;
         } else {
-            install_to_root(&hub, skill_name, src_dir, &cache)?;
+            install_to_root(&hub, skill_name, src_dir, &resolved.clone)?;
         }
         inv.agent_skills.insert(
             skill_name.clone(),
             Entry {
-                source: source_tag.clone(),
+                source: resolved.source_tag.clone(),
                 installed_at: installed_at.clone(),
-                head_sha: head_sha.clone(),
+                head_sha: resolved.head_sha.clone(),
                 to: vec!["agents".into()],
             },
         );

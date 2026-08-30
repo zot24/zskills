@@ -42,8 +42,6 @@ pub fn remove(names: Vec<String>, force: bool, file: Option<PathBuf>) -> Result<
         None => None,
     };
     let inv = crate::agent_skill::load_inventory()?;
-    let report = crate::reconcile::run()?;
-    let from_plugins = crate::agent_skill::plugin_provided_skills(&report.active);
 
     let mut failed = 0usize;
     for name in &names {
@@ -53,7 +51,6 @@ pub fn remove(names: Vec<String>, force: bool, file: Option<PathBuf>) -> Result<
             manifest_path.as_deref(),
             manifest.as_ref(),
             &inv,
-            &from_plugins,
         ) {
             eprintln!("{} {name}: {e}", "✗".red());
             failed += 1;
@@ -69,19 +66,23 @@ fn remove_one(
     manifest_path: Option<&std::path::Path>,
     manifest: Option<&crate::manifest::Manifest>,
     inv: &crate::agent_skill::Inventory,
-    from_plugins: &std::collections::BTreeSet<String>,
 ) -> Result<()> {
     crate::agent_skill::validate_skill_name(name)?;
-    if from_plugins.contains(name) && !force {
+    // Nested plugin-cache names are not enough: after takeover the hub copy is
+    // a `marketplace:` artefact and must remove without --force.
+    let plugin_owned = inv
+        .agent_skills
+        .get(name)
+        .is_some_and(|e| e.source.starts_with("plugin:"));
+    if plugin_owned && !force {
         anyhow::bail!(
             "Agent Skill '{name}' is also shipped by an enabled plugin; removing the user copy will not remove it — use `zskills plugin remove`, or --force"
         );
     }
     if let (Some(entry), Some(m)) = (inv.agent_skills.get(name), manifest) {
-        let source_only = m
-            .agent_skills
-            .iter()
-            .any(|e| e.name.is_none() && e.source.as_deref() == Some(entry.source.as_str()));
+        let source_only = m.agent_skills.iter().any(|e| {
+            e.name.is_none() && e.inventory_tag().as_deref() == Some(entry.source.as_str())
+        });
         if source_only && !force {
             anyhow::bail!(
                 "Agent Skill '{name}' is owned by a source-only [[agent_skills]] row (source = {}); convert to a named row first, or pass --force",

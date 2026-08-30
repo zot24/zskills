@@ -108,7 +108,7 @@ zskills skill remove <name> [--force] [--file path]
 zskills skill upgrade [<name>...]
 ```
 
-`skill remove` deletes bytes. It is not `plugin remove`. `--force` is required when the name is also shipped by an enabled plugin, or when a source-only `[[agent_skills]]` row owns it.
+`skill remove` deletes bytes. It is not `plugin remove`. `--force` is required when inventory `source` starts with `plugin:`, or when a source-only `[[agent_skills]]` row owns the name. A `marketplace:` hub copy of the same name removes without `--force` and without disabling the plugin.
 
 ## `sync` (headline command)
 
@@ -128,7 +128,7 @@ zskills sync [--file <path>] [--dry-run] [--prune | --adopt]
 What sync does:
 1. For each `[[marketplaces]]` entry with `repo` or `url` that is not yet registered: clone the source and write `known_marketplaces.json` plus `extraKnownMarketplaces` (same as `marketplace add`). This runs **before** plugin resolve, so a fresh machine can recreate the clone. Unqualified `[[skills]]` names (`name` only) are resolved against the map **after** that clone, so they can match a marketplace that did not exist at plan time.
 2. For each `[[skills]]` entry: resolve `name@marketplace`. If `harnesses` (or `[defaults].harnesses`) contains `claude`, write to `enabledPlugins`. Entries currently enabled but not in the manifest get flipped off. Hub-backed harnesses (`pi`, `grok`, `codex`) copy nested `skills/<name>/` trees into `~/.agents/skills/` in the same pass. **`sync` refuses to write an `enabledPlugins` key whose marketplace is not registered.** It reports the unresolved plugins and exits non-zero instead of printing `✓ applied.` Hub copies for those plugins are skipped too.
-3. For each `[[agent_skills]]` entry: if `source` is present, clone/pull and copy `skills/<name>/` to `~/.agents/skills/`. If `path` is set, copy from that relative directory inside the clone instead of the default skill roots. If `npm` is present, run `npm install -g --no-fund --no-audit <pkg>` (or `install_cmd`), then claim all matching `claims` globs. If neither is present (just `name`), register the existing on-disk skill in inventory without fetching anything. A copy or resolve error increments a failure count: `sync` then skips `✓ applied.` and exits non-zero.
+3. For each `[[agent_skills]]` entry: classify the row by kind. `source` clones/pulls the Agent Skill cache. `marketplace` + `path` copies from the registered marketplace clone (hard error if the clone is missing — this is not a local-only row). If `path` is set, copy from that relative directory inside the clone instead of the default skill roots. If `npm` is present, run `npm install -g --no-fund --no-audit <pkg>` (or `install_cmd`), then claim all matching `claims` globs. If none of `source` / `marketplace` / `npm` is present (just `name`), register the existing on-disk skill in inventory without fetching anything. Nested plugin hub copies skip names claimed by `[[agent_skills]]`. Same-marketplace `plugin:` hub copies are taken over. A copy or resolve error increments a failure count: `sync` then skips `✓ applied.` and exits non-zero.
 4. Agent skills tracked in inventory but missing from the manifest are reported. With `--prune` they're deleted; with `--adopt` they're appended to the manifest; otherwise they're skipped.
 
 ### `--adopt` details
@@ -138,7 +138,7 @@ When you pass `--adopt`, sync writes new entries to `skills.toml` instead of rem
 - **Registered marketplace** not in manifest → new `[[marketplaces]]` row with `name` plus `repo` (`owner/repo`) or `url` (non-GitHub git source). Source comes from `known_marketplaces.json` / `extraKnownMarketplaces`. Remote-index entries are skipped. This is what makes a later `sync` on a fresh machine able to clone.
 - **Registered marketplace** already in the manifest with only `name` / `pin` → fill `repo` or `url`. Existing `pin` is left untouched. A row that already has a source is skipped.
 - **Enabled plugin** not in manifest → new `[[skills]]` row with `name` + `marketplace`.
-- **Agent skill** in inventory but not in manifest → new `[[agent_skills]]` row. The fields are reconstructed from the inventory tag: `local` becomes a name-only entry, `npm:pkg` becomes `npm = "pkg"`, `source:<git>:<path>` becomes `source` plus `path` (rsplit on the last `:`, so a git URL that contains `:` stays intact), and any other string becomes `source = "..."` only.
+- **Agent skill** in inventory but not in manifest → new `[[agent_skills]]` row. The fields are reconstructed from the inventory tag: `local` becomes a name-only entry, `npm:pkg` becomes `npm = "pkg"`, `marketplace:<name>:<path>` becomes `marketplace` plus `path` (rsplit on the last `:`), `source:<git>:<path>` becomes `source` plus `path` (rsplit on the last `:`, so a git URL that contains `:` stays intact), `plugin:…` is not adopted as `[[agent_skills]]`, and any other string becomes `source = "..."` only.
 - **MCP server** configured but not in manifest → new `[[mcps]]` row with full transport details (`command`/`args`/`env` for stdio, `url`/`headers` for http/sse), `scope` preserved. **Env and header values are copied verbatim** — if any contain literal secrets, eyeball the resulting manifest and replace them with `${VAR}` references before committing.
 
 Adoption is idempotent and de-duplicates against existing entries, so re-running `sync --adopt` after editing the manifest is safe.
@@ -159,9 +159,10 @@ zskills skill upgrade [<name>...]
 |---|---|
 | Plugins (marketplace-based) | For each registered marketplace tap, `git pull --ff-only` if it's a git working tree; otherwise fetch the GitHub archive tarball from the source recorded in `known_marketplaces.json` and atomically swap the tree. Claude Code picks up new plugin versions on next start. |
 | Git agent skills (`source = "owner/repo"`) | `git pull` the cached source clone + re-copy bytes. Honour `path` when set. |
+| Marketplace Agent Skills (`marketplace` + `path`) | Re-copy from the marketplace clone after marketplace refresh. Does not clone into the Agent Skill cache. Filter matches the marketplace name. Unnamed rows refresh names already tagged `marketplace:<name>:<path>`. |
 | npm agent skills (`npm = "pkg"`) | Run `npm install -g <pkg>` (or `install_cmd`), then re-apply the `claims` glob to retag inventory |
 
-Pass specific names to upgrade just those; empty = upgrade everything. The `name` filter matches against the manifest's `npm`, `source`, or `name` fields.
+Pass specific names to upgrade just those; empty = upgrade everything. The `name` filter matches against the manifest's `npm`, `source`, `name`, or `marketplace` fields.
 
 ## MCP servers manifest schema
 
@@ -246,6 +247,13 @@ source = "owner/odd-layout"
 path = "packages/foo/skills"
 name = "foo"
 
+# Reuse a registered marketplace clone (one clone, several packaging trees)
+[[agent_skills]]
+marketplace = "llm-wiki"
+path = "plugins/llm-wiki-opencode/skills"
+name = "wiki-manager"
+harnesses = ["pi", "grok"]
+
 # npm-distributed package
 [[agent_skills]]
 npm = "get-shit-done-cc"
@@ -263,8 +271,9 @@ name = "my-internal-tool"
 
 | Field | Purpose |
 |---|---|
-| `source` | Git source: `owner/repo` (GitHub) or full git URL. `sync`/`upgrade` clone/pull and copy. |
-| `path` | Relative directory inside the cloned `source`. Replaces the default walk of `.agents/skills` and `skills/`. If `path/SKILL.md` exists, that directory is the skill (name = last segment). Else every child with `SKILL.md` is a skill. Requires `source`. Must be relative: no `..`, no absolute form, no `\`, no `:`. Inventory tag is `source:<source>:<path>`. |
+| `source` | Git source: `owner/repo` (GitHub) or full git URL. `sync`/`upgrade` clone/pull and copy. Mutex with `npm` and `marketplace`. |
+| `marketplace` | Name of a registered marketplace. Reuse that clone instead of cloning `source` into the Agent Skill cache. Requires the clone to exist (hard error if missing). Mutex with `source` and `npm`. Inventory tag is `marketplace:<name>:<path>`. |
+| `path` | Relative directory inside the cloned `source` or `marketplace`. Replaces the default walk of `.agents/skills` and `skills/`. If `path/SKILL.md` exists, that directory is the skill (name = last segment). Else every child with `SKILL.md` is a skill. Requires `source` or `marketplace`. Must be relative: no `..`, no absolute form, no `\`, no `:`. Inventory tag is `source:<source>:<path>` or `marketplace:<name>:<path>`. |
 | `npm` | npm package name. `sync`/`upgrade` runs `npm install -g <pkg>`. |
 | `install_cmd` | Custom installer command — overrides the default `npm install -g`. Used for packages with their own setup CLI. |
 | `name` | Optional. For source entries, pick a single skill out of a multi-skill repo. For local-only entries, required — names the on-disk skill to track. |
