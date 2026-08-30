@@ -600,10 +600,11 @@ pub fn materialize_hub(
         return Ok(Vec::new());
     }
     let trees = plugin_skill_trees(qualified)?;
+    let plugin = plugin_root(qualified)?;
     let root = crate::paths::user_skills_dir()?;
     let mut copied = BTreeSet::new();
     for (name, src) in &trees {
-        crate::agent_skill::install_to_root(&root, name, src)?;
+        crate::agent_skill::install_to_root(&root, name, src, &plugin)?;
         copied.insert(name.clone());
         println!(
             "  {} {} → {} (hub)",

@@ -3727,3 +3727,274 @@ fn hub_to_claude_is_symlink_plugin_to_hub_is_copy() {
         .is_symlink());
     assert!(claude.join("SKILL.md").is_file());
 }
+
+/// Nested layout: Agent Skills live under `packages/foo/skills`, not `skills/`.
+/// `wiki-manager/references` is a relative symlink into `claude-plugin/.../references`.
+/// Previously `copy_dir_recursive` dropped that symlink (`is_file`/`is_dir` false).
+fn write_nested_path_repo(parent: &std::path::Path) -> std::path::PathBuf {
+    let repo = parent.join("odd-layout");
+    let refs = repo.join("claude-plugin/skills/wiki-manager/references");
+    fs::create_dir_all(&refs).unwrap();
+    fs::write(refs.join("hub-resolution.md"), "hub resolution notes\n").unwrap();
+    fs::write(
+        repo.join("claude-plugin/skills/wiki-manager/SKILL.md"),
+        "---\nname: wiki-manager\n---\nClaude flavour\n",
+    )
+    .unwrap();
+
+    let opencode = repo.join("packages/foo/skills");
+    let wm = opencode.join("wiki-manager");
+    fs::create_dir_all(&wm).unwrap();
+    fs::write(
+        wm.join("SKILL.md"),
+        "---\nname: wiki-manager\n---\nOpenCode flavour\n",
+    )
+    .unwrap();
+    std::os::unix::fs::symlink(
+        "../../../../claude-plugin/skills/wiki-manager/references",
+        wm.join("references"),
+    )
+    .unwrap();
+
+    let wq = opencode.join("wiki-query");
+    fs::create_dir_all(&wq).unwrap();
+    fs::write(wq.join("SKILL.md"), "---\nname: wiki-query\n---\nquery\n").unwrap();
+
+    git_init_and_commit(&repo);
+    repo
+}
+
+#[test]
+fn sync_source_path_copies_nested_tree_and_dereferences_in_clone_symlink() {
+    let up = tempfile::tempdir().unwrap();
+    let repo = write_nested_path_repo(up.path());
+    let home = fake_home();
+    write_manifest(
+        &home,
+        &format!(
+            "[[agent_skills]]\nsource = \"{}\"\npath = \"packages/foo/skills\"\n",
+            file_url(&repo)
+        ),
+    );
+
+    zskills(&home).arg("sync").assert().success();
+
+    let wm = home.path().join("skills/wiki-manager");
+    assert_eq!(
+        fs::read_to_string(wm.join("SKILL.md")).unwrap(),
+        "---\nname: wiki-manager\n---\nOpenCode flavour\n"
+    );
+    let copied = wm.join("references/hub-resolution.md");
+    assert!(
+        copied.is_file(),
+        "in-clone symlink must be copied as a regular file"
+    );
+    assert!(
+        !copied.symlink_metadata().unwrap().file_type().is_symlink(),
+        "hub references/hub-resolution.md must not remain a symlink"
+    );
+    assert_eq!(
+        fs::read_to_string(&copied).unwrap(),
+        "hub resolution notes\n"
+    );
+    assert!(home.path().join("skills/wiki-query/SKILL.md").is_file());
+
+    let inv: serde_json::Value =
+        serde_json::from_slice(&fs::read(home.path().join("skills/.zskills.json")).unwrap())
+            .unwrap();
+    let tag = format!("source:{}:packages/foo/skills", file_url(&repo));
+    assert_eq!(inv["agent_skills"]["wiki-manager"]["source"], tag);
+    assert_eq!(inv["agent_skills"]["wiki-query"]["source"], tag);
+}
+
+#[test]
+fn sync_source_path_skill_dir_installs_one_name() {
+    let up = tempfile::tempdir().unwrap();
+    let repo = write_nested_path_repo(up.path());
+    let home = fake_home();
+    write_manifest(
+        &home,
+        &format!(
+            "[[agent_skills]]\nsource = \"{}\"\npath = \"packages/foo/skills/wiki-manager\"\nname = \"wiki-manager\"\n",
+            file_url(&repo)
+        ),
+    );
+
+    zskills(&home).arg("sync").assert().success();
+
+    assert!(home.path().join("skills/wiki-manager/SKILL.md").is_file());
+    assert!(
+        !home.path().join("skills/wiki-query").exists(),
+        "a skill-dir path must not also install sibling skills"
+    );
+}
+
+#[test]
+fn sync_source_path_dry_run_prints_plan_line() {
+    let up = tempfile::tempdir().unwrap();
+    let repo = write_nested_path_repo(up.path());
+    let home = fake_home();
+    write_manifest(
+        &home,
+        &format!(
+            "[[agent_skills]]\nsource = \"{}\"\npath = \"packages/foo/skills\"\nname = \"wiki-manager\"\n",
+            file_url(&repo)
+        ),
+    );
+
+    zskills(&home)
+        .args(["sync", "--dry-run"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("install wiki-manager ← source:"))
+        .stdout(predicate::str::contains("packages/foo/skills"));
+
+    assert!(
+        !home.path().join("skills/wiki-manager").exists(),
+        "dry-run must not copy"
+    );
+}
+
+#[test]
+fn sync_rejects_path_escape() {
+    let home = fake_home();
+    write_manifest(
+        &home,
+        "[[agent_skills]]\nsource = \"owner/repo\"\npath = \"../escape\"\n",
+    );
+    zskills(&home)
+        .arg("sync")
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("invalid path"));
+}
+
+#[test]
+fn sync_copy_error_exits_nonzero_skips_applied_and_leaves_no_partial_dest() {
+    let up = tempfile::tempdir().unwrap();
+    let repo = up.path().join("escape-repo");
+    let skill = repo.join("packages/foo/skills/evil");
+    fs::create_dir_all(&skill).unwrap();
+    fs::write(skill.join("SKILL.md"), "---\nname: evil\n---\n").unwrap();
+    std::os::unix::fs::symlink("/etc/passwd", skill.join("secret")).unwrap();
+    git_init_and_commit(&repo);
+
+    let home = fake_home();
+    write_manifest(
+        &home,
+        &format!(
+            "[[agent_skills]]\nsource = \"{}\"\npath = \"packages/foo/skills\"\nname = \"evil\"\n",
+            file_url(&repo)
+        ),
+    );
+
+    let out = zskills(&home)
+        .arg("sync")
+        .assert()
+        .failure()
+        .get_output()
+        .clone();
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        !stdout.contains("applied."),
+        "copy error must skip ✓ applied.: {stdout}"
+    );
+    assert!(
+        stderr.contains("escapes allowed root") || stderr.contains("operation(s) failed"),
+        "stderr={stderr}"
+    );
+    assert!(
+        !home.path().join("skills/evil").exists(),
+        "failed copy must not leave a partial dest"
+    );
+}
+
+#[test]
+fn sync_live_pulls_path_backed_clone_and_recopies_when_head_moved() {
+    let up = tempfile::tempdir().unwrap();
+    let repo = write_nested_path_repo(up.path());
+    let home = fake_home();
+    write_manifest(
+        &home,
+        &format!(
+            "[[agent_skills]]\nsource = \"{}\"\npath = \"packages/foo/skills\"\nname = \"wiki-manager\"\n",
+            file_url(&repo)
+        ),
+    );
+
+    zskills(&home).arg("sync").assert().success();
+    assert_eq!(
+        fs::read_to_string(home.path().join("skills/wiki-manager/SKILL.md")).unwrap(),
+        "---\nname: wiki-manager\n---\nOpenCode flavour\n"
+    );
+
+    fs::write(
+        repo.join("packages/foo/skills/wiki-manager/SKILL.md"),
+        "---\nname: wiki-manager\n---\nOpenCode flavour v2\n",
+    )
+    .unwrap();
+    StdCommand::new("git")
+        .arg("-C")
+        .arg(&repo)
+        .args(["add", "-A"])
+        .status()
+        .unwrap();
+    StdCommand::new("git")
+        .arg("-C")
+        .arg(&repo)
+        .args(["commit", "--quiet", "-m", "second"])
+        .status()
+        .unwrap();
+
+    zskills(&home)
+        .arg("sync")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("refresh wiki-manager ← source:"));
+
+    assert_eq!(
+        fs::read_to_string(home.path().join("skills/wiki-manager/SKILL.md")).unwrap(),
+        "---\nname: wiki-manager\n---\nOpenCode flavour v2\n"
+    );
+}
+
+#[test]
+fn sync_adopt_source_path_tag_writes_source_and_path() {
+    let home = fake_home();
+    let skill = home.path().join("skills/foo");
+    fs::create_dir_all(&skill).unwrap();
+    fs::write(skill.join("SKILL.md"), "x").unwrap();
+    fs::write(
+        home.path().join("skills/.zskills.json"),
+        json!({
+            "version": 1,
+            "agent_skills": {
+                "foo": {
+                    "source": "source:https://github.com/o/r.git:packages/foo/skills",
+                    "installed_at": "@0",
+                    "head_sha": "abc"
+                }
+            }
+        })
+        .to_string(),
+    )
+    .unwrap();
+    write_manifest(&home, "");
+
+    zskills(&home).args(["sync", "--adopt"]).assert().success();
+
+    let raw = fs::read_to_string(home.path().join("config/zskills/skills.toml")).unwrap();
+    assert!(
+        raw.contains("source = \"https://github.com/o/r.git\""),
+        "adopt must write the git source, not the inventory tag: {raw}"
+    );
+    assert!(
+        raw.contains("path = \"packages/foo/skills\""),
+        "adopt must write path: {raw}"
+    );
+    assert!(
+        !raw.contains("source = \"source:"),
+        "adopt must not store the raw inventory tag as source: {raw}"
+    );
+}
