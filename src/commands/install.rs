@@ -346,8 +346,12 @@ fn install_plugin_specs(
         );
     }
     if want_hub || targets.iter().any(|h| h.skill_skip_reason().is_some()) {
+        let claimed = crate::manifest::discover()
+            .and_then(|p| crate::manifest::load(&p).ok())
+            .map(|m| crate::agent_skill::names_claimed_by(&m.agent_skills))
+            .unwrap_or_default();
         for q in &resolved {
-            match crate::harness::materialize_hub(q, &targets, category) {
+            match crate::harness::materialize_hub(q, &targets, category, &claimed) {
                 Ok(names) if !names.is_empty() => {
                     println!(
                         "  {} copied {} nested skill(s) from {} into the Agent Skill hub",

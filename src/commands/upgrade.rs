@@ -39,12 +39,13 @@ pub fn run(filter: Vec<String>) -> Result<()> {
     if !manifest.agent_skills.is_empty() {
         println!("\n{}", "Agent Skills".bold());
         for entry in &manifest.agent_skills {
-            // Apply --name filter against any of: npm, source, name
+            // Apply --name filter against any of: npm, source, name, marketplace
             if !filter.is_empty() {
                 let candidates: Vec<&str> = [
                     entry.npm.as_deref(),
                     entry.source.as_deref(),
                     entry.name.as_deref(),
+                    entry.marketplace.as_deref(),
                 ]
                 .into_iter()
                 .flatten()
@@ -73,18 +74,19 @@ pub fn run(filter: Vec<String>) -> Result<()> {
                 continue;
             }
 
-            if let Some(src) = entry.source.as_deref() {
-                let label = entry.name.as_deref().unwrap_or(src);
+            if let Some(origin) = crate::agent_skill::SkillOrigin::from_entry(entry) {
+                let label = entry
+                    .name
+                    .as_deref()
+                    .or(entry.marketplace.as_deref())
+                    .or(entry.source.as_deref())
+                    .unwrap_or("?");
                 print!("  {} {} ... ", "↻".cyan(), label);
 
-                // A source-only entry means "keep what I already own from this source",
-                // not "adopt whatever it ships today". `install(src, None)` installs
-                // every skill the survey finds, with no cap and no prompt — so widening
-                // the survey (a new skill root, or upstream simply adding skills) would
-                // otherwise make an unattended `upgrade` install things nobody asked for.
-                // Refresh the names already in the inventory instead.
-                let tag = entry.inventory_tag().unwrap_or_else(|| src.to_string());
-                let origin = crate::agent_skill::SkillOrigin::git(src, entry.path.clone());
+                // An unnamed entry means "keep what I already own from this source",
+                // not "adopt whatever it ships today". Refresh the names already
+                // tagged. Unnamed marketplace+path uses the same rule.
+                let tag = entry.inventory_tag().unwrap_or_default();
                 let owned: Vec<String> = match entry.name.as_deref() {
                     Some(n) => vec![n.to_string()],
                     None => {

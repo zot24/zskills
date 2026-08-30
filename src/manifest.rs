@@ -283,27 +283,34 @@ impl McpEntry {
 
 /// An Agent Skill declaration.
 ///
-/// Exactly one of `source`, `npm`, or (for local-only entries) `name` should be set.
+/// Exactly one of `source`, `npm`, or `marketplace` should be set. A local-only
+/// row has `name` and none of those three.
 ///
 /// - `source`: `owner/repo` (GitHub) or a git URL. `sync` clones/pulls and copies
 ///   skills under `skills/<name>/` into `~/.agents/skills/<name>/`.
-/// - `path`: relative directory inside the cloned `source`. Replaces the default
-///   walk of `.agents/skills` and `skills/`. If `path/SKILL.md` exists, that
-///   directory is the skill (name = last segment). Else every child with
-///   `SKILL.md` is a skill. Requires `source`. Ban `..`, absolute form, `\`, `:`.
+/// - `marketplace`: reuse a registered marketplace clone instead of cloning
+///   `source` into the Agent Skill cache.
+/// - `path`: relative directory inside the clone (`source` or `marketplace`).
+///   Replaces the default walk of `.agents/skills` and `skills/`. If
+///   `path/SKILL.md` exists, that directory is the skill (name = last segment).
+///   Else every child with `SKILL.md` is a skill. Requires `source` or
+///   `marketplace`. Ban `..`, absolute form, `\`, `:`.
 /// - `npm`: npm package name. `sync` runs `npm install -g <pkg>` and trusts the
 ///   package's post-install to place files under `~/.agents/skills/`. After install,
 ///   zskills diffs the directory and tags every new skill with `source: "npm:<pkg>"`.
 /// - `install_cmd`: optional override for npm packages with custom setup (e.g.,
 ///   `"npx some-tool install"`).
 /// - `name` (optional): pick a single skill out of a multi-skill repo. For
-///   local-only entries (no `source`/`npm`), `name` is required.
+///   local-only entries (no `source`/`npm`/`marketplace`), `name` is required.
 #[derive(Debug, Deserialize, Serialize, Clone, Default)]
 pub struct AgentSkillEntry {
     #[serde(default)]
     pub source: Option<String>,
     #[serde(default)]
     pub npm: Option<String>,
+    /// Reuse a registered marketplace clone. Mutex with `source` and `npm`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub marketplace: Option<String>,
     #[serde(default)]
     pub install_cmd: Option<String>,
     #[serde(default)]
@@ -326,13 +333,24 @@ impl AgentSkillEntry {
     /// Strip a leading `./` from `path` and reject a selector that would escape
     /// the clone. `:` is banned so inventory tags can rsplit on it later.
     pub fn validate(&mut self) -> Result<()> {
+        let origins = [
+            self.source.is_some(),
+            self.npm.is_some(),
+            self.marketplace.is_some(),
+        ]
+        .into_iter()
+        .filter(|x| *x)
+        .count();
+        if origins > 1 {
+            anyhow::bail!("agent skill: pick one of source, npm, marketplace");
+        }
         if let Some(raw) = self.path.take() {
             let normalized = normalize_skill_path(&raw)?;
-            if self.source.is_none() {
-                anyhow::bail!("path requires source");
-            }
             if self.npm.is_some() {
                 anyhow::bail!("path is not valid on an npm entry");
+            }
+            if self.source.is_none() && self.marketplace.is_none() {
+                anyhow::bail!("path requires source or marketplace");
             }
             self.path = Some(normalized);
         }
@@ -341,9 +359,16 @@ impl AgentSkillEntry {
 
     /// Inventory `source` tag this row owns. `source` + `path` uses
     /// `source:<source>:<path>` so two paths from one repo do not collide.
+    /// Marketplace-backed rows use `marketplace:<name>:<path>`.
     pub fn inventory_tag(&self) -> Option<String> {
         if let Some(pkg) = &self.npm {
             return Some(format!("npm:{pkg}"));
+        }
+        if let Some(mp) = &self.marketplace {
+            return Some(match &self.path {
+                Some(p) => format!("marketplace:{mp}:{p}"),
+                None => format!("marketplace:{mp}"),
+            });
         }
         let src = self.source.as_deref()?;
         match &self.path {
@@ -384,8 +409,8 @@ pub fn normalize_skill_path(path: &str) -> Result<String> {
 
 /// Rebuild an `[[agent_skills]]` row from an inventory `source` tag.
 ///
-/// `source:<git>:<path>` rsplit on the last `:` so a git URL that contains `:`
-/// stays intact. Path cannot contain `:`.
+/// Prefix first, then rsplit on the last `:` so a git URL that contains `:`
+/// stays intact. Path cannot contain `:`. Marketplace names cannot contain `:`.
 pub fn agent_skill_from_inventory_tag(name: &str, tag: &str) -> AgentSkillEntry {
     if tag == "local" {
         return AgentSkillEntry {
@@ -399,6 +424,25 @@ pub fn agent_skill_from_inventory_tag(name: &str, tag: &str) -> AgentSkillEntry 
             name: Some(name.to_string()),
             ..Default::default()
         };
+    }
+    if let Some(rest) = tag.strip_prefix("marketplace:") {
+        if let Some((mp, path)) = rest.rsplit_once(':') {
+            if !mp.is_empty() && !path.is_empty() {
+                return AgentSkillEntry {
+                    marketplace: Some(mp.to_string()),
+                    path: Some(path.to_string()),
+                    name: Some(name.to_string()),
+                    ..Default::default()
+                };
+            }
+        }
+        if !rest.is_empty() {
+            return AgentSkillEntry {
+                marketplace: Some(rest.to_string()),
+                name: Some(name.to_string()),
+                ..Default::default()
+            };
+        }
     }
     if let Some(rest) = tag.strip_prefix("source:") {
         if let Some((src, path)) = rest.rsplit_once(':') {
@@ -477,13 +521,21 @@ pub fn append_agent_skill(path: &Path, entry: &AgentSkillEntry) -> Result<bool> 
         .parse()
         .with_context(|| format!("parsing manifest {} as TOML", path.display()))?;
 
-    // Check for duplicates: (source, path, name)
+    // Check for duplicates: (source, marketplace, path, name)
     if let Some(Item::ArrayOfTables(existing)) = doc.get("agent_skills") {
         for t in existing.iter() {
             let src = t.get("source").and_then(|v| v.as_str()).map(str::to_string);
+            let mp = t
+                .get("marketplace")
+                .and_then(|v| v.as_str())
+                .map(str::to_string);
             let path = t.get("path").and_then(|v| v.as_str()).map(str::to_string);
             let name = t.get("name").and_then(|v| v.as_str()).map(str::to_string);
-            if src == entry.source && path == entry.path && name == entry.name {
+            if src == entry.source
+                && mp == entry.marketplace
+                && path == entry.path
+                && name == entry.name
+            {
                 return Ok(false);
             }
         }
@@ -507,13 +559,22 @@ pub fn append_agent_skill(path: &Path, entry: &AgentSkillEntry) -> Result<bool> 
     if let Some(src) = &entry.source {
         t["source"] = value(src);
     }
+    if let Some(mp) = &entry.marketplace {
+        t["marketplace"] = value(mp);
+    }
     if let Some(p) = &entry.path {
         t["path"] = value(p);
     }
     if let Some(n) = &entry.name {
         t["name"] = value(n);
     }
-    let _ = Array::new(); // unused; placate compiler if toml_edit changes shape
+    if !entry.harnesses.is_empty() {
+        let mut arr = Array::new();
+        for h in &entry.harnesses {
+            arr.push(h.as_str());
+        }
+        t["harnesses"] = Item::Value(arr.into());
+    }
     aot.push(t);
 
     std::fs::write(path, doc.to_string())
@@ -1107,21 +1168,56 @@ mod agent_skill_path_tests {
     }
 
     #[test]
-    fn path_requires_source() {
+    fn path_requires_source_or_marketplace() {
         let err = validate_toml("[[agent_skills]]\nname = \"x\"\npath = \"skills\"\n")
             .unwrap_err()
             .to_string();
-        assert!(err.contains("path requires source"), "{err}");
+        assert!(err.contains("path requires source or marketplace"), "{err}");
     }
 
     #[test]
     fn path_is_not_valid_on_npm() {
+        let err = validate_toml("[[agent_skills]]\nnpm = \"pkg\"\npath = \"skills\"\n")
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("path is not valid on an npm entry"), "{err}");
+    }
+
+    #[test]
+    fn source_npm_marketplace_are_mutex() {
         let err = validate_toml(
-            "[[agent_skills]]\nnpm = \"pkg\"\npath = \"skills\"\nsource = \"owner/repo\"\n",
+            "[[agent_skills]]\nsource = \"owner/repo\"\nmarketplace = \"llm-wiki\"\npath = \"skills\"\n",
         )
         .unwrap_err()
         .to_string();
-        assert!(err.contains("path is not valid on an npm entry"), "{err}");
+        assert!(
+            err.contains("pick one of source, npm, marketplace"),
+            "{err}"
+        );
+    }
+
+    #[test]
+    fn marketplace_plus_path_inventory_tag() {
+        let m = validate_toml(
+            "[[agent_skills]]\nmarketplace = \"llm-wiki\"\npath = \"plugins/llm-wiki-opencode/skills\"\n",
+        )
+        .unwrap();
+        assert_eq!(
+            m.agent_skills[0].inventory_tag().as_deref(),
+            Some("marketplace:llm-wiki:plugins/llm-wiki-opencode/skills")
+        );
+    }
+
+    #[test]
+    fn inventory_tag_rsplit_marketplace() {
+        let e = agent_skill_from_inventory_tag(
+            "wiki-manager",
+            "marketplace:llm-wiki:plugins/llm-wiki-opencode/skills",
+        );
+        assert_eq!(e.marketplace.as_deref(), Some("llm-wiki"));
+        assert_eq!(e.path.as_deref(), Some("plugins/llm-wiki-opencode/skills"));
+        assert_eq!(e.name.as_deref(), Some("wiki-manager"));
+        assert!(e.source.is_none());
     }
 
     #[test]

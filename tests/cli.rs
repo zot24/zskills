@@ -3998,3 +3998,594 @@ fn sync_adopt_source_path_tag_writes_source_and_path() {
         "adopt must not store the raw inventory tag as source: {raw}"
     );
 }
+
+const CLAUDE_WIKI_SKILL: &str = "---\nname: wiki-manager\ndescription: Activates for /wiki commands\ntools: Read, Write, Edit\n---\nClaude Code is both the compiler and the runtime.\n";
+const OPENCODE_WIKI_SKILL: &str = "---\nname: wiki-manager\ndescription: Manage a local wiki\n---\nOpenCode Integration Notes.\n\nTreat any /wiki:* references in this document as shorthand for the matching skill action.\n";
+
+/// `file://` git repo shaped like nvk/llm-wiki: Claude plugin + OpenCode Agent Skills.
+fn write_llm_wiki_repo(parent: &std::path::Path) -> std::path::PathBuf {
+    let repo = parent.join("llm-wiki");
+    fs::create_dir_all(repo.join(".claude-plugin")).unwrap();
+    fs::write(
+        repo.join(".claude-plugin").join("marketplace.json"),
+        serde_json::to_string_pretty(&json!({
+            "name": "llm-wiki",
+            "plugins": [{ "name": "wiki", "source": "./claude-plugin", "version": "0.24.4" }]
+        }))
+        .unwrap(),
+    )
+    .unwrap();
+
+    let plugin_meta = repo.join("claude-plugin").join(".claude-plugin");
+    fs::create_dir_all(&plugin_meta).unwrap();
+    fs::write(plugin_meta.join("plugin.json"), r#"{"name":"wiki"}"#).unwrap();
+
+    let claude_skill = repo.join("claude-plugin/skills/wiki-manager");
+    fs::create_dir_all(claude_skill.join("references")).unwrap();
+    fs::write(claude_skill.join("SKILL.md"), CLAUDE_WIKI_SKILL).unwrap();
+    fs::write(
+        claude_skill.join("references/hub-resolution.md"),
+        "hub resolution notes\n",
+    )
+    .unwrap();
+
+    let oc = repo.join("plugins/llm-wiki-opencode/skills");
+    let wm = oc.join("wiki-manager");
+    fs::create_dir_all(&wm).unwrap();
+    fs::write(wm.join("SKILL.md"), OPENCODE_WIKI_SKILL).unwrap();
+    std::os::unix::fs::symlink(
+        "../../../../claude-plugin/skills/wiki-manager/references",
+        wm.join("references"),
+    )
+    .unwrap();
+    let wq = oc.join("wiki-query");
+    fs::create_dir_all(&wq).unwrap();
+    fs::write(
+        wq.join("SKILL.md"),
+        "---\nname: wiki-query\n---\nquery-lite\n",
+    )
+    .unwrap();
+
+    git_init_and_commit(&repo);
+    repo
+}
+
+fn mark_plugin_installed(home: &TempDir, qualified: &str) {
+    let path = home.path().join("plugins").join("installed_plugins.json");
+    let mut v: serde_json::Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+    v["plugins"][qualified] = json!([{
+        "scope": "user",
+        "installPath": "/tmp/x",
+        "version": "1.0.0"
+    }]);
+    fs::write(&path, serde_json::to_string_pretty(&v).unwrap()).unwrap();
+}
+
+fn llm_wiki_recipe(url: &str, plugin_harnesses: &str) -> String {
+    format!(
+        r#"[[marketplaces]]
+name = "llm-wiki"
+url = "{url}"
+
+[[skills]]
+name = "wiki"
+marketplace = "llm-wiki"
+harnesses = {plugin_harnesses}
+
+[[agent_skills]]
+marketplace = "llm-wiki"
+path = "plugins/llm-wiki-opencode/skills"
+name = "wiki-manager"
+harnesses = ["pi", "grok"]
+
+[[agent_skills]]
+marketplace = "llm-wiki"
+path = "plugins/llm-wiki-opencode/skills"
+name = "wiki-query"
+harnesses = ["pi", "grok"]
+"#
+    )
+}
+
+fn read_inv(home: &TempDir) -> serde_json::Value {
+    serde_json::from_slice(&fs::read(home.path().join("skills/.zskills.json")).unwrap()).unwrap()
+}
+
+fn setup_llm_wiki_home() -> (TempDir, tempfile::TempDir, std::path::PathBuf) {
+    let up = tempfile::tempdir().unwrap();
+    let repo = write_llm_wiki_repo(up.path());
+    let home = fake_home();
+    fs::create_dir_all(home.path().join("grok")).unwrap();
+    register_clone(&home, "llm-wiki", &repo, "HEAD");
+    mark_plugin_installed(&home, "wiki@llm-wiki");
+    (home, up, repo)
+}
+
+#[test]
+fn sync_marketplace_path_copies_opencode_tree_not_local_only() {
+    let (home, _up, _repo) = setup_llm_wiki_home();
+    write_manifest(
+        &home,
+        &llm_wiki_recipe(
+            &file_url(&home.path().join("plugins/marketplaces/llm-wiki")),
+            r#"["claude"]"#,
+        ),
+    );
+
+    zskills(&home)
+        .arg("sync")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("wiki-manager"))
+        .stdout(predicate::str::contains("applied."))
+        .stdout(predicate::str::contains("declared local, not on disk").not());
+
+    let wm = home.path().join("skills/wiki-manager");
+    assert_eq!(
+        fs::read_to_string(wm.join("SKILL.md")).unwrap(),
+        OPENCODE_WIKI_SKILL
+    );
+    let copied = wm.join("references/hub-resolution.md");
+    assert!(copied.is_file(), "in-clone symlink must be a regular file");
+    assert!(!copied.symlink_metadata().unwrap().file_type().is_symlink());
+    assert!(home.path().join("skills/wiki-query/SKILL.md").is_file());
+
+    let inv = read_inv(&home);
+    let tag = "marketplace:llm-wiki:plugins/llm-wiki-opencode/skills";
+    assert_eq!(inv["agent_skills"]["wiki-manager"]["source"], tag);
+    assert_eq!(inv["agent_skills"]["wiki-query"]["source"], tag);
+
+    let settings: serde_json::Value =
+        serde_json::from_slice(&fs::read(home.path().join("settings.json")).unwrap()).unwrap();
+    assert_eq!(settings["enabledPlugins"]["wiki@llm-wiki"], true);
+
+    let pi = home.path().join("pi/agent/settings.json");
+    let pi_s: serde_json::Value = serde_json::from_slice(&fs::read(&pi).unwrap()).unwrap();
+    let hub = home.path().join("skills").to_string_lossy().into_owned();
+    let count = pi_s["skills"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|v| v.as_str() == Some(hub.as_str()))
+        .count();
+    assert_eq!(count, 1, "Pi settings must list the hub once: {pi_s}");
+
+    let grok_skills = home.path().join("grok/skills");
+    assert!(
+        !grok_skills.exists()
+            || fs::read_dir(&grok_skills)
+                .map(|rd| rd.count() == 0)
+                .unwrap_or(true),
+        "must not write GROK_HOME/skills"
+    );
+}
+
+#[test]
+fn sync_marketplace_path_takeover_and_list_and_remove() {
+    let (home, _up, _repo) = setup_llm_wiki_home();
+    write_manifest(
+        &home,
+        &format!(
+            r#"[[marketplaces]]
+name = "llm-wiki"
+url = "{url}"
+
+[[skills]]
+name = "wiki"
+marketplace = "llm-wiki"
+harnesses = ["pi"]
+"#,
+            url = file_url(&home.path().join("plugins/marketplaces/llm-wiki"))
+        ),
+    );
+    zskills(&home).arg("sync").assert().success();
+    assert_eq!(
+        fs::read_to_string(home.path().join("skills/wiki-manager/SKILL.md")).unwrap(),
+        CLAUDE_WIKI_SKILL
+    );
+    assert_eq!(
+        read_inv(&home)["agent_skills"]["wiki-manager"]["source"],
+        "plugin:wiki@llm-wiki"
+    );
+
+    write_manifest(
+        &home,
+        &llm_wiki_recipe(
+            &file_url(&home.path().join("plugins/marketplaces/llm-wiki")),
+            r#"["claude"]"#,
+        ),
+    );
+    zskills(&home)
+        .arg("sync")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains(
+            "hub taken over by [[agent_skills]] path",
+        ));
+
+    assert_eq!(
+        fs::read_to_string(home.path().join("skills/wiki-manager/SKILL.md")).unwrap(),
+        OPENCODE_WIKI_SKILL
+    );
+    let tag = "marketplace:llm-wiki:plugins/llm-wiki-opencode/skills";
+    assert_eq!(
+        read_inv(&home)["agent_skills"]["wiki-manager"]["source"],
+        tag
+    );
+
+    let out = zskills(&home)
+        .args(["list", "--json"])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let v: serde_json::Value = serde_json::from_slice(&out).unwrap();
+    assert!(
+        v["plugins"]["active"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|x| x == "wiki@llm-wiki"),
+        "plugin must stay active: {v}"
+    );
+    let plugin_vis = v["plugins"]["harnesses"]["wiki@llm-wiki"]["visible"]
+        .as_array()
+        .cloned()
+        .unwrap_or_default();
+    assert_eq!(plugin_vis.iter().filter(|x| *x == "claude").count(), 1);
+    assert!(
+        !plugin_vis.iter().any(|x| x == "pi" || x == "grok"),
+        "plugin line must be claude-only after takeover: {v}"
+    );
+    let skill_vis = v["agent_skills"]["harnesses"]["wiki-manager"]["visible"]
+        .as_array()
+        .cloned()
+        .unwrap_or_default();
+    assert!(
+        skill_vis.iter().any(|x| x == "pi") && skill_vis.iter().any(|x| x == "grok"),
+        "Agent Skill line must include pi/grok: {v}"
+    );
+
+    zskills(&home)
+        .args(["skill", "remove", "wiki-manager"])
+        .assert()
+        .success();
+    assert!(!home.path().join("skills/wiki-manager").exists());
+    let settings: serde_json::Value =
+        serde_json::from_slice(&fs::read(home.path().join("settings.json")).unwrap()).unwrap();
+    assert_eq!(
+        settings["enabledPlugins"]["wiki@llm-wiki"], true,
+        "plugin stays enabled after Agent Skill remove"
+    );
+}
+
+#[test]
+fn sync_marketplace_path_skips_claimed_plugin_hub_copy() {
+    let (home, _up, _repo) = setup_llm_wiki_home();
+    write_manifest(
+        &home,
+        &llm_wiki_recipe(
+            &file_url(&home.path().join("plugins/marketplaces/llm-wiki")),
+            r#"["pi"]"#,
+        ),
+    );
+    zskills(&home)
+        .arg("sync")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains(
+            "hub owned by [[agent_skills]] path, not plugin wiki@llm-wiki",
+        ));
+    assert_eq!(
+        fs::read_to_string(home.path().join("skills/wiki-manager/SKILL.md")).unwrap(),
+        OPENCODE_WIKI_SKILL
+    );
+    assert_eq!(
+        read_inv(&home)["agent_skills"]["wiki-manager"]["source"],
+        "marketplace:llm-wiki:plugins/llm-wiki-opencode/skills"
+    );
+}
+
+#[test]
+fn sync_refuses_untagged_hub_dir() {
+    let (home, _up, _repo) = setup_llm_wiki_home();
+    let dest = home.path().join("skills/wiki-manager");
+    fs::create_dir_all(&dest).unwrap();
+    fs::write(dest.join("SKILL.md"), "user content\n").unwrap();
+    write_manifest(
+        &home,
+        &format!(
+            r#"[[marketplaces]]
+name = "llm-wiki"
+url = "{url}"
+
+[[agent_skills]]
+marketplace = "llm-wiki"
+path = "plugins/llm-wiki-opencode/skills"
+name = "wiki-manager"
+harnesses = ["pi", "grok"]
+"#,
+            url = file_url(&home.path().join("plugins/marketplaces/llm-wiki"))
+        ),
+    );
+    let out = zskills(&home)
+        .arg("sync")
+        .assert()
+        .failure()
+        .get_output()
+        .clone();
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        !stdout.contains("applied."),
+        "refuse must skip ✓ applied.: {stdout}"
+    );
+    assert!(
+        stderr.contains("no inventory entry") || stderr.contains("operation(s) failed"),
+        "stderr={stderr}"
+    );
+    assert_eq!(
+        fs::read_to_string(dest.join("SKILL.md")).unwrap(),
+        "user content\n"
+    );
+}
+
+#[test]
+fn sync_unnamed_marketplace_path_is_not_pruned() {
+    let (home, _up, _repo) = setup_llm_wiki_home();
+    write_manifest(
+        &home,
+        &format!(
+            r#"[[marketplaces]]
+name = "llm-wiki"
+url = "{url}"
+
+[[agent_skills]]
+marketplace = "llm-wiki"
+path = "plugins/llm-wiki-opencode/skills"
+harnesses = ["pi", "grok"]
+"#,
+            url = file_url(&home.path().join("plugins/marketplaces/llm-wiki"))
+        ),
+    );
+    zskills(&home).arg("sync").assert().success();
+    assert!(home.path().join("skills/wiki-manager/SKILL.md").is_file());
+    assert!(home.path().join("skills/wiki-query/SKILL.md").is_file());
+
+    zskills(&home).args(["sync", "--prune"]).assert().success();
+    assert!(
+        home.path().join("skills/wiki-manager/SKILL.md").is_file(),
+        "unnamed marketplace+path must not be pruned"
+    );
+    assert!(home.path().join("skills/wiki-query/SKILL.md").is_file());
+}
+
+#[test]
+fn sync_adopt_marketplace_tag_writes_marketplace_and_path() {
+    let home = fake_home();
+    let skill = home.path().join("skills/wiki-manager");
+    fs::create_dir_all(&skill).unwrap();
+    fs::write(skill.join("SKILL.md"), "x").unwrap();
+    fs::write(
+        home.path().join("skills/.zskills.json"),
+        json!({
+            "version": 1,
+            "agent_skills": {
+                "wiki-manager": {
+                    "source": "marketplace:llm-wiki:plugins/llm-wiki-opencode/skills",
+                    "installed_at": "@0",
+                    "head_sha": "abc"
+                }
+            }
+        })
+        .to_string(),
+    )
+    .unwrap();
+    write_manifest(&home, "");
+
+    zskills(&home).args(["sync", "--adopt"]).assert().success();
+
+    let raw = fs::read_to_string(home.path().join("config/zskills/skills.toml")).unwrap();
+    assert!(
+        raw.contains("marketplace = \"llm-wiki\""),
+        "adopt must write marketplace: {raw}"
+    );
+    assert!(
+        raw.contains("path = \"plugins/llm-wiki-opencode/skills\""),
+        "adopt must write path: {raw}"
+    );
+    assert!(
+        !raw.contains("source = \"marketplace:"),
+        "adopt must not store the raw inventory tag as source: {raw}"
+    );
+}
+
+#[test]
+fn sync_missing_marketplace_clone_is_hard_error() {
+    let home = fake_home();
+    write_manifest(
+        &home,
+        r#"[[agent_skills]]
+marketplace = "llm-wiki"
+path = "plugins/llm-wiki-opencode/skills"
+name = "wiki-manager"
+harnesses = ["pi", "grok"]
+"#,
+    );
+    let out = zskills(&home)
+        .arg("sync")
+        .assert()
+        .failure()
+        .get_output()
+        .clone();
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        !stdout.contains("applied."),
+        "missing clone must skip ✓ applied.: {stdout}"
+    );
+    assert!(
+        !stdout.contains("declared local, not on disk"),
+        "must not fall through to local-only: {stdout}"
+    );
+    assert!(
+        stderr.contains("not registered") || stderr.contains("operation(s) failed"),
+        "stderr={stderr}"
+    );
+}
+
+#[test]
+fn sync_missing_path_exits_nonzero_skips_applied() {
+    let (home, _up, _repo) = setup_llm_wiki_home();
+    write_manifest(
+        &home,
+        &format!(
+            r#"[[marketplaces]]
+name = "llm-wiki"
+url = "{url}"
+
+[[agent_skills]]
+marketplace = "llm-wiki"
+path = "does-not-exist"
+name = "wiki-manager"
+harnesses = ["pi", "grok"]
+"#,
+            url = file_url(&home.path().join("plugins/marketplaces/llm-wiki"))
+        ),
+    );
+    let out = zskills(&home)
+        .arg("sync")
+        .assert()
+        .failure()
+        .get_output()
+        .clone();
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        !stdout.contains("applied."),
+        "missing path must skip ✓ applied.: {stdout}"
+    );
+}
+
+#[test]
+fn upgrade_marketplace_path_recopies_not_local_only() {
+    let (home, _up, repo) = setup_llm_wiki_home();
+    write_manifest(
+        &home,
+        &llm_wiki_recipe(
+            &file_url(&home.path().join("plugins/marketplaces/llm-wiki")),
+            r#"["claude"]"#,
+        ),
+    );
+    zskills(&home).arg("sync").assert().success();
+
+    fs::write(
+        repo.join("plugins/llm-wiki-opencode/skills/wiki-manager/SKILL.md"),
+        "---\nname: wiki-manager\n---\nOpenCode flavour v2\n",
+    )
+    .unwrap();
+    StdCommand::new("git")
+        .arg("-C")
+        .arg(&repo)
+        .args(["add", "-A"])
+        .status()
+        .unwrap();
+    StdCommand::new("git")
+        .arg("-C")
+        .arg(&repo)
+        .args(["commit", "--quiet", "-m", "second"])
+        .status()
+        .unwrap();
+
+    zskills(&home)
+        .args(["skill", "upgrade", "wiki-manager"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("(local-only, skipped)").not());
+
+    // Upgrade of the skill name does not refresh the marketplace clone.
+    // Point the clone at the new commit, then upgrade again.
+    StdCommand::new("git")
+        .arg("-C")
+        .arg(home.path().join("plugins/marketplaces/llm-wiki"))
+        .args(["pull", "--ff-only", "--quiet"])
+        .status()
+        .unwrap();
+    zskills(&home)
+        .args(["skill", "upgrade", "llm-wiki"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("(local-only, skipped)").not());
+
+    assert_eq!(
+        fs::read_to_string(home.path().join("skills/wiki-manager/SKILL.md")).unwrap(),
+        "---\nname: wiki-manager\n---\nOpenCode flavour v2\n"
+    );
+}
+
+#[test]
+fn sync_unnamed_marketplace_path_refuses_before_copying_siblings() {
+    let (home, _up, _repo) = setup_llm_wiki_home();
+    let dest = home.path().join("skills/wiki-query");
+    fs::create_dir_all(&dest).unwrap();
+    fs::write(dest.join("SKILL.md"), "user query\n").unwrap();
+    write_manifest(
+        &home,
+        &format!(
+            r#"[[marketplaces]]
+name = "llm-wiki"
+url = "{url}"
+
+[[agent_skills]]
+marketplace = "llm-wiki"
+path = "plugins/llm-wiki-opencode/skills"
+harnesses = ["pi", "grok"]
+"#,
+            url = file_url(&home.path().join("plugins/marketplaces/llm-wiki"))
+        ),
+    );
+    zskills(&home).arg("sync").assert().failure();
+    assert!(
+        !home.path().join("skills/wiki-manager").exists(),
+        "a later refuse must not leave an earlier sibling copied and untagged"
+    );
+    assert_eq!(
+        fs::read_to_string(dest.join("SKILL.md")).unwrap(),
+        "user query\n"
+    );
+}
+
+#[test]
+fn plugin_install_skips_hub_names_claimed_by_agent_skills() {
+    let (home, _up, _repo) = setup_llm_wiki_home();
+    write_manifest(
+        &home,
+        &llm_wiki_recipe(
+            &file_url(&home.path().join("plugins/marketplaces/llm-wiki")),
+            r#"["claude"]"#,
+        ),
+    );
+    zskills(&home).arg("sync").assert().success();
+    assert_eq!(
+        fs::read_to_string(home.path().join("skills/wiki-manager/SKILL.md")).unwrap(),
+        OPENCODE_WIKI_SKILL
+    );
+
+    zskills(&home)
+        .args(["plugin", "install", "wiki@llm-wiki", "--harness", "pi"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains(
+            "hub owned by [[agent_skills]] path, not plugin wiki@llm-wiki",
+        ));
+
+    assert_eq!(
+        fs::read_to_string(home.path().join("skills/wiki-manager/SKILL.md")).unwrap(),
+        OPENCODE_WIKI_SKILL,
+        "plugin install must not clobber a marketplace: hub copy"
+    );
+    assert_eq!(
+        read_inv(&home)["agent_skills"]["wiki-manager"]["source"],
+        "marketplace:llm-wiki:plugins/llm-wiki-opencode/skills"
+    );
+}

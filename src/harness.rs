@@ -584,10 +584,12 @@ fn symlink_hub_into(hub: &Path, dest: &Path) -> Result<()> {
 
 /// Copy nested plugin skill trees into the shared Agent Skill hub.
 /// Prints a skip line for harnesses that need a tree we will not invent.
+/// Names claimed by `[[agent_skills]]` are not copied and not retagged `plugin:`.
 pub fn materialize_hub(
     qualified: &str,
     harnesses: &[Harness],
     category: &str,
+    claimed: &BTreeSet<String>,
 ) -> Result<Vec<String>> {
     ensure_pi_hub_if_targeted(harnesses)?;
     let want_hub = harnesses.iter().any(|h| h.needs_hub_copy());
@@ -602,8 +604,31 @@ pub fn materialize_hub(
     let trees = plugin_skill_trees(qualified)?;
     let plugin = plugin_root(qualified)?;
     let root = crate::paths::user_skills_dir()?;
+    let inv = crate::agent_skill::load_inventory().ok();
     let mut copied = BTreeSet::new();
     for (name, src) in &trees {
+        if claimed.contains(name) {
+            println!(
+                "  {} {}: hub owned by [[agent_skills]] path, not plugin {qualified}",
+                "·".dimmed(),
+                name
+            );
+            continue;
+        }
+        // Check inventory before install_to_root deletes dest. A marketplace:
+        // (or git/local) hub copy must not be replaced with Claude-flavored
+        // bytes and then fail record_plugin_copies, leaving the dest clobbered.
+        if let Some(entry) = inv.as_ref().and_then(|i| i.agent_skills.get(name)) {
+            if !entry.source.starts_with("plugin:") {
+                println!(
+                    "  {} {}: hub owned by {}, not plugin {qualified}",
+                    "·".dimmed(),
+                    name,
+                    entry.source
+                );
+                continue;
+            }
+        }
         crate::agent_skill::install_to_root(&root, name, src, &plugin)?;
         copied.insert(name.clone());
         println!(
@@ -697,11 +722,20 @@ impl Visibility {
 }
 
 /// Harnesses that can see a marketplace plugin. `claude` is true when the
-/// plugin is enabled and inventoried. Hub-backed harnesses are true when any
-/// nested skill name has `SKILL.md` in `~/.agents/skills/`.
+/// plugin is enabled and inventoried. Hub-backed harnesses are true only when
+/// a nested skill's inventory tag is `plugin:<qualified>` — a `marketplace:`
+/// hub copy of the same name is not a plugin projection.
 pub fn visibility_for_plugin(qualified: &str, active: bool) -> Visibility {
     let names = plugin_skill_names(qualified);
-    let on_hub = names.iter().any(|n| hub_has(n));
+    let inv = crate::agent_skill::load_inventory().ok();
+    let tag = format!("plugin:{qualified}");
+    let on_hub = names.iter().any(|n| {
+        hub_has(n)
+            && inv
+                .as_ref()
+                .and_then(|i| i.agent_skills.get(n))
+                .is_some_and(|e| e.source == tag)
+    });
     visibility(active, on_hub, &names)
 }
 
