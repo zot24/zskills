@@ -115,6 +115,13 @@ source = "jakubkrehel/make-interfaces-feel-better"
 source = "owner/multi-skill-repo"
 name = "specific-skill"
 
+# Agent Skills from a path inside a marketplace clone (zskills 1.3.0+)
+[[agent_skills]]
+marketplace = "llm-wiki"
+path = "plugins/llm-wiki-opencode/skills"
+name = "wiki-manager"
+harnesses = ["pi", "grok"]
+
 # npm package with glob ownership over installed directories
 [[agent_skills]]
 npm = "get-shit-done-cc"
@@ -189,6 +196,45 @@ unsupported** (no cited skills directory under `~/.kimi-code/` — zskills refus
 MCP servers are Claude-only. Pi reads the hub only once its absolute path is in
 `~/.pi/agent/settings.json` `skills: []` — `zskills skill register-pi-hub` puts it there. Hermes
 files skills by category, defaulting to `software-development` (`--category` overrides).
+
+Some source repos ship both a plugin and Agent Skills. `nvk/llm-wiki` is one. Do not fan plugin `wiki` to Pi or Grok. That copies the Claude nested skill. Claude talks about `/wiki:*`. Pi does not have `/wiki:*`. Declare the plugin with `harnesses = ["claude"]`. Declare the OpenCode Agent Skills from `plugins/llm-wiki-opencode/skills` with `harnesses = ["pi", "grok"]`. Do not rely on `[defaults].harnesses` for those rows.
+
+Requires zskills 1.3.0 or later. 1.3.0 is the series after 1.2.0 that copies Agent Skills from a marketplace clone via `marketplace` and `path`. A 1.2 binary ignores unknown keys. It treats `marketplace` and `path` as absent. The `[[agent_skills]]` rows then become local-only. `sync` prints `✓ applied.` and copies nothing from the OpenCode tree.
+
+```toml
+[[marketplaces]]
+name = "llm-wiki"
+repo = "nvk/llm-wiki"
+
+[[skills]]
+name = "wiki"
+marketplace = "llm-wiki"
+harnesses = ["claude"]
+
+[[agent_skills]]
+marketplace = "llm-wiki"
+path = "plugins/llm-wiki-opencode/skills"
+name = "wiki-manager"
+harnesses = ["pi", "grok"]
+
+[[agent_skills]]
+marketplace = "llm-wiki"
+path = "plugins/llm-wiki-opencode/skills"
+name = "wiki-query"
+harnesses = ["pi", "grok"]
+```
+
+Set `harnesses` on both rows. Do not omit them. A plugin row that omits `harnesses` inherits `[defaults].harnesses`. An Agent Skill row that omits `harnesses` inherits every harness whose home exists.
+
+| Harness | What it consumes |
+|---|---|
+| Claude Code | Plugin `wiki@llm-wiki`. Slash commands `/wiki:*`. Nested Claude `wiki-manager`. `bin/llm-wiki` in the plugin cache. |
+| Pi | Hub Agent Skills `wiki-manager` and `wiki-query` at `~/.agents/skills/`. Invoke with `/skill:wiki-manager`. |
+| Grok | The same hub Agent Skills. Grok scans `~/.agents/skills/`. Slash `/wiki-manager` and `/wiki-query`. |
+
+zskills does not install `scripts/pi-wiki-query`. That is a launcher. It is not an Agent Skill. zskills does not provide Grok slash `/wiki:*`. zskills does not write `~/.grok/config.toml`. It does not install a Grok plugin.
+
+Do not run `zskills skill install nvk/llm-wiki`. That command sees `.claude-plugin/marketplace.json` and redirects to `marketplace add`. Write the `[[agent_skills]]` rows. Apply with `zskills sync`.
 
 ### Secret handling
 

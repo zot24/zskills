@@ -252,11 +252,18 @@ source = "owner/odd-layout"
 path = "packages/foo/skills"
 name = "foo"
 
-# Reuse a registered marketplace clone (one clone, several packaging trees)
+# Reuse a registered marketplace clone (one clone, several packaging trees).
+# Pair with [[skills]] harnesses = ["claude"] — see llm-wiki example below.
 [[agent_skills]]
 marketplace = "llm-wiki"
 path = "plugins/llm-wiki-opencode/skills"
 name = "wiki-manager"
+harnesses = ["pi", "grok"]
+
+[[agent_skills]]
+marketplace = "llm-wiki"
+path = "plugins/llm-wiki-opencode/skills"
+name = "wiki-query"
 harnesses = ["pi", "grok"]
 
 # npm-distributed package
@@ -282,7 +289,58 @@ name = "my-internal-tool"
 | `npm` | npm package name. `sync`/`upgrade` runs `npm install -g <pkg>`. |
 | `install_cmd` | Custom installer command — overrides the default `npm install -g`. Used for packages with their own setup CLI. |
 | `name` | Optional. For source entries, pick a single skill out of a multi-skill repo. For local-only entries, required — names the on-disk skill to track. |
+| `harnesses` | Optional list. Names which harnesses can see this Agent Skill. Empty inherits `[defaults].harnesses`, then every harness whose home exists. Set it on marketplace+path rows. The llm-wiki recipe uses `["pi", "grok"]` so Claude does not also get the OpenCode tree. |
 | `claims` | Glob patterns (e.g., `["gsd-*"]`) matched against `~/.agents/skills/`. After install, every match is tagged with this entry's source. Used for npm packages whose installer touches pre-existing directories — so the diff-after-install discovers nothing, but `claims` retroactively claims ownership. |
+
+### llm-wiki for Claude, Pi, and Grok
+
+`nvk/llm-wiki` is one source repo. It ships a Claude plugin and OpenCode Agent Skills. A plugin and an Agent Skill are different things. Declare both.
+
+Requires zskills 1.3.0 or later. 1.3.0 is the series after 1.2.0 that copies Agent Skills from a marketplace clone via `marketplace` and `path`. A 1.2 binary ignores unknown keys. It treats `marketplace` and `path` as absent. The `[[agent_skills]]` rows then become local-only. `sync` prints `✓ applied.` and copies nothing from the OpenCode tree.
+
+```toml
+[[marketplaces]]
+name = "llm-wiki"
+repo = "nvk/llm-wiki"
+
+[[skills]]
+name = "wiki"
+marketplace = "llm-wiki"
+harnesses = ["claude"]
+
+[[agent_skills]]
+marketplace = "llm-wiki"
+path = "plugins/llm-wiki-opencode/skills"
+name = "wiki-manager"
+harnesses = ["pi", "grok"]
+
+[[agent_skills]]
+marketplace = "llm-wiki"
+path = "plugins/llm-wiki-opencode/skills"
+name = "wiki-query"
+harnesses = ["pi", "grok"]
+```
+
+Set `harnesses` on both rows. Do not omit them. A plugin row that omits `harnesses` inherits `[defaults].harnesses`. If that default includes `pi` or `grok`, `sync` copies the Claude nested skill onto the hub. An Agent Skill row that omits `harnesses` inherits every harness whose home exists. That can symlink the OpenCode tree into `~/.claude/skills/`.
+
+`repo` lets `sync` clone the marketplace on a fresh machine. The Agent Skill rows reuse that clone. They do not clone `nvk/llm-wiki` a second time.
+
+Do not run `zskills skill install nvk/llm-wiki`. That command sees `.claude-plugin/marketplace.json` and redirects to `marketplace add`. Write the `[[agent_skills]]` rows.
+
+What each harness consumes:
+
+| Harness | What it consumes |
+|---|---|
+| Claude Code | Plugin `wiki@llm-wiki`. Slash commands `/wiki:*`. Nested Claude `wiki-manager`. `bin/llm-wiki` in the plugin cache. |
+| Pi | Hub Agent Skills `wiki-manager` and `wiki-query` at `~/.agents/skills/`. Invoke with `/skill:wiki-manager`. |
+| Grok | The same hub Agent Skills. Grok scans `~/.agents/skills/`. Slash `/wiki-manager` and `/wiki-query`. |
+
+What this recipe does not provide:
+
+- zskills does not install `scripts/pi-wiki-query`. That is a launcher. It is not an Agent Skill.
+- zskills does not provide Grok slash `/wiki:*`. zskills does not write `~/.grok/config.toml`. It does not install a Grok plugin.
+
+Apply with `zskills sync`. Workflow: [Use cases → Declare llm-wiki](use-cases.md#18-declare-llm-wiki-for-claude-code-pi-and-grok).
 
 ## `update`
 
