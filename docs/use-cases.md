@@ -327,3 +327,58 @@ zskills search next-js                # now federates to skills.sh
 ```
 
 Once you've found the name, `zskills plugin install <name>` flips it on (or appends `[[skills]]` to `skills.toml` for the declarative path).
+
+## 18. Declare llm-wiki for Claude Code, Pi, and Grok
+
+`nvk/llm-wiki` is one source repo. It ships a Claude plugin and OpenCode Agent Skills. A plugin and an Agent Skill are different things. Declare both.
+
+Requires zskills 1.3.0 or later. 1.3.0 is the series after 1.2.0 that copies Agent Skills from a marketplace clone via `marketplace` and `path`. A 1.2 binary ignores unknown keys. It treats `marketplace` and `path` as absent. The `[[agent_skills]]` rows then become local-only. `sync` prints `✓ applied.` and copies nothing from the OpenCode tree.
+
+```toml
+# ~/.config/zskills/skills.toml
+[[marketplaces]]
+name = "llm-wiki"
+repo = "nvk/llm-wiki"
+
+[[skills]]
+name = "wiki"
+marketplace = "llm-wiki"
+harnesses = ["claude"]
+
+[[agent_skills]]
+marketplace = "llm-wiki"
+path = "plugins/llm-wiki-opencode/skills"
+name = "wiki-manager"
+harnesses = ["pi", "grok"]
+
+[[agent_skills]]
+marketplace = "llm-wiki"
+path = "plugins/llm-wiki-opencode/skills"
+name = "wiki-query"
+harnesses = ["pi", "grok"]
+```
+
+Set `harnesses` on both rows. Do not omit them. A plugin row that omits `harnesses` inherits `[defaults].harnesses`. If that default includes `pi` or `grok`, `sync` copies the Claude nested skill onto the hub. An Agent Skill row that omits `harnesses` inherits every harness whose home exists. That can symlink the OpenCode tree into `~/.claude/skills/`.
+
+```bash
+zskills sync
+```
+
+`repo` lets `sync` clone the marketplace on a fresh machine. The Agent Skill rows reuse that clone. They do not clone `nvk/llm-wiki` a second time.
+
+Do not run `zskills skill install nvk/llm-wiki`. That command sees `.claude-plugin/marketplace.json` and redirects to `marketplace add`. Write the `[[agent_skills]]` rows.
+
+What each harness consumes:
+
+| Harness | What it consumes |
+|---|---|
+| Claude Code | Plugin `wiki@llm-wiki`. Slash commands `/wiki:*`. Nested Claude `wiki-manager`. `bin/llm-wiki` in the plugin cache. |
+| Pi | Hub Agent Skills `wiki-manager` and `wiki-query` at `~/.agents/skills/`. Invoke with `/skill:wiki-manager`. |
+| Grok | The same hub Agent Skills. Grok scans `~/.agents/skills/`. Slash `/wiki-manager` and `/wiki-query`. |
+
+What this recipe does not provide:
+
+- zskills does not install `scripts/pi-wiki-query`. That is a launcher. It is not an Agent Skill.
+- zskills does not provide Grok slash `/wiki:*`. zskills does not write `~/.grok/config.toml`. It does not install a Grok plugin.
+
+Schema: [Commands → llm-wiki for Claude, Pi, and Grok](commands.md#llm-wiki-for-claude-pi-and-grok).

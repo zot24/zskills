@@ -128,6 +128,30 @@ marketplace = "claude-plugins-official"
 name = "cloudflare"
 marketplace = "cloudflare"
 
+# One source repo, two primitives. Requires zskills 1.3.0 or later.
+# Plugin for Claude. OpenCode Agent Skills for Pi and Grok.
+# Set harnesses on both rows — omit inherits [defaults].harnesses.
+[[marketplaces]]
+name = "llm-wiki"
+repo = "nvk/llm-wiki"
+
+[[skills]]
+name = "wiki"
+marketplace = "llm-wiki"
+harnesses = ["claude"]
+
+[[agent_skills]]
+marketplace = "llm-wiki"
+path = "plugins/llm-wiki-opencode/skills"
+name = "wiki-manager"
+harnesses = ["pi", "grok"]
+
+[[agent_skills]]
+marketplace = "llm-wiki"
+path = "plugins/llm-wiki-opencode/skills"
+name = "wiki-query"
+harnesses = ["pi", "grok"]
+
 # Agent Skills (older raw-SKILL.md format, installed to ~/.claude/skills/)
 [[agent_skills]]
 source = "jakubkrehel/make-interfaces-feel-better"
@@ -153,6 +177,8 @@ zskills sync --dry-run     # preview
 ```
 
 `zskills sync` is idempotent. Run it anywhere — same machine, new machine — and the result matches the manifest. Plugins flip via `enabledPlugins`. Agent Skills get `git clone`d and copied into `~/.claude/skills/<name>/`. Run it on every fresh checkout.
+
+The llm-wiki rows require zskills 1.3.0 or later. Set `harnesses` on both the plugin and the Agent Skill rows. Claude Code consumes plugin `wiki@llm-wiki` (`/wiki:*`). Pi and Grok consume hub Agent Skills `wiki-manager` and `wiki-query`. zskills does not install `scripts/pi-wiki-query`. zskills does not provide Grok slash `/wiki:*`. A 1.2 binary ignores `marketplace` and `path` on `[[agent_skills]]` and treats those rows as local-only. Full recipe: [Use cases](docs/use-cases.md#18-declare-llm-wiki-for-claude-code-pi-and-grok).
 
 ## Scanning project-scope skills
 
