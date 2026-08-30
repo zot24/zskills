@@ -373,12 +373,13 @@ What each harness consumes:
 | Harness | What it consumes |
 |---|---|
 | Claude Code | Plugin `wiki@llm-wiki`. Slash commands `/wiki:*`. Nested Claude `wiki-manager`. `bin/llm-wiki` in the plugin cache. |
-| Pi | Hub Agent Skills `wiki-manager` and `wiki-query` at `~/.agents/skills/`. Invoke with `/skill:wiki-manager`. |
+| Pi | Hub Agent Skills `wiki-manager` and `wiki-query` at `~/.agents/skills/`. Pi lists them under [Skills]. `wiki-query` is the read-only lookup skill. |
 | Grok | The same hub Agent Skills. Grok scans `~/.agents/skills/`. Slash `/wiki-manager` and `/wiki-query`. |
 
 What this recipe does not provide:
 
 - zskills does not install `scripts/pi-wiki-query`. That is a launcher. It is not an Agent Skill.
+- zskills does not write `~/.pi/agent/prompts/wiki-query.md`. Official lookup is the hub Agent Skill `wiki-query`.
 - zskills does not provide Grok slash `/wiki:*`. zskills does not write `~/.grok/config.toml`. It does not install a Grok plugin.
 
 Schema: [Commands → llm-wiki for Claude, Pi, and Grok](commands.md#llm-wiki-for-claude-pi-and-grok).

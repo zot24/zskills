@@ -229,10 +229,10 @@ Set `harnesses` on both rows. Do not omit them. A plugin row that omits `harness
 | Harness | What it consumes |
 |---|---|
 | Claude Code | Plugin `wiki@llm-wiki`. Slash commands `/wiki:*`. Nested Claude `wiki-manager`. `bin/llm-wiki` in the plugin cache. |
-| Pi | Hub Agent Skills `wiki-manager` and `wiki-query` at `~/.agents/skills/`. Invoke with `/skill:wiki-manager`. |
+| Pi | Hub Agent Skills `wiki-manager` and `wiki-query` at `~/.agents/skills/`. Pi lists them under [Skills]. `wiki-query` is the read-only lookup skill. |
 | Grok | The same hub Agent Skills. Grok scans `~/.agents/skills/`. Slash `/wiki-manager` and `/wiki-query`. |
 
-zskills does not install `scripts/pi-wiki-query`. That is a launcher. It is not an Agent Skill. zskills does not provide Grok slash `/wiki:*`. zskills does not write `~/.grok/config.toml`. It does not install a Grok plugin.
+zskills does not install `scripts/pi-wiki-query`. That is a launcher. It is not an Agent Skill. zskills does not write `~/.pi/agent/prompts/wiki-query.md`. Official lookup is the hub Agent Skill `wiki-query`. zskills does not provide Grok slash `/wiki:*`. zskills does not write `~/.grok/config.toml`. It does not install a Grok plugin. Pi may warn that OpenCode `wiki-manager` `description` exceeds 1024 characters. That text is upstream in `nvk/llm-wiki`. zskills copies `SKILL.md` as-is.
 
 Do not run `zskills skill install nvk/llm-wiki`. That command sees `.claude-plugin/marketplace.json` and redirects to `marketplace add`. Write the `[[agent_skills]]` rows. Apply with `zskills sync`.
 
