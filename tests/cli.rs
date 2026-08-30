@@ -1676,7 +1676,106 @@ fn marketplace_add_prints_plugins_and_the_next_install_command() {
         .stdout(predicate::str::contains("1 plugin: wiki"))
         .stdout(predicate::str::contains(
             "zskills plugin install wiki@llm-wiki",
-        ));
+        ))
+        .stdout(predicate::str::contains("Agent Skills").not());
+}
+
+/// llm-wiki shape: Claude plugin at `./claude-plugin`, Agent Skills at
+/// `plugins/llm-wiki-opencode/skills/<name>/SKILL.md`. Nested plugin skills
+/// under the Claude plugin source must not be hinted.
+fn write_llm_wiki_shaped_repo(parent: &std::path::Path) -> std::path::PathBuf {
+    let repo = parent.join("llm-wiki");
+    fs::create_dir_all(repo.join(".claude-plugin")).unwrap();
+    fs::write(
+        repo.join(".claude-plugin").join("marketplace.json"),
+        serde_json::to_string_pretty(&json!({
+            "name": "llm-wiki",
+            "plugins": [{ "name": "wiki", "source": "./claude-plugin" }]
+        }))
+        .unwrap(),
+    )
+    .unwrap();
+    let claude_skill = repo
+        .join("claude-plugin")
+        .join("skills")
+        .join("wiki-manager");
+    fs::create_dir_all(&claude_skill).unwrap();
+    fs::write(claude_skill.join("SKILL.md"), "# wiki-manager (claude)\n").unwrap();
+    for name in ["wiki-manager", "wiki-query"] {
+        let dir = repo
+            .join("plugins")
+            .join("llm-wiki-opencode")
+            .join("skills")
+            .join(name);
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(dir.join("SKILL.md"), format!("# {name}\n")).unwrap();
+    }
+    git_init_and_commit(&repo);
+    repo
+}
+
+#[test]
+fn marketplace_add_hints_agent_skill_trees_outside_the_plugin_source() {
+    let upstream = tempfile::tempdir().unwrap();
+    let repo = write_llm_wiki_shaped_repo(upstream.path());
+
+    let home = fake_home();
+    zskills(&home)
+        .args(["marketplace", "add", &file_url(&repo)])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("added marketplace llm-wiki"))
+        .stdout(predicate::str::contains("1 plugin: wiki"))
+        .stdout(predicate::str::contains(
+            "zskills plugin install wiki@llm-wiki",
+        ))
+        .stdout(predicate::str::contains(
+            "Agent Skills under plugins/llm-wiki-opencode/skills: wiki-manager, wiki-query",
+        ))
+        .stdout(predicate::str::contains("[[agent_skills]]"))
+        .stdout(predicate::str::contains("marketplace = \"llm-wiki\""))
+        .stdout(predicate::str::contains(
+            "path = \"plugins/llm-wiki-opencode/skills\"",
+        ))
+        .stdout(predicate::str::contains("name = \"wiki-manager\""))
+        .stdout(predicate::str::contains("name = \"wiki-query\""))
+        .stdout(predicate::str::contains("Agent Skills under claude-plugin/skills").not());
+
+    // Hint only: add must not write the manifest.
+    assert!(!home
+        .path()
+        .join("config")
+        .join("zskills")
+        .join("skills.toml")
+        .exists());
+}
+
+#[test]
+fn marketplace_add_does_not_hint_skills_inside_the_plugin_source() {
+    let upstream = tempfile::tempdir().unwrap();
+    let repo = upstream.path().join("nested-src");
+    fs::create_dir_all(repo.join(".claude-plugin")).unwrap();
+    fs::write(
+        repo.join(".claude-plugin").join("marketplace.json"),
+        serde_json::to_string_pretty(&json!({
+            "name": "nested-src",
+            "plugins": [{ "name": "foo", "source": "./plugins/foo" }]
+        }))
+        .unwrap(),
+    )
+    .unwrap();
+    let nested = repo.join("plugins").join("foo").join("skills").join("bar");
+    fs::create_dir_all(&nested).unwrap();
+    fs::write(nested.join("SKILL.md"), "# bar\n").unwrap();
+    git_init_and_commit(&repo);
+
+    let home = fake_home();
+    zskills(&home)
+        .args(["marketplace", "add", &file_url(&repo)])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("1 plugin: foo"))
+        .stdout(predicate::str::contains("Agent Skills").not());
 }
 
 #[test]
