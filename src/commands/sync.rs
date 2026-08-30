@@ -33,8 +33,65 @@ pub fn run(
 
     // -------- 1) Plugin reconciliation --------
     let known = crate::marketplace::load_known(&crate::paths::known_marketplaces_json()?)?;
+    let extra = crate::marketplace::extra_known();
+    let declared_mp: BTreeSet<String> = manifest
+        .marketplaces
+        .iter()
+        .map(|m| m.name.clone())
+        .collect();
+
+    // Register declared-but-unknown marketplaces before resolving [[skills]].
+    // A fresh machine has no known_marketplaces.json; without this step every
+    // name@marketplace enable would be written against a tap that does not exist.
+    let to_register: Vec<&crate::manifest::MarketplaceEntry> = manifest
+        .marketplaces
+        .iter()
+        .filter(|m| !crate::marketplace::is_registered(&known, &extra, &m.name))
+        .collect();
+    let registerable: BTreeSet<String> = to_register
+        .iter()
+        .filter(|m| m.source_spec().is_some())
+        .map(|m| m.name.clone())
+        .collect();
+
+    let mut names: BTreeSet<String> = known.keys().cloned().collect();
+    names.extend(extra.keys().cloned());
+    let marketplaces_to_adopt: Vec<crate::manifest::MarketplaceEntry> = names
+        .iter()
+        .filter(|n| !declared_mp.contains(*n))
+        .filter_map(|n| {
+            let entry = known.get(n).or_else(|| extra.get(n))?;
+            let (repo, url) = crate::marketplace::source_for_manifest(entry)?;
+            Some(crate::manifest::MarketplaceEntry {
+                name: n.clone(),
+                repo,
+                url,
+                pin: None,
+            })
+        })
+        .collect();
+    // Pin-only rows already in the manifest: fill `repo`/`url` so a later
+    // fresh-machine sync can clone. Leave `pin` alone. Skip rows that already
+    // declare a source.
+    let marketplaces_to_fill: Vec<crate::manifest::MarketplaceEntry> = manifest
+        .marketplaces
+        .iter()
+        .filter(|m| m.source_spec().is_none())
+        .filter_map(|m| {
+            let entry = known.get(&m.name).or_else(|| extra.get(&m.name))?;
+            let (repo, url) = crate::marketplace::source_for_manifest(entry)?;
+            Some(crate::manifest::MarketplaceEntry {
+                name: m.name.clone(),
+                repo,
+                url,
+                pin: None,
+            })
+        })
+        .collect();
 
     let mut desired_plugins: BTreeSet<String> = BTreeSet::new();
+    let mut unresolved: BTreeSet<String> = BTreeSet::new();
+    let mut pending_unqualified: Vec<&crate::manifest::SkillEntry> = Vec::new();
     let mut plugin_copies: Vec<(String, Vec<crate::harness::Harness>)> = Vec::new();
     for entry in &manifest.skills {
         let qualified = match entry.qualified() {
@@ -42,11 +99,25 @@ pub fn run(
             None => match crate::marketplace::resolve_spec(&entry.name, &known) {
                 Ok(q) => q,
                 Err(e) => {
-                    eprintln!("{} {}: {}", "✗".red(), entry.name, e);
+                    // A name-only row cannot resolve against an empty known map.
+                    // If we are about to register a marketplace, retry after clone.
+                    if !registerable.is_empty() {
+                        pending_unqualified.push(entry);
+                    } else {
+                        eprintln!("{} {}: {}", "✗".red(), entry.name, e);
+                    }
                     continue;
                 }
             },
         };
+        if let Some((_, mp)) = qualified.rsplit_once('@') {
+            let registered =
+                crate::marketplace::is_registered(&known, &extra, mp) || registerable.contains(mp);
+            if !registered {
+                unresolved.insert(qualified);
+                continue;
+            }
+        }
         let targets = match crate::harness::resolve(
             &[],
             &manifest.defaults.harnesses,
@@ -71,7 +142,7 @@ pub fn run(
     }
 
     let settings_path = crate::paths::settings_json()?;
-    let mut settings = crate::settings::load(&settings_path)?;
+    let settings = crate::settings::load(&settings_path)?;
     let current_plugins: BTreeSet<String> = crate::settings::enabled_plugins(&settings)
         .map(|m| {
             m.iter()
@@ -86,9 +157,29 @@ pub fn run(
         })
         .unwrap_or_default();
 
-    let plugins_to_enable: Vec<_> = desired_plugins.difference(&current_plugins).collect();
-    let plugins_to_disable: Vec<_> = current_plugins.difference(&desired_plugins).collect();
-    let skip_plugin_diff = desired_plugins.is_empty() && !current_plugins.is_empty() && !force;
+    let plugins_to_enable: Vec<String> = desired_plugins
+        .difference(&current_plugins)
+        .cloned()
+        .collect();
+    // Name-only rows resolve after register. Until then, do not plan to disable
+    // an already-enabled `name@marketplace` that the pending row may still want.
+    let pending_names: BTreeSet<&str> = pending_unqualified
+        .iter()
+        .map(|e| e.name.as_str())
+        .collect();
+    let mut plugins_to_disable: Vec<String> = current_plugins
+        .difference(&desired_plugins)
+        .filter(|k| !unresolved.contains(*k))
+        .filter(|k| {
+            let name = k.split_once('@').map(|(n, _)| n).unwrap_or(k.as_str());
+            !pending_names.contains(name)
+        })
+        .cloned()
+        .collect();
+    let skip_plugin_diff = desired_plugins.is_empty()
+        && pending_unqualified.is_empty()
+        && !current_plugins.is_empty()
+        && !force;
     if skip_plugin_diff {
         eprintln!(
             "{} skipping plugin reconcile: manifest has no [[skills]] ({} enabled); pass --force to disable extras",
@@ -234,12 +325,67 @@ pub fn run(
         && mcps_to_install.is_empty()
         && mcps_to_update.is_empty()
         && mcps_to_remove.is_empty()
-        && plugin_copies.is_empty();
+        && plugin_copies.is_empty()
+        && to_register.is_empty()
+        && unresolved.is_empty()
+        && pending_unqualified.is_empty()
+        && !(adopt && (!marketplaces_to_adopt.is_empty() || !marketplaces_to_fill.is_empty()));
     if nothing {
         println!("  (no changes — manifest matches current state)");
         return Ok(());
     }
 
+    for m in &to_register {
+        if let Some(spec) = m.source_spec() {
+            println!(
+                "  {} register marketplace  {} {}",
+                "+".green(),
+                m.name,
+                format!("({spec})").dimmed()
+            );
+        } else {
+            println!(
+                "  {} skip    marketplace  {} {}",
+                "✗".red(),
+                m.name,
+                "(not registered, no repo or url)".dimmed()
+            );
+        }
+    }
+    if adopt {
+        for m in &marketplaces_to_adopt {
+            println!(
+                "  {} adopt   marketplace  {} {}",
+                "+".cyan(),
+                m.name,
+                "(registered but not in manifest — adding)".dimmed()
+            );
+        }
+        for m in &marketplaces_to_fill {
+            println!(
+                "  {} adopt   marketplace  {} {}",
+                "+".cyan(),
+                m.name,
+                "(registered but no repo or url — filling)".dimmed()
+            );
+        }
+    }
+    for entry in &pending_unqualified {
+        println!(
+            "  {} resolve plugin  {} {}",
+            "~".cyan(),
+            entry.name,
+            "(after marketplace register)".dimmed()
+        );
+    }
+    for q in &unresolved {
+        println!(
+            "  {} skip    plugin  {} {}",
+            "✗".red(),
+            q,
+            "(marketplace is not registered)".dimmed()
+        );
+    }
     for k in &plugins_to_enable {
         println!("  {} enable  plugin  {}", "+".green(), k);
     }
@@ -365,11 +511,26 @@ pub fn run(
     // they're no longer "to remove" / "to disable" and the apply phase skips them.
     if adopt {
         let mut adopted = 0usize;
+        for m in &marketplaces_to_adopt {
+            if crate::manifest::append_marketplace(&path, m)? {
+                adopted += 1;
+            }
+        }
+        for m in &marketplaces_to_fill {
+            if crate::manifest::fill_marketplace_source(
+                &path,
+                &m.name,
+                m.repo.as_deref(),
+                m.url.as_deref(),
+            )? {
+                adopted += 1;
+            }
+        }
         for k in &plugins_to_disable {
             let (name, mp) = k
                 .split_once('@')
                 .map(|(n, m)| (n.to_string(), Some(m.to_string())))
-                .unwrap_or_else(|| ((*k).clone(), None));
+                .unwrap_or_else(|| (k.clone(), None));
             let entry = crate::manifest::SkillEntry {
                 name,
                 marketplace: mp,
@@ -438,18 +599,104 @@ pub fn run(
     }
 
     // -------- 4) Apply --------
+    let mut register_failed = 0usize;
+    for m in &to_register {
+        let Some(spec) = m.source_spec() else {
+            continue;
+        };
+        match crate::marketplace::register(&m.name, spec) {
+            Ok(_) => println!("  {} registered marketplace {}", "✓".green(), m.name.bold()),
+            Err(e) => {
+                eprintln!("{} marketplace `{}`: {e}", "✗".red(), m.name);
+                register_failed += 1;
+            }
+        }
+    }
+    let known = crate::marketplace::load_known(&crate::paths::known_marketplaces_json()?)?;
+    let extra = crate::marketplace::extra_known();
+    let mut late_enables: Vec<String> = Vec::new();
+    for entry in &pending_unqualified {
+        match crate::marketplace::resolve_spec(&entry.name, &known) {
+            Ok(q) => {
+                if let Some((_, mp)) = q.rsplit_once('@') {
+                    if !crate::marketplace::is_registered(&known, &extra, mp) {
+                        unresolved.insert(q);
+                        continue;
+                    }
+                }
+                let targets = match crate::harness::resolve(
+                    &[],
+                    &manifest.defaults.harnesses,
+                    &entry.harnesses,
+                    crate::harness::default_plugin(),
+                ) {
+                    Ok(t) => t,
+                    Err(e) => {
+                        eprintln!("{} {}: {}", "✗".red(), entry.name, e);
+                        continue;
+                    }
+                };
+                if targets.contains(&crate::harness::Harness::Claude) {
+                    desired_plugins.insert(q.clone());
+                    plugins_to_disable.retain(|k| k != &q);
+                    if !current_plugins.contains(&q) {
+                        late_enables.push(q.clone());
+                    }
+                }
+                if targets
+                    .iter()
+                    .any(|h| h.needs_hub_copy() || h.skill_skip_reason().is_some())
+                {
+                    plugin_copies.push((q, targets));
+                }
+            }
+            Err(e) => eprintln!("{} {}: {}", "✗".red(), entry.name, e),
+        }
+    }
+    for q in &desired_plugins {
+        let Some((_, mp)) = q.rsplit_once('@') else {
+            continue;
+        };
+        if !crate::marketplace::is_registered(&known, &extra, mp) {
+            unresolved.insert(q.clone());
+        }
+    }
+    for (q, _) in &plugin_copies {
+        let Some((_, mp)) = q.rsplit_once('@') else {
+            continue;
+        };
+        if !crate::marketplace::is_registered(&known, &extra, mp) {
+            unresolved.insert(q.clone());
+        }
+    }
+
+    // register() wrote extraKnownMarketplaces. Re-read so the enable pass
+    // cannot overwrite that with the pre-register snapshot.
+    let mut settings = crate::settings::load(&settings_path)?;
     if !skip_plugin_diff {
         let ep = crate::settings::enabled_plugins_mut(&mut settings);
         for k in &plugins_to_enable {
-            ep.insert((*k).clone(), Value::Bool(true));
+            if unresolved.contains(k) {
+                continue;
+            }
+            ep.insert(k.clone(), Value::Bool(true));
+        }
+        for k in &late_enables {
+            if unresolved.contains(k) {
+                continue;
+            }
+            ep.insert(k.clone(), Value::Bool(true));
         }
         for k in &plugins_to_disable {
-            ep.insert((*k).clone(), Value::Bool(false));
+            ep.insert(k.clone(), Value::Bool(false));
         }
         crate::settings::save(&settings_path, &settings)?;
     }
 
     for (q, hs) in &plugin_copies {
+        if unresolved.contains(q) {
+            continue;
+        }
         match crate::harness::materialize_hub(q, hs, crate::harness::DEFAULT_HERMES_CATEGORY) {
             Ok(names) => {
                 if !names.is_empty() {
@@ -660,6 +907,28 @@ pub fn run(
                 Err(e) => eprintln!("{} mcp `{}`: {}", "✗".red(), name, e),
             }
         }
+    }
+
+    if !unresolved.is_empty() {
+        eprintln!(
+            "{} refused to write enabledPlugins for {} plugin(s) whose marketplace is not registered:",
+            "✗".red(),
+            unresolved.len()
+        );
+        for q in &unresolved {
+            eprintln!("  {q}");
+        }
+        eprintln!(
+            "  add `repo` or `url` on [[marketplaces]] and re-run sync, or: zskills marketplace add <owner/repo>"
+        );
+    }
+    if register_failed > 0 {
+        anyhow::bail!(
+            "failed to register {register_failed} marketplace(s) declared in the manifest"
+        );
+    }
+    if !unresolved.is_empty() {
+        anyhow::bail!("marketplace is not registered — not writing dangling enabledPlugins keys");
     }
 
     println!("\n{} applied.", "✓".green());

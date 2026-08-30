@@ -12,8 +12,8 @@
 
 use anyhow::{Context, Result};
 use serde::Deserialize;
-use serde_json::{Map, Value};
-use std::path::Path;
+use serde_json::{json, Map, Value};
+use std::path::{Path, PathBuf};
 
 #[derive(Debug, Deserialize)]
 #[allow(dead_code)]
@@ -83,6 +83,159 @@ pub fn stamp_last_updated(known: &mut Map<String, Value>, name: &str) -> bool {
             true
         }
         None => false,
+    }
+}
+
+/// Recognize a remote-index entry by its JSON shape. Non-feature-gated so older configs
+/// (entries written by a `skills-sh`-enabled build) are still tolerated when the feature
+/// is off — we just skip them in list/update rather than crashing.
+pub fn is_remote_index(entry: &Value) -> bool {
+    entry
+        .get("source")
+        .and_then(|s| s.get("source"))
+        .and_then(|v| v.as_str())
+        == Some("remote-index")
+}
+
+/// `extraKnownMarketplaces` from `settings.json`. Empty when the file is missing.
+pub fn extra_known() -> Map<String, Value> {
+    let Ok(path) = crate::paths::settings_json() else {
+        return Map::new();
+    };
+    let Ok(settings) = crate::settings::load(&path) else {
+        return Map::new();
+    };
+    settings
+        .get("extraKnownMarketplaces")
+        .and_then(|v| v.as_object())
+        .cloned()
+        .unwrap_or_default()
+}
+
+/// True when `name` is in `known_marketplaces.json` or `extraKnownMarketplaces`.
+///
+/// Claude Code honours either file. Treating extraKnown-only as unregistered would
+/// make `sync` re-clone a marketplace the user already has, and would refuse
+/// `enabledPlugins` keys that `plugin_offer` already considers legitimate.
+pub fn is_registered(known: &Map<String, Value>, extra: &Map<String, Value>, name: &str) -> bool {
+    known.contains_key(name) || extra.contains_key(name)
+}
+
+/// `owner/repo` vs a git URL. `owner/repo` must be exactly two non-empty segments
+/// and must not look like a URL — that is the shape Claude Code stores as
+/// `"source": "github"`.
+pub fn is_github_owner_repo(source: &str) -> bool {
+    if source.contains("://") || source.starts_with('/') {
+        return false;
+    }
+    let mut parts = source.split('/');
+    matches!(
+        (parts.next(), parts.next(), parts.next()),
+        (Some(a), Some(b), None) if !a.is_empty() && !b.is_empty()
+    )
+}
+
+/// Parse `owner/repo` or a git URL into `(derived_name, clone_url)`.
+///
+/// `marketplace add` uses the derived name. `sync` ignores it and uses the name
+/// declared on `[[marketplaces]]`, so `name = "zot24-skills"` can point at
+/// `repo = "zot24/skills"`.
+pub fn parse_source(source: &str) -> Result<(String, String)> {
+    if source.contains("://") {
+        let name = source
+            .trim_end_matches(".git")
+            .rsplit('/')
+            .next()
+            .unwrap_or(source)
+            .to_string();
+        Ok((name, source.to_string()))
+    } else if source.contains('/') && !source.starts_with('/') {
+        let name = source.split('/').next_back().unwrap_or(source).to_string();
+        let url = format!("https://github.com/{source}.git");
+        Ok((name, url))
+    } else {
+        anyhow::bail!("unrecognized marketplace source: {source} (expected owner/repo or git URL)")
+    }
+}
+
+fn source_object(source: &str, repo_url: &str) -> Value {
+    if is_github_owner_repo(source) {
+        json!({ "source": "github", "repo": source })
+    } else {
+        json!({ "source": "git", "url": repo_url })
+    }
+}
+
+/// Clone `source` (if needed) and write `known_marketplaces.json` plus
+/// `extraKnownMarketplaces`. Same bytes as `marketplace add`.
+///
+/// `name` is the key in those files, not necessarily the repo basename.
+pub fn register(name: &str, source: &str) -> Result<PathBuf> {
+    let (_, repo_url) = parse_source(source)?;
+    let path = crate::paths::known_marketplaces_json()?;
+    let mut known = load_known(&path)?;
+
+    let install_location = crate::paths::marketplaces_dir()?.join(name);
+    if !install_location.exists() {
+        if let Some(parent) = install_location.parent() {
+            std::fs::create_dir_all(parent).ok();
+        }
+        println!(
+            "Cloning {} into {} ...",
+            repo_url,
+            install_location.display()
+        );
+        crate::git::clone(&repo_url, &install_location)?;
+    }
+
+    let src_obj = source_object(source, &repo_url);
+    let mut entry = Map::new();
+    entry.insert("source".into(), src_obj.clone());
+    entry.insert(
+        "installLocation".into(),
+        Value::String(install_location.to_string_lossy().to_string()),
+    );
+    entry.insert("autoUpdate".into(), Value::Bool(true));
+    // Claude Code validates `lastUpdated` as a *string* when it loads
+    // known_marketplaces.json. Omit it and every `claude plugin install` fails with
+    // "Marketplace configuration file is corrupted: <name>.lastUpdated: Invalid
+    // input: expected string, received undefined". This field is not optional.
+    entry.insert(
+        "lastUpdated".into(),
+        Value::String(crate::timestamp::utc_now_iso8601()),
+    );
+    known.insert(name.to_string(), Value::Object(entry));
+    save_known(&path, &known)?;
+
+    let settings_path = crate::paths::settings_json()?;
+    let mut settings = crate::settings::load(&settings_path)?;
+    crate::settings::extra_marketplaces_mut(&mut settings)
+        .insert(name.to_string(), json!({ "source": src_obj }));
+    crate::settings::save(&settings_path, &settings)?;
+    Ok(install_location)
+}
+
+/// Shareable `repo` / `url` from a `known_marketplaces.json` or
+/// `extraKnownMarketplaces` entry. `None` for remote indexes and unreadable shapes —
+/// `--adopt` must not write a `[[marketplaces]]` row a fresh machine cannot clone.
+pub fn source_for_manifest(entry: &Value) -> Option<(Option<String>, Option<String>)> {
+    if is_remote_index(entry) {
+        return None;
+    }
+    let src = entry.get("source")?;
+    match src.get("source").and_then(|v| v.as_str()) {
+        Some("github") => {
+            let repo = src.get("repo").and_then(|v| v.as_str())?.to_string();
+            Some((Some(repo), None))
+        }
+        Some("git") => {
+            let url = src.get("url").and_then(|v| v.as_str())?.to_string();
+            match github_from_url(&url) {
+                Some(repo) => Some((Some(repo), None)),
+                None => Some((None, Some(url))),
+            }
+        }
+        _ => None,
     }
 }
 
@@ -483,5 +636,67 @@ mod tests {
         let mut known = Map::new();
         assert!(!stamp_last_updated(&mut known, "nope"));
         assert!(known.is_empty());
+    }
+
+    #[test]
+    fn is_github_owner_repo_accepts_exactly_two_segments() {
+        assert!(is_github_owner_repo("zot24/skills"));
+        assert!(is_github_owner_repo("nvk/llm-wiki"));
+        assert!(!is_github_owner_repo("https://github.com/zot24/skills.git"));
+        assert!(!is_github_owner_repo("file:///tmp/skills"));
+        assert!(!is_github_owner_repo("skills"));
+        assert!(!is_github_owner_repo("/abs/path"));
+        assert!(!is_github_owner_repo("a/b/c"));
+    }
+
+    #[test]
+    fn parse_source_github_and_url() {
+        let (name, url) = parse_source("zot24/skills").unwrap();
+        assert_eq!(name, "skills");
+        assert_eq!(url, "https://github.com/zot24/skills.git");
+        let (name, url) = parse_source("file:///tmp/llm-wiki").unwrap();
+        assert_eq!(name, "llm-wiki");
+        assert_eq!(url, "file:///tmp/llm-wiki");
+        assert!(parse_source("noshapes").is_err());
+    }
+
+    #[test]
+    fn source_for_manifest_prefers_repo_for_github() {
+        let github = json!({
+            "source": { "source": "github", "repo": "nvk/llm-wiki" }
+        });
+        assert_eq!(
+            source_for_manifest(&github),
+            Some((Some("nvk/llm-wiki".into()), None))
+        );
+        let git_github = json!({
+            "source": { "source": "git", "url": "https://github.com/zot24/skills.git" }
+        });
+        assert_eq!(
+            source_for_manifest(&git_github),
+            Some((Some("zot24/skills".into()), None))
+        );
+        let file_url = json!({
+            "source": { "source": "git", "url": "file:///tmp/llm-wiki" }
+        });
+        assert_eq!(
+            source_for_manifest(&file_url),
+            Some((None, Some("file:///tmp/llm-wiki".into())))
+        );
+        let remote = json!({
+            "source": { "source": "remote-index", "url": "https://skills.sh" }
+        });
+        assert_eq!(source_for_manifest(&remote), None);
+    }
+
+    #[test]
+    fn is_registered_accepts_known_or_extra() {
+        let mut known = Map::new();
+        known.insert("a".into(), json!({}));
+        let mut extra = Map::new();
+        extra.insert("b".into(), json!({}));
+        assert!(is_registered(&known, &extra, "a"));
+        assert!(is_registered(&known, &extra, "b"));
+        assert!(!is_registered(&known, &extra, "c"));
     }
 }

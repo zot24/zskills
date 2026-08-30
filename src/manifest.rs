@@ -13,6 +13,7 @@
 //!
 //! [[marketplaces]]
 //! name = "llm-wiki"
+//! repo = "nvk/llm-wiki"
 //! pin = "v0.23.0"
 //! ```
 
@@ -35,8 +36,9 @@ pub struct Manifest {
     #[serde(default)]
     pub mcps: Vec<McpEntry>,
 
-    /// Marketplace policy. Today this carries one thing: a `pin`, which stops
-    /// `update` and `upgrade` from floating a tap off the ref you chose.
+    /// Marketplace policy: a clone source (`repo` / `url`) so `sync` can register
+    /// the marketplace on a fresh machine, and an optional `pin` that stops
+    /// `update` and `upgrade` from floating it off the ref you chose.
     #[serde(default)]
     pub marketplaces: Vec<MarketplaceEntry>,
 
@@ -73,24 +75,52 @@ impl Manifest {
 /// ```toml
 /// [[marketplaces]]
 /// name = "llm-wiki"
-/// pin = "v0.23.0"   # tag, branch, or full sha
+/// repo = "nvk/llm-wiki"    # or url = "https://…"
+/// pin  = "v0.23.0"         # tag, branch, or full sha
 /// ```
 ///
-/// **Why the pin lives here and not in `known_marketplaces.json`.** That file belongs
-/// to Claude Code, which validates it against its own schema and rejects the *whole
-/// file* when it disagrees — one entry missing `lastUpdated` is enough to break every
-/// `claude plugin install`. Adding a key it does not know is the same bet with the same
-/// downside. `skills.toml` is zskills' own manifest, it is the file that already
-/// declares intent rather than observed state, and unlike `known_marketplaces.json` it
-/// holds no machine-local absolute paths, so it is the half of the configuration that
-/// is meant to be shared between machines. A pin is exactly that kind of declaration.
+/// **Why source and pin live here and not in `known_marketplaces.json`.** That file
+/// belongs to Claude Code, which validates it against its own schema and rejects the
+/// *whole file* when it disagrees — one entry missing `lastUpdated` is enough to break
+/// every `claude plugin install`. Adding a key it does not know is the same bet with
+/// the same downside. `skills.toml` is zskills' own manifest, it is the file that
+/// already declares intent rather than observed state, and unlike
+/// `known_marketplaces.json` it holds no machine-local absolute paths, so it is the
+/// half of the configuration that is meant to be shared between machines. A clone
+/// source and a pin are exactly that kind of declaration.
 #[derive(Debug, Deserialize, Serialize, Clone, Default)]
 pub struct MarketplaceEntry {
     pub name: String,
+    /// GitHub `owner/repo`. `sync` clones this the same way `marketplace add` does.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub repo: Option<String>,
+    /// Git URL for a non-GitHub source. Ignored when `repo` is set.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub url: Option<String>,
     /// Tag, branch, or full sha. When set, `update`/`upgrade` check this ref out and
     /// never pull.
     #[serde(default)]
     pub pin: Option<String>,
+}
+
+impl MarketplaceEntry {
+    /// `owner/repo` or a git URL, if this entry can be cloned on a fresh machine.
+    ///
+    /// `repo` wins when both are set so the github source object is written.
+    pub fn source_spec(&self) -> Option<&str> {
+        fn nonempty(s: &str) -> Option<&str> {
+            let t = s.trim();
+            if t.is_empty() {
+                None
+            } else {
+                Some(t)
+            }
+        }
+        self.repo
+            .as_deref()
+            .and_then(nonempty)
+            .or_else(|| self.url.as_deref().and_then(nonempty))
+    }
 }
 
 #[derive(Debug, Deserialize, Serialize, Clone)]
@@ -445,6 +475,126 @@ pub fn append_skill(path: &Path, entry: &SkillEntry) -> Result<bool> {
     Ok(true)
 }
 
+/// Append a `[[marketplaces]]` entry. Skips if `name` is already present.
+pub fn append_marketplace(path: &Path, entry: &MarketplaceEntry) -> Result<bool> {
+    use toml_edit::{value, ArrayOfTables, DocumentMut, Item, Table};
+
+    let raw = if path.exists() {
+        std::fs::read_to_string(path)
+            .with_context(|| format!("reading manifest {}", path.display()))?
+    } else {
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent).ok();
+        }
+        String::new()
+    };
+    let mut doc: DocumentMut = raw
+        .parse()
+        .with_context(|| format!("parsing manifest {} as TOML", path.display()))?;
+
+    if let Some(Item::ArrayOfTables(existing)) = doc.get("marketplaces") {
+        for t in existing.iter() {
+            let name = t.get("name").and_then(|v| v.as_str());
+            if name == Some(&entry.name) {
+                return Ok(false);
+            }
+        }
+    }
+
+    let aot = match doc
+        .entry("marketplaces")
+        .or_insert(Item::ArrayOfTables(ArrayOfTables::new()))
+    {
+        Item::ArrayOfTables(a) => a,
+        slot => {
+            *slot = Item::ArrayOfTables(ArrayOfTables::new());
+            match slot {
+                Item::ArrayOfTables(a) => a,
+                _ => unreachable!(),
+            }
+        }
+    };
+    let mut t = Table::new();
+    t["name"] = value(&entry.name);
+    apply_source_fields(&mut t, entry.repo.as_deref(), entry.url.as_deref());
+    if let Some(pin) = entry
+        .pin
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+    {
+        t["pin"] = value(pin);
+    }
+    aot.push(t);
+
+    std::fs::write(path, doc.to_string())
+        .with_context(|| format!("writing manifest {}", path.display()))?;
+    Ok(true)
+}
+
+fn toml_nonempty_str(t: &toml_edit::Table, key: &str) -> bool {
+    t.get(key)
+        .and_then(|v| v.as_str())
+        .map(str::trim)
+        .is_some_and(|s| !s.is_empty())
+}
+
+fn apply_source_fields(t: &mut toml_edit::Table, repo: Option<&str>, url: Option<&str>) {
+    use toml_edit::value;
+    let repo = repo.map(str::trim).filter(|s| !s.is_empty());
+    if let Some(repo) = repo {
+        t["repo"] = value(repo);
+    } else if let Some(url) = url.map(str::trim).filter(|s| !s.is_empty()) {
+        t["url"] = value(url);
+    }
+}
+
+/// Fill `repo` or `url` on an existing `[[marketplaces]]` row that has no source.
+/// Leaves `pin` untouched. Returns false when the name is missing or already has a source.
+pub fn fill_marketplace_source(
+    path: &Path,
+    name: &str,
+    repo: Option<&str>,
+    url: Option<&str>,
+) -> Result<bool> {
+    use toml_edit::{DocumentMut, Item};
+
+    if !path.exists() {
+        return Ok(false);
+    }
+    let raw = std::fs::read_to_string(path)
+        .with_context(|| format!("reading manifest {}", path.display()))?;
+    let mut doc: DocumentMut = raw
+        .parse()
+        .with_context(|| format!("parsing manifest {} as TOML", path.display()))?;
+
+    let Some(Item::ArrayOfTables(aot)) = doc.get_mut("marketplaces") else {
+        return Ok(false);
+    };
+    let mut idx = None;
+    for (i, t) in aot.iter().enumerate() {
+        if t.get("name").and_then(|v| v.as_str()) == Some(name) {
+            idx = Some(i);
+            break;
+        }
+    }
+    let Some(i) = idx else {
+        return Ok(false);
+    };
+    let t = aot.get_mut(i).expect("index from scan");
+    if toml_nonempty_str(t, "repo") || toml_nonempty_str(t, "url") {
+        return Ok(false);
+    }
+    apply_source_fields(t, repo, url);
+    if !toml_nonempty_str(t, "repo") && !toml_nonempty_str(t, "url") {
+        return Ok(false);
+    }
+
+    std::fs::write(path, doc.to_string())
+        .with_context(|| format!("writing manifest {}", path.display()))?;
+    Ok(true)
+}
+
 /// Append an `[[mcps]]` entry. Skips if (name, scope) already present.
 pub fn append_mcp(path: &Path, entry: &McpEntry) -> Result<bool> {
     use toml_edit::{value, Array, ArrayOfTables, DocumentMut, InlineTable, Item, Table};
@@ -763,5 +913,72 @@ mod marketplace_pin_tests {
         let m = parse("[[skills]]\nname = \"firecrawl\"\nmarketplace = \"zot24-skills\"\n");
         assert!(m.marketplaces.is_empty());
         assert_eq!(m.marketplace_pin("zot24-skills"), None);
+    }
+
+    #[test]
+    fn reads_repo_and_url() {
+        let m = parse(
+            "[[marketplaces]]\nname = \"zot24-skills\"\nrepo = \"zot24/skills\"\n[[marketplaces]]\nname = \"other\"\nurl = \"file:///tmp/other\"\n",
+        );
+        assert_eq!(m.marketplaces[0].source_spec(), Some("zot24/skills"));
+        assert_eq!(m.marketplaces[1].source_spec(), Some("file:///tmp/other"));
+    }
+
+    #[test]
+    fn repo_wins_over_url() {
+        let m = parse(
+            "[[marketplaces]]\nname = \"a\"\nrepo = \"owner/repo\"\nurl = \"https://example.com/x.git\"\n",
+        );
+        assert_eq!(m.marketplaces[0].source_spec(), Some("owner/repo"));
+    }
+
+    #[test]
+    fn a_blank_repo_falls_through_to_url() {
+        let m = parse("[[marketplaces]]\nname = \"a\"\nrepo = \"  \"\nurl = \"file:///tmp/a\"\n");
+        assert_eq!(m.marketplaces[0].source_spec(), Some("file:///tmp/a"));
+    }
+
+    #[test]
+    fn an_entry_without_source_has_no_spec() {
+        let m = parse("[[marketplaces]]\nname = \"llm-wiki\"\npin = \"v0.23.0\"\n");
+        assert_eq!(m.marketplaces[0].source_spec(), None);
+    }
+
+    #[test]
+    fn fill_marketplace_source_adds_repo_and_keeps_pin() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("skills.toml");
+        std::fs::write(
+            &path,
+            "# keep\n[[marketplaces]]\nname = \"llm-wiki\"\npin = \"v0.23.0\"\n",
+        )
+        .unwrap();
+        assert!(fill_marketplace_source(&path, "llm-wiki", Some("nvk/llm-wiki"), None).unwrap());
+        let raw = std::fs::read_to_string(&path).unwrap();
+        assert!(raw.contains("# keep"), "comments must survive: {raw}");
+        assert!(
+            raw.contains("pin = \"v0.23.0\""),
+            "pin must not be dropped: {raw}"
+        );
+        assert!(
+            raw.contains("repo = \"nvk/llm-wiki\""),
+            "repo must be filled: {raw}"
+        );
+    }
+
+    #[test]
+    fn fill_marketplace_source_skips_when_source_already_set() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("skills.toml");
+        std::fs::write(
+            &path,
+            "[[marketplaces]]\nname = \"llm-wiki\"\nrepo = \"nvk/llm-wiki\"\npin = \"v0.23.0\"\n",
+        )
+        .unwrap();
+        assert!(!fill_marketplace_source(&path, "llm-wiki", Some("other/repo"), None).unwrap());
+        let raw = std::fs::read_to_string(&path).unwrap();
+        assert!(raw.contains("repo = \"nvk/llm-wiki\""));
+        assert!(!raw.contains("other/repo"));
+        assert!(raw.contains("pin = \"v0.23.0\""));
     }
 }

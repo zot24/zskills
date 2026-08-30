@@ -126,14 +126,17 @@ zskills sync [--file <path>] [--dry-run] [--prune | --adopt]
 | `--adopt` | off | Inverse of `--prune`. Append every orphan (installed agent skill, enabled plugin, configured MCP that isn't yet in the manifest) to `skills.toml` and exit. Useful for capturing a hand-curated environment into your manifest in one shot. Mutually exclusive with `--prune`. |
 
 What sync does:
-1. For each `[[skills]]` entry: resolve `name@marketplace`. If `harnesses` (or `[defaults].harnesses`) contains `claude`, write to `enabledPlugins`. Entries currently enabled but not in the manifest get flipped off. Hub-backed harnesses (`pi`, `grok`, `codex`) copy nested `skills/<name>/` trees into `~/.agents/skills/` in the same pass.
-2. For each `[[agent_skills]]` entry: if `source` is present, clone/pull and copy `skills/<name>/` to `~/.agents/skills/`. If `npm` is present, run `npm install -g --no-fund --no-audit <pkg>` (or `install_cmd`), then claim all matching `claims` globs. If neither is present (just `name`), register the existing on-disk skill in inventory without fetching anything.
-3. Agent skills tracked in inventory but missing from the manifest are reported. With `--prune` they're deleted; with `--adopt` they're appended to the manifest; otherwise they're skipped.
+1. For each `[[marketplaces]]` entry with `repo` or `url` that is not yet registered: clone the source and write `known_marketplaces.json` plus `extraKnownMarketplaces` (same as `marketplace add`). This runs **before** plugin resolve, so a fresh machine can recreate the clone. Unqualified `[[skills]]` names (`name` only) are resolved against the map **after** that clone, so they can match a marketplace that did not exist at plan time.
+2. For each `[[skills]]` entry: resolve `name@marketplace`. If `harnesses` (or `[defaults].harnesses`) contains `claude`, write to `enabledPlugins`. Entries currently enabled but not in the manifest get flipped off. Hub-backed harnesses (`pi`, `grok`, `codex`) copy nested `skills/<name>/` trees into `~/.agents/skills/` in the same pass. **`sync` refuses to write an `enabledPlugins` key whose marketplace is not registered.** It reports the unresolved plugins and exits non-zero instead of printing `✓ applied.` Hub copies for those plugins are skipped too.
+3. For each `[[agent_skills]]` entry: if `source` is present, clone/pull and copy `skills/<name>/` to `~/.agents/skills/`. If `npm` is present, run `npm install -g --no-fund --no-audit <pkg>` (or `install_cmd`), then claim all matching `claims` globs. If neither is present (just `name`), register the existing on-disk skill in inventory without fetching anything.
+4. Agent skills tracked in inventory but missing from the manifest are reported. With `--prune` they're deleted; with `--adopt` they're appended to the manifest; otherwise they're skipped.
 
 ### `--adopt` details
 
 When you pass `--adopt`, sync writes new entries to `skills.toml` instead of removing anything:
 
+- **Registered marketplace** not in manifest → new `[[marketplaces]]` row with `name` plus `repo` (`owner/repo`) or `url` (non-GitHub git source). Source comes from `known_marketplaces.json` / `extraKnownMarketplaces`. Remote-index entries are skipped. This is what makes a later `sync` on a fresh machine able to clone.
+- **Registered marketplace** already in the manifest with only `name` / `pin` → fill `repo` or `url`. Existing `pin` is left untouched. A row that already has a source is skipped.
 - **Enabled plugin** not in manifest → new `[[skills]]` row with `name` + `marketplace`.
 - **Agent skill** in inventory but not in manifest → new `[[agent_skills]]` row. The `source` / `npm` / `name` fields are reconstructed from the inventory tag (`local` becomes a name-only entry, `npm:pkg` becomes `npm = "pkg"`, anything else becomes `source = "..."`).
 - **MCP server** configured but not in manifest → new `[[mcps]]` row with full transport details (`command`/`args`/`env` for stdio, `url`/`headers` for http/sse), `scope` preserved. **Env and header values are copied verbatim** — if any contain literal secrets, eyeball the resulting manifest and replace them with `${VAR}` references before committing.
@@ -376,7 +379,7 @@ zskills marketplace update [<name>]
 
 `add` clones the marketplace repo into `~/.claude/plugins/marketplaces/<name>/` and writes both `known_marketplaces.json` and `settings.json`'s `extraKnownMarketplaces`. Mirrors what `/plugin marketplace add` does inside Claude Code.
 
-Adding a marketplace does **not** install plugins and does **not** change the manifest. `sync` only applies `[[skills]]` entries already in `skills.toml`. After a successful add, zskills reads `.claude-plugin/marketplace.json` and prints the plugins the marketplace offers, plus the next command:
+Adding a marketplace does **not** install plugins and does **not** change the manifest. After a successful add, zskills reads `.claude-plugin/marketplace.json` and prints the plugins the marketplace offers, plus the next command:
 
 ```
 ✓ added marketplace llm-wiki
@@ -397,8 +400,11 @@ marketplace, so a marketplace tracks whatever its default branch moves to. Decla
 ```toml
 [[marketplaces]]
 name = "llm-wiki"
-pin = "v0.23.0"   # tag, branch, or full sha
+repo = "nvk/llm-wiki"   # or url = "https://…" — required so sync can clone on a fresh machine
+pin  = "v0.23.0"        # tag, branch, or full sha
 ```
+
+`repo` is GitHub `owner/repo`. `url` is any git URL. When both are set, `repo` wins. `sync` registers any declared marketplace that is not yet in `known_marketplaces.json` (clone + `extraKnownMarketplaces`) before it resolves `[[skills]]`. A `[[marketplaces]]` row with only `name` and `pin` still pins an already-registered marketplace; it cannot recreate the clone.
 
 A pinned marketplace is checked out at that ref and **never pulled**. `marketplace list`
 marks it `[pinned v0.23.0]`. If the clone has drifted, the next update puts it back:

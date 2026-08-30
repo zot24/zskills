@@ -1,6 +1,8 @@
 use anyhow::Result;
 use owo_colors::OwoColorize;
-use serde_json::{json, Map, Value};
+use serde_json::Value;
+#[cfg(feature = "skills-sh")]
+use serde_json::{json, Map};
 
 use crate::cli::MarketplaceCmd;
 
@@ -25,62 +27,8 @@ fn add(source: String) -> Result<()> {
     if source == REMOTE_INDEX_SKILLS_SH {
         return add_remote_index(REMOTE_INDEX_SKILLS_SH, "https://skills.sh");
     }
-    let (name, repo_url) = parse_source(&source)?;
-    let path = crate::paths::known_marketplaces_json()?;
-    let mut known = crate::marketplace::load_known(&path)?;
-
-    let install_location = crate::paths::marketplaces_dir()?.join(&name);
-    if !install_location.exists() {
-        if let Some(parent) = install_location.parent() {
-            std::fs::create_dir_all(parent).ok();
-        }
-        println!(
-            "Cloning {} into {} ...",
-            repo_url,
-            install_location.display()
-        );
-        crate::git::clone(&repo_url, &install_location)?;
-    }
-
-    let mut entry = Map::new();
-    let github_form = source.split('/').collect::<Vec<_>>();
-    let src_obj = if github_form.len() == 2 && !source.starts_with("http") {
-        json!({ "source": "github", "repo": source })
-    } else {
-        json!({ "source": "git", "url": repo_url })
-    };
-    entry.insert("source".into(), src_obj);
-    entry.insert(
-        "installLocation".into(),
-        Value::String(install_location.to_string_lossy().to_string()),
-    );
-    entry.insert("autoUpdate".into(), Value::Bool(true));
-    // Claude Code validates `lastUpdated` as a *string* when it loads
-    // known_marketplaces.json. Omit it and every `claude plugin install` fails with
-    // "Marketplace configuration file is corrupted: <name>.lastUpdated: Invalid
-    // input: expected string, received undefined". This field is not optional.
-    entry.insert(
-        "lastUpdated".into(),
-        Value::String(crate::timestamp::utc_now_iso8601()),
-    );
-    known.insert(name.clone(), Value::Object(entry));
-
-    crate::marketplace::save_known(&path, &known)?;
-
-    // Mirror in settings.json -> extraKnownMarketplaces
-    let settings_path = crate::paths::settings_json()?;
-    let mut settings = crate::settings::load(&settings_path)?;
-    let ekm = crate::settings::extra_marketplaces_mut(&mut settings);
-    ekm.insert(
-        name.clone(),
-        json!({ "source": if source.contains('/') && !source.contains("://") {
-            json!({ "source": "github", "repo": source })
-        } else {
-            json!({ "source": "git", "url": repo_url })
-        }}),
-    );
-    crate::settings::save(&settings_path, &settings)?;
-
+    let (name, _) = crate::marketplace::parse_source(&source)?;
+    let install_location = crate::marketplace::register(&name, &source)?;
     println!("{} added marketplace {}", "✓".green(), name);
     print_add_followup(&name, &install_location);
     Ok(())
@@ -176,40 +124,6 @@ fn add_remote_index(name: &str, url: &str) -> Result<()> {
     Ok(())
 }
 
-/// Recognize a remote-index entry by its JSON shape. Non-feature-gated so older configs
-/// (entries written by a `skills-sh`-enabled build) are still tolerated when the feature
-/// is off — we just skip them in list/update rather than crashing.
-pub(crate) fn is_remote_index(entry: &Value) -> bool {
-    entry
-        .get("source")
-        .and_then(|s| s.get("source"))
-        .and_then(|v| v.as_str())
-        == Some("remote-index")
-}
-
-fn parse_source(source: &str) -> Result<(String, String)> {
-    if source.contains("://") {
-        // git URL
-        let name = source
-            .trim_end_matches(".git")
-            .rsplit('/')
-            .next()
-            .unwrap_or(source)
-            .to_string();
-        Ok((name, source.to_string()))
-    } else if source.contains('/') && !source.starts_with('/') {
-        // owner/repo
-        let name = source.split('/').next_back().unwrap_or(source).to_string();
-        let url = format!("https://github.com/{}.git", source);
-        Ok((name, url))
-    } else {
-        anyhow::bail!(
-            "unrecognized marketplace source: {} (expected owner/repo or git URL)",
-            source
-        )
-    }
-}
-
 fn remove(name: String) -> Result<()> {
     let path = crate::paths::known_marketplaces_json()?;
     let mut known = crate::marketplace::load_known(&path)?;
@@ -253,7 +167,7 @@ fn list(as_json: bool) -> Result<()> {
         return Ok(());
     }
     for (name, entry) in &known {
-        if is_remote_index(entry) {
+        if crate::marketplace::is_remote_index(entry) {
             let url = entry
                 .get("source")
                 .and_then(|s| s.get("url"))
@@ -294,7 +208,10 @@ fn update(name: Option<String>) -> Result<()> {
     let pins = crate::marketplace::load_pins()?;
     let mut dirty = false;
     for n in &targets {
-        if known.get(n).is_some_and(is_remote_index) {
+        if known
+            .get(n)
+            .is_some_and(crate::marketplace::is_remote_index)
+        {
             continue;
         }
         let repo = crate::paths::marketplaces_dir()?.join(n);
