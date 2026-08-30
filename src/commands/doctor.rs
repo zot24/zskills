@@ -166,6 +166,9 @@ pub fn run(fix: bool) -> Result<()> {
         );
     }
 
+    issues += check_claude_flavored_hub();
+    issues += check_agent_skill_path_and_marketplace(&known);
+
     if issues == 0 {
         println!(
             "{} All good — disk, inventory, and settings are in sync.",
@@ -443,6 +446,222 @@ fn check_stale_zskills_skill_md() -> usize {
     issues
 }
 
+/// Frontmatter phrase on Claude `wiki-manager`. OpenCode rewrites this.
+const CLAUDE_WIKI_ACTIVATION: &str = "Activates for /wiki commands";
+/// Body sentence on Claude `wiki-manager`. OpenCode does not keep it.
+const CLAUDE_COMPILER_SENTENCE: &str = "Claude Code is both the compiler";
+/// Claude Code tool names cited as a flavour signal. Matching the trio
+/// avoids treating a single "Read" token as Claude flavour.
+const CLAUDE_TOOL_TRIO: &[&str] = &["Read", "Write", "Edit"];
+
+/// Warn when Pi or Grok can see hub `wiki-manager` and SKILL.md is Claude-flavored.
+///
+/// Do **not** substring `/wiki:` — OpenCode SKILL.md documents `/wiki:*` as
+/// shorthand, so that match would false-positive after a successful path copy.
+fn check_claude_flavored_hub() -> usize {
+    let Ok(hub) = crate::paths::user_skills_dir() else {
+        return 0;
+    };
+    let path = hub.join("wiki-manager").join("SKILL.md");
+    if !path.is_file() {
+        return 0;
+    }
+    let vis = crate::harness::visibility_for_skill("wiki-manager");
+    let targets: Vec<&str> = vis
+        .visible
+        .iter()
+        .filter(|h| {
+            matches!(
+                h,
+                crate::harness::Harness::Pi | crate::harness::Harness::Grok
+            )
+        })
+        .map(|h| h.as_str())
+        .collect();
+    if targets.is_empty() {
+        return 0;
+    }
+    let Ok(text) = std::fs::read_to_string(&path) else {
+        return 0;
+    };
+    if !is_claude_flavored(&text) {
+        return 0;
+    }
+    println!(
+        "{} hub Agent Skill `wiki-manager` is Claude-flavored and visible to {}",
+        "!".yellow(),
+        targets.join(", ")
+    );
+    println!(
+        "  {}",
+        "Pi and Grok need the OpenCode tree. Add [[agent_skills]] marketplace + path, then sync."
+            .dimmed()
+    );
+    1
+}
+
+/// YAML frontmatter between leading `---` fences, if any.
+fn yaml_frontmatter(text: &str) -> Option<&str> {
+    let t = text.trim_start_matches('\u{feff}');
+    let t = t.strip_prefix("---")?;
+    let t = t.strip_prefix("\r\n").or_else(|| t.strip_prefix('\n'))?;
+    let idx = t.find("\n---")?;
+    Some(&t[..idx])
+}
+
+/// Body after the closing `---` fence. Whole text when there is no frontmatter.
+fn markdown_body(text: &str) -> &str {
+    let t = text.trim_start_matches('\u{feff}');
+    let Some(rest) = t.strip_prefix("---") else {
+        return text;
+    };
+    let rest = rest
+        .strip_prefix("\r\n")
+        .or_else(|| rest.strip_prefix('\n'));
+    let Some(rest) = rest else {
+        return text;
+    };
+    match rest.find("\n---") {
+        Some(idx) => {
+            let after = &rest[idx + 4..];
+            after
+                .strip_prefix("\r\n")
+                .or_else(|| after.strip_prefix('\n'))
+                .unwrap_or(after)
+        }
+        None => text,
+    }
+}
+
+/// Claude flavour: activation phrase or `tools:` trio in frontmatter, or the
+/// compiler sentence in the body. `/wiki:` alone is not a signal.
+fn is_claude_flavored(text: &str) -> bool {
+    if let Some(fm) = yaml_frontmatter(text) {
+        if fm.contains(CLAUDE_WIKI_ACTIVATION) {
+            return true;
+        }
+        if frontmatter_has_claude_tools(fm) {
+            return true;
+        }
+    }
+    markdown_body(text).contains(CLAUDE_COMPILER_SENTENCE)
+}
+
+fn frontmatter_has_claude_tools(fm: &str) -> bool {
+    let lines: Vec<&str> = fm.lines().collect();
+    let mut i = 0;
+    while i < lines.len() {
+        let trimmed = lines[i].trim_start();
+        if let Some(rest) = trimmed.strip_prefix("tools:") {
+            let mut blob = rest.trim().to_string();
+            if blob.is_empty() {
+                i += 1;
+                while i < lines.len() {
+                    let t = lines[i].trim();
+                    if let Some(item) = t.strip_prefix('-') {
+                        blob.push(' ');
+                        blob.push_str(item.trim());
+                        i += 1;
+                    } else if t.is_empty() {
+                        i += 1;
+                    } else {
+                        break;
+                    }
+                }
+            }
+            return claude_tool_trio(&blob);
+        }
+        i += 1;
+    }
+    false
+}
+
+fn claude_tool_trio(blob: &str) -> bool {
+    let tokens: std::collections::BTreeSet<&str> = blob
+        .split(|c: char| !c.is_ascii_alphanumeric())
+        .filter(|t| !t.is_empty())
+        .collect();
+    CLAUDE_TOOL_TRIO.iter().all(|t| tokens.contains(t))
+}
+
+/// Dangling `path` on disk, and a `marketplace` name missing from
+/// `known_marketplaces.json`. Neither is auto-fixable.
+fn check_agent_skill_path_and_marketplace(
+    known: &serde_json::Map<String, serde_json::Value>,
+) -> usize {
+    let Some(path) = crate::manifest::discover() else {
+        return 0;
+    };
+    let Ok(manifest) = crate::manifest::load(&path) else {
+        return 0;
+    };
+    let mut issues = 0;
+    let mut warned_mp = std::collections::BTreeSet::new();
+    let mut warned_path = std::collections::BTreeSet::new();
+    for entry in &manifest.agent_skills {
+        if let Some(mp) = &entry.marketplace {
+            if !known.contains_key(mp) {
+                if warned_mp.insert(mp.clone()) {
+                    issues += 1;
+                    println!(
+                        "{} [[agent_skills]] marketplace `{}` is not in known_marketplaces.json",
+                        "✗".red(),
+                        mp
+                    );
+                    println!(
+                        "  {}",
+                        "register it with `zskills marketplace add`, or set repo = on [[marketplaces]] and run sync"
+                            .dimmed()
+                    );
+                }
+                continue;
+            }
+        }
+        let Some(rel) = &entry.path else {
+            continue;
+        };
+        let Some(clone) = clone_dir_for(entry) else {
+            continue;
+        };
+        if crate::agent_skill::resolve_path_in_clone(&clone, rel).is_ok() {
+            continue;
+        }
+        let key = match &entry.marketplace {
+            Some(mp) => format!("marketplace:{mp}:{rel}"),
+            None => format!("source:{}:{rel}", entry.source.as_deref().unwrap_or("")),
+        };
+        if !warned_path.insert(key) {
+            continue;
+        }
+        issues += 1;
+        let origin = match &entry.marketplace {
+            Some(mp) => format!("marketplace `{mp}`"),
+            None => match &entry.source {
+                Some(src) => format!("source `{src}`"),
+                None => "the clone".to_string(),
+            },
+        };
+        println!(
+            "{} [[agent_skills]] path `{}` is not on disk in {}",
+            "✗".red(),
+            rel,
+            origin
+        );
+    }
+    issues
+}
+
+fn clone_dir_for(entry: &crate::manifest::AgentSkillEntry) -> Option<std::path::PathBuf> {
+    if let Some(mp) = entry.marketplace.as_deref() {
+        let dir = crate::paths::marketplaces_dir().ok()?.join(mp);
+        return dir.is_dir().then_some(dir);
+    }
+    let src = entry.source.as_deref()?;
+    let (_, name) = crate::agent_skill::parse_source(src).ok()?;
+    let cache = crate::paths::agent_skills_cache_dir().ok()?.join(name);
+    cache.is_dir().then_some(cache)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -513,5 +732,74 @@ mod tests {
                 "bare form of `{verb}` must be detected"
             );
         }
+    }
+
+    const CLAUDE_WIKI: &str = "---\nname: wiki-manager\ndescription: Activates for /wiki commands\ntools: Read, Write, Edit\n---\nClaude Code is both the compiler and the runtime.\n";
+    const OPENCODE_WIKI: &str = "---\nname: wiki-manager\ndescription: Manage a local wiki\n---\nOpenCode Integration Notes.\n\nTreat any /wiki:* references in this document as shorthand for the matching skill action.\n";
+
+    #[test]
+    fn claude_wiki_skill_is_flavored() {
+        assert!(is_claude_flavored(CLAUDE_WIKI));
+    }
+
+    #[test]
+    fn opencode_wiki_shorthand_is_not_flavored() {
+        assert!(
+            OPENCODE_WIKI.contains("/wiki:"),
+            "negative case must contain the shorthand that a `/wiki:` substring would trip"
+        );
+        assert!(!is_claude_flavored(OPENCODE_WIKI));
+    }
+
+    #[test]
+    fn activation_phrase_in_frontmatter_is_flavored() {
+        assert!(is_claude_flavored(
+            "---\ndescription: Activates for /wiki commands. Use when querying.\n---\nbody\n"
+        ));
+    }
+
+    #[test]
+    fn tools_trio_in_frontmatter_is_flavored() {
+        assert!(is_claude_flavored(
+            "---\nname: wiki-manager\ntools: Read, Write, Edit, Bash\n---\nbody\n"
+        ));
+        assert!(is_claude_flavored(
+            "---\ntools:\n  - Read\n  - Write\n  - Edit\n---\nbody\n"
+        ));
+    }
+
+    #[test]
+    fn compiler_sentence_in_body_is_flavored() {
+        assert!(is_claude_flavored(
+            "---\nname: wiki-manager\n---\nClaude Code is both the compiler and the runtime.\n"
+        ));
+    }
+
+    #[test]
+    fn wiki_slash_substring_alone_is_not_flavored() {
+        let text = "---\nname: wiki-manager\n---\nTreat any /wiki:* references as shorthand.\n";
+        assert!(text.contains("/wiki:"));
+        assert!(!is_claude_flavored(text));
+    }
+
+    #[test]
+    fn tools_in_body_are_not_flavored() {
+        assert!(!is_claude_flavored(
+            "---\nname: wiki-manager\n---\nUse tools: Read, Write, Edit\n"
+        ));
+    }
+
+    #[test]
+    fn activation_phrase_in_body_is_not_flavored() {
+        assert!(!is_claude_flavored(
+            "---\nname: wiki-manager\n---\nActivates for /wiki commands\n"
+        ));
+    }
+
+    #[test]
+    fn single_claude_tool_is_not_the_trio() {
+        assert!(!is_claude_flavored(
+            "---\nname: wiki-manager\ntools: Read\n---\nbody\n"
+        ));
     }
 }
