@@ -7,8 +7,9 @@
 //!    as installed.
 //! 2. `<owner>/<repo>` or `git@…` / `https://…/<repo>.git` URL — **repo path** (v0.8+).
 //!    Clones the repo, surveys it via `repo_scanner`, and installs Agent Skills found
-//!    under `skills/<name>/SKILL.md`. Marketplaces are detected and redirected; MCPs
-//!    are mentioned but not auto-installed in this mode.
+//!    under `skills/<name>/SKILL.md`. `--path REL` walks that directory instead.
+//!    Marketplaces are detected and redirected unless `--skill` / `-i` / `--path`
+//!    (sparse intent); MCPs are mentioned but not auto-installed in this mode.
 //! 3. `skills.sh` remote index (cargo feature `skills-sh`): when local resolution fails
 //!    AND the index is registered AND `ZSKILLS_SKILLS_SH_API_KEY` is set, falls through
 //!    to clone the source repo and drop SKILL.md into `~/.agents/skills/<name>/`.
@@ -22,6 +23,7 @@ pub fn run(
     interactive: bool,
     all: bool,
     skill: Option<String>,
+    path: Option<String>,
     harness: Vec<crate::harness::Harness>,
     category: String,
 ) -> Result<()> {
@@ -41,6 +43,9 @@ pub fn run(
     if skill.is_some() && repo_specs.is_empty() {
         anyhow::bail!("--skill only applies to repo installs (owner/repo or git URL)");
     }
+    if path.is_some() && repo_specs.is_empty() {
+        anyhow::bail!("--path only applies to repo installs (owner/repo or git URL)");
+    }
 
     let mut failures = 0usize;
     for spec in &repo_specs {
@@ -49,6 +54,7 @@ pub fn run(
             interactive,
             all,
             skill.as_deref(),
+            path.as_deref(),
             &harness,
             &category,
         ) {
@@ -87,6 +93,7 @@ fn install_from_repo(
     interactive: bool,
     all: bool,
     skill: Option<&str>,
+    path: Option<&str>,
     harness: &[crate::harness::Harness],
     category: &str,
 ) -> Result<()> {
@@ -99,14 +106,26 @@ fn install_from_repo(
         }
     }
     println!("{} {}", "Surveying".dimmed(), spec.to_string().bold());
-    let cache = crate::agent_skill::ensure_cache(spec)?;
-    let survey = crate::repo_scanner::survey(&cache)?;
+
+    let path = match path {
+        Some(p) => Some(crate::manifest::normalize_skill_path(p)?),
+        None => None,
+    };
+    let (cache, origin) = resolve_repo_origin(spec, path.as_deref())?;
+    if let Some(rel) = path.as_deref() {
+        crate::agent_skill::resolve_path_in_clone(&cache, rel)?;
+    }
+    let survey = match path.as_deref() {
+        Some(rel) => crate::repo_scanner::survey_with_path(&cache, Some(rel))?,
+        None => crate::repo_scanner::survey(&cache)?,
+    };
 
     // A repo can be *both* a plugin marketplace and a collection of Agent Skills.
     // Redirecting to the marketplace is the right default for a bare
-    // `zskills install owner/repo`, but `--skill NAME` / `-i` are explicit sparse
-    // Agent Skill requests: the user already said what they want, so honour it.
-    let sparse_intent = skill.is_some() || interactive;
+    // `zskills install owner/repo`, but `--skill NAME` / `-i` / `--path` are
+    // explicit sparse Agent Skill requests: the user already said what they
+    // want, so honour it.
+    let sparse_intent = skill.is_some() || interactive || path.is_some();
     if survey.marketplace && !sparse_intent {
         println!(
             "{}",
@@ -168,16 +187,23 @@ fn install_from_repo(
                 .collect::<Vec<_>>()
                 .join(", ")
         );
-        return install_chosen(spec, &[name.to_string()], &hs, category);
+        let installed = install_chosen(spec, &origin, &[name.to_string()], &hs, category)?;
+        append_path_manifest(&origin, &installed, true, harness)?;
+        return Ok(());
     }
 
     const AUTO_INSTALL_MAX: usize = 5;
     let n = survey.agent_skills.len();
     let chosen: Vec<String> = match (n, interactive, all) {
-        (0, _, _) => anyhow::bail!(
-            "no Agent Skills found in {} (expected skills/<name>/SKILL.md)",
-            spec
-        ),
+        (0, _, _) => {
+            if let Some(rel) = path.as_deref() {
+                anyhow::bail!("no Agent Skills under path '{rel}' in {spec}");
+            }
+            anyhow::bail!(
+                "no Agent Skills found in {} (expected skills/<name>/SKILL.md)",
+                spec
+            )
+        }
         (1, _, _) => vec![survey.agent_skills[0].name.clone()],
         (_, true, _) => pick_skills(spec, &survey.agent_skills)?,
         (_, false, true) => survey.agent_skills.iter().map(|s| s.name.clone()).collect(),
@@ -185,7 +211,7 @@ fn install_from_repo(
             survey.agent_skills.iter().map(|s| s.name.clone()).collect()
         }
         (count, false, false) => {
-            print_large_collection_summary(spec, count, &survey.agent_skills);
+            print_large_collection_summary(spec, count, &survey.agent_skills, path.as_deref());
             return Ok(());
         }
     };
@@ -195,23 +221,49 @@ fn install_from_repo(
         return Ok(());
     }
 
-    install_chosen(spec, &chosen, &hs, category)
+    let installed = install_chosen(spec, &origin, &chosen, &hs, category)?;
+    // `--skill` / `-i` name the rows they picked. `--path` without those is
+    // "every Agent Skill under this path" — one unnamed row, not `skills = []`.
+    append_path_manifest(&origin, &installed, interactive, harness)?;
+    Ok(())
+}
+
+/// Clone (or reuse a registered marketplace clone) and the origin `install_from` uses.
+fn resolve_repo_origin(
+    spec: &str,
+    path: Option<&str>,
+) -> Result<(std::path::PathBuf, crate::agent_skill::SkillOrigin)> {
+    if let Some(rel) = path {
+        if let Some(mp) = crate::marketplace::name_for_source_spec(spec) {
+            let clone = crate::agent_skill::resolve_marketplace_clone(&mp)?;
+            return Ok((
+                clone,
+                crate::agent_skill::SkillOrigin::marketplace(mp, Some(rel.to_string())),
+            ));
+        }
+        let cache = crate::agent_skill::ensure_cache(spec)?;
+        return Ok((
+            cache,
+            crate::agent_skill::SkillOrigin::git(spec, Some(rel.to_string())),
+        ));
+    }
+    let cache = crate::agent_skill::ensure_cache(spec)?;
+    Ok((cache, crate::agent_skill::SkillOrigin::git(spec, None)))
 }
 
 fn install_chosen(
     spec: &str,
+    origin: &crate::agent_skill::SkillOrigin,
     chosen: &[String],
     hs: &[crate::harness::Harness],
     category: &str,
-) -> Result<()> {
+) -> Result<Vec<String>> {
+    let mut installed_names = Vec::new();
     for name in chosen {
-        match crate::agent_skill::install_from(
-            &crate::agent_skill::SkillOrigin::git(spec, None),
-            Some(name),
-        ) {
+        match crate::agent_skill::install_from(origin, Some(name)) {
             Ok(installed) => {
                 crate::harness::link_hub_to_harnesses(&installed, hs, category)?;
-                for n in installed {
+                for n in &installed {
                     println!(
                         "{} {} {}",
                         "+".green(),
@@ -219,11 +271,73 @@ fn install_chosen(
                         format!("[from {}]", spec).dimmed()
                     );
                 }
+                installed_names.extend(installed);
             }
             Err(e) => eprintln!("{} {}: {}", "✗".red(), name, e),
         }
     }
+    Ok(installed_names)
+}
+
+/// Durable `[[agent_skills]]` row for a `--path` install. `marketplace` when
+/// the spec matches a registered marketplace, else `source`.
+fn append_path_manifest(
+    origin: &crate::agent_skill::SkillOrigin,
+    installed: &[String],
+    named: bool,
+    harness: &[crate::harness::Harness],
+) -> Result<()> {
+    let Some(rel) = origin.path.as_deref() else {
+        return Ok(());
+    };
+    if installed.is_empty() {
+        return Ok(());
+    }
+    let manifest_path = default_manifest_path();
+    let harnesses: Vec<String> = harness.iter().map(|h| h.as_str().to_string()).collect();
+    let (marketplace, source) = match &origin.kind {
+        crate::agent_skill::OriginKind::Marketplace { name } => (Some(name.clone()), None),
+        crate::agent_skill::OriginKind::Git { source } => (None, Some(source.clone())),
+    };
+    let rows: Vec<Option<String>> = if named {
+        installed.iter().map(|n| Some(n.clone())).collect()
+    } else {
+        vec![None]
+    };
+    let mut wrote = false;
+    for name in rows {
+        let entry = crate::manifest::AgentSkillEntry {
+            source: source.clone(),
+            marketplace: marketplace.clone(),
+            path: Some(rel.to_string()),
+            name,
+            harnesses: harnesses.clone(),
+            ..Default::default()
+        };
+        if crate::manifest::append_agent_skill(&manifest_path, &entry)? {
+            wrote = true;
+        }
+    }
+    if wrote {
+        println!(
+            "  {} wrote [[agent_skills]] to {}",
+            "·".dimmed(),
+            manifest_path.display()
+        );
+    }
     Ok(())
+}
+
+fn default_manifest_path() -> std::path::PathBuf {
+    if let Some(p) = crate::manifest::discover() {
+        return p;
+    }
+    std::env::var_os("XDG_CONFIG_HOME")
+        .map(std::path::PathBuf::from)
+        .or_else(|| dirs::home_dir().map(|h| h.join(".config")))
+        .unwrap_or_else(|| std::path::PathBuf::from(".config"))
+        .join("zskills")
+        .join("skills.toml")
 }
 
 fn pick_skills(spec: &str, skills: &[crate::repo_scanner::SkillSummary]) -> Result<Vec<String>> {
@@ -242,6 +356,7 @@ fn print_large_collection_summary(
     spec: &str,
     count: usize,
     skills: &[crate::repo_scanner::SkillSummary],
+    path: Option<&str>,
 ) {
     println!(
         "{} contains {} {} — zskills won't install all of them by default.",
@@ -250,14 +365,17 @@ fn print_large_collection_summary(
         "Agent Skills".dimmed()
     );
     println!("\n{}", "Options:".bold());
+    // Repeat `--path` so the next step stays sparse-intent and surveys the
+    // same tree. Without it, a marketplace repo redirects or walks SKILL_ROOTS.
+    let path_flag = path.map(|p| format!(" --path {p}")).unwrap_or_default();
     println!(
         "  {}   {}",
-        format!("zskills skill install {} -i", spec).bold(),
+        format!("zskills skill install {spec}{path_flag} -i").bold(),
         "interactive picker".dimmed()
     );
     println!(
         "  {}   {}",
-        format!("zskills skill install {} --all", spec).bold(),
+        format!("zskills skill install {spec}{path_flag} --all").bold(),
         format!("install all {} skills", count).dimmed()
     );
     let preview: Vec<&str> = skills.iter().take(5).map(|s| s.name.as_str()).collect();
@@ -484,6 +602,7 @@ fn run_interactive_browse_marketplaces(
             vec![qualified_names[idx].clone()],
             false,
             false,
+            None,
             None,
             harness,
             category,

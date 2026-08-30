@@ -134,6 +134,7 @@ fn install_from_hits(hits: &[Hit]) -> Result<()> {
                 false,
                 false,
                 None,
+                None,
                 Vec::new(),
                 crate::harness::DEFAULT_HERMES_CATEGORY.to_string(),
             )?;

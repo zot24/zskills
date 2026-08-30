@@ -9,6 +9,7 @@ pub fn install(
     interactive: bool,
     all: bool,
     skill: Option<String>,
+    path: Option<String>,
     harness: Vec<crate::harness::Harness>,
     category: String,
 ) -> Result<()> {
@@ -20,7 +21,7 @@ pub fn install(
             "skill install takes owner/repo or a git URL; use `zskills plugin install` for name@marketplace"
         );
     }
-    crate::commands::install::run(specs, interactive, all, skill, harness, category)
+    crate::commands::install::run(specs, interactive, all, skill, path, harness, category)
 }
 
 pub fn upgrade(names: Vec<String>) -> Result<()> {
