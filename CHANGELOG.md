@@ -2,6 +2,30 @@
 
 All notable changes to this project are documented here. The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html). Releases from this point forward are managed by [release-please](https://github.com/googleapis/release-please) based on [Conventional Commits](https://www.conventionalcommits.org/).
 
+## [1.3.0](https://github.com/zot24/zskills/compare/v1.2.0...v1.3.0) (2026-08-30)
+
+
+### Features
+
+* copy Agent Skills from a marketplace clone via marketplace and path ([d9c065e](https://github.com/zot24/zskills/commit/d9c065e12afc5a4a7ac7671fb8e47a009db817de))
+* doctor warns when hub wiki-manager is Claude-flavored for Pi or Grok ([8baa6d8](https://github.com/zot24/zskills/commit/8baa6d81f14b7e8916dc0e2ffce00e28a986f8cd))
+* hint Agent Skill trees under plugins/*/skills after marketplace add ([41e83c7](https://github.com/zot24/zskills/commit/41e83c7ce91c62dfb6f97a8cebf2627a58179834))
+* select an Agent Skill tree with path inside a source clone ([c48f505](https://github.com/zot24/zskills/commit/c48f50520d4cf703fe9ff86b8d5632f71d55ecb9))
+* skill install --path for non-conventional Agent Skill roots ([b743ac8](https://github.com/zot24/zskills/commit/b743ac8f39d571de3ebefa0df152bb8e38304fb1))
+
+
+### Bug Fixes
+
+* declare marketplace source in skills.toml so sync can clone on a fresh machine ([675ad99](https://github.com/zot24/zskills/commit/675ad998a768b133eff83e3b8f78ae4ac4ea618e))
+* **doctor:** guard the shipped SKILL.md against verbs removed in 1.0 ([#52](https://github.com/zot24/zskills/issues/52)) ([10528b8](https://github.com/zot24/zskills/commit/10528b8eefd483d6b03e604ac1a64eb8bec3b7dd))
+* print plugins and next install command after marketplace add ([#56](https://github.com/zot24/zskills/issues/56)) ([2906957](https://github.com/zot24/zskills/commit/2906957746f5938904767cda1d252f50db148a51))
+
+
+### Documentation
+
+* declare llm-wiki plugin and OpenCode Agent Skills for Claude, Pi, and Grok ([ed4197f](https://github.com/zot24/zskills/commit/ed4197f6a3b8233ea9c596db5e9f097066fd0f06))
+* update command surface and harness rules for 1.2.0 ([#48](https://github.com/zot24/zskills/issues/48)) ([470abd2](https://github.com/zot24/zskills/commit/470abd2f458e6bcae3139a6d199fd3390e96ae91))
+
 ## [1.2.0](https://github.com/zot24/zskills/compare/v1.1.0...v1.2.0) (2026-08-25)
 
 
