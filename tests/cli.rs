@@ -1883,6 +1883,92 @@ fn sync_adopt_appends_marketplace_source() {
 }
 
 #[test]
+fn sync_adopt_fills_source_on_pin_only_row() {
+    let home = fake_home();
+    write_manifest(
+        &home,
+        "# keep\n[[marketplaces]]\nname = \"test-mp\"\npin = \"v1\"\n\n[[skills]]\nname = \"foo\"\nmarketplace = \"test-mp\"\n",
+    );
+
+    zskills(&home)
+        .args(["sync", "--adopt"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("no repo or url"));
+
+    let body = fs::read_to_string(home.path().join("config/zskills/skills.toml")).unwrap();
+    assert!(body.contains("# keep"), "comments must survive: {body}");
+    assert!(
+        body.contains("pin = \"v1\""),
+        "adopt must not drop the pin: {body}"
+    );
+    assert!(
+        body.contains("repo = \"owner/test-mp\""),
+        "adopt must fill the github source: {body}"
+    );
+}
+
+#[test]
+fn sync_adopt_does_not_clobber_existing_source_or_pin() {
+    let home = fake_home();
+    write_manifest(
+        &home,
+        "[[marketplaces]]\nname = \"test-mp\"\nrepo = \"owner/test-mp\"\npin = \"v1\"\n\n[[skills]]\nname = \"foo\"\nmarketplace = \"test-mp\"\n",
+    );
+
+    zskills(&home)
+        .args(["sync", "--adopt"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("adopt   marketplace").not());
+
+    let body = fs::read_to_string(home.path().join("config/zskills/skills.toml")).unwrap();
+    assert!(
+        body.contains("repo = \"owner/test-mp\""),
+        "existing repo must stay: {body}"
+    );
+    assert!(
+        body.contains("pin = \"v1\""),
+        "existing pin must stay: {body}"
+    );
+    assert_eq!(
+        body.matches("[[marketplaces]]").count(),
+        1,
+        "must not append a second row: {body}"
+    );
+}
+
+#[test]
+fn sync_resolves_unqualified_plugin_after_register() {
+    let upstream = tempfile::tempdir().unwrap();
+    let repo = write_marketplace_repo(upstream.path(), "skills", "foo");
+
+    let home = fake_home();
+    wipe_plugins(&home);
+    write_manifest(
+        &home,
+        &format!(
+            "[[marketplaces]]\nname = \"zot24-skills\"\nurl = \"{}\"\n\n[[skills]]\nname = \"foo\"\n",
+            file_url(&repo)
+        ),
+    );
+
+    zskills(&home)
+        .args(["sync"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("register marketplace"))
+        .stdout(predicate::str::contains("resolve plugin"))
+        .stdout(predicate::str::contains("applied."));
+
+    let settings = read_settings(&home);
+    assert_eq!(
+        settings["enabledPlugins"]["foo@zot24-skills"], true,
+        "unqualified name must resolve after register: {settings:#}"
+    );
+}
+
+#[test]
 fn sync_skips_register_when_marketplace_is_already_known() {
     let home = fake_home();
     write_manifest(

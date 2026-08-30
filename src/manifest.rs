@@ -516,21 +516,7 @@ pub fn append_marketplace(path: &Path, entry: &MarketplaceEntry) -> Result<bool>
     };
     let mut t = Table::new();
     t["name"] = value(&entry.name);
-    let repo = entry
-        .repo
-        .as_deref()
-        .map(str::trim)
-        .filter(|s| !s.is_empty());
-    if let Some(repo) = repo {
-        t["repo"] = value(repo);
-    } else if let Some(url) = entry
-        .url
-        .as_deref()
-        .map(str::trim)
-        .filter(|s| !s.is_empty())
-    {
-        t["url"] = value(url);
-    }
+    apply_source_fields(&mut t, entry.repo.as_deref(), entry.url.as_deref());
     if let Some(pin) = entry
         .pin
         .as_deref()
@@ -540,6 +526,69 @@ pub fn append_marketplace(path: &Path, entry: &MarketplaceEntry) -> Result<bool>
         t["pin"] = value(pin);
     }
     aot.push(t);
+
+    std::fs::write(path, doc.to_string())
+        .with_context(|| format!("writing manifest {}", path.display()))?;
+    Ok(true)
+}
+
+fn toml_nonempty_str(t: &toml_edit::Table, key: &str) -> bool {
+    t.get(key)
+        .and_then(|v| v.as_str())
+        .map(str::trim)
+        .is_some_and(|s| !s.is_empty())
+}
+
+fn apply_source_fields(t: &mut toml_edit::Table, repo: Option<&str>, url: Option<&str>) {
+    use toml_edit::value;
+    let repo = repo.map(str::trim).filter(|s| !s.is_empty());
+    if let Some(repo) = repo {
+        t["repo"] = value(repo);
+    } else if let Some(url) = url.map(str::trim).filter(|s| !s.is_empty()) {
+        t["url"] = value(url);
+    }
+}
+
+/// Fill `repo` or `url` on an existing `[[marketplaces]]` row that has no source.
+/// Leaves `pin` untouched. Returns false when the name is missing or already has a source.
+pub fn fill_marketplace_source(
+    path: &Path,
+    name: &str,
+    repo: Option<&str>,
+    url: Option<&str>,
+) -> Result<bool> {
+    use toml_edit::{DocumentMut, Item};
+
+    if !path.exists() {
+        return Ok(false);
+    }
+    let raw = std::fs::read_to_string(path)
+        .with_context(|| format!("reading manifest {}", path.display()))?;
+    let mut doc: DocumentMut = raw
+        .parse()
+        .with_context(|| format!("parsing manifest {} as TOML", path.display()))?;
+
+    let Some(Item::ArrayOfTables(aot)) = doc.get_mut("marketplaces") else {
+        return Ok(false);
+    };
+    let mut idx = None;
+    for (i, t) in aot.iter().enumerate() {
+        if t.get("name").and_then(|v| v.as_str()) == Some(name) {
+            idx = Some(i);
+            break;
+        }
+    }
+    let Some(i) = idx else {
+        return Ok(false);
+    };
+    let t = aot.get_mut(i).expect("index from scan");
+    if toml_nonempty_str(t, "repo") || toml_nonempty_str(t, "url") {
+        return Ok(false);
+    }
+    apply_source_fields(t, repo, url);
+    if !toml_nonempty_str(t, "repo") && !toml_nonempty_str(t, "url") {
+        return Ok(false);
+    }
 
     std::fs::write(path, doc.to_string())
         .with_context(|| format!("writing manifest {}", path.display()))?;
@@ -893,5 +942,43 @@ mod marketplace_pin_tests {
     fn an_entry_without_source_has_no_spec() {
         let m = parse("[[marketplaces]]\nname = \"llm-wiki\"\npin = \"v0.23.0\"\n");
         assert_eq!(m.marketplaces[0].source_spec(), None);
+    }
+
+    #[test]
+    fn fill_marketplace_source_adds_repo_and_keeps_pin() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("skills.toml");
+        std::fs::write(
+            &path,
+            "# keep\n[[marketplaces]]\nname = \"llm-wiki\"\npin = \"v0.23.0\"\n",
+        )
+        .unwrap();
+        assert!(fill_marketplace_source(&path, "llm-wiki", Some("nvk/llm-wiki"), None).unwrap());
+        let raw = std::fs::read_to_string(&path).unwrap();
+        assert!(raw.contains("# keep"), "comments must survive: {raw}");
+        assert!(
+            raw.contains("pin = \"v0.23.0\""),
+            "pin must not be dropped: {raw}"
+        );
+        assert!(
+            raw.contains("repo = \"nvk/llm-wiki\""),
+            "repo must be filled: {raw}"
+        );
+    }
+
+    #[test]
+    fn fill_marketplace_source_skips_when_source_already_set() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("skills.toml");
+        std::fs::write(
+            &path,
+            "[[marketplaces]]\nname = \"llm-wiki\"\nrepo = \"nvk/llm-wiki\"\npin = \"v0.23.0\"\n",
+        )
+        .unwrap();
+        assert!(!fill_marketplace_source(&path, "llm-wiki", Some("other/repo"), None).unwrap());
+        let raw = std::fs::read_to_string(&path).unwrap();
+        assert!(raw.contains("repo = \"nvk/llm-wiki\""));
+        assert!(!raw.contains("other/repo"));
+        assert!(raw.contains("pin = \"v0.23.0\""));
     }
 }

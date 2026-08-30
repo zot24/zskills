@@ -54,27 +54,44 @@ pub fn run(
         .map(|m| m.name.clone())
         .collect();
 
-    let marketplaces_to_adopt: Vec<crate::manifest::MarketplaceEntry> = {
-        let mut names: BTreeSet<String> = known.keys().cloned().collect();
-        names.extend(extra.keys().cloned());
-        names
-            .into_iter()
-            .filter(|n| !declared_mp.contains(n))
-            .filter_map(|n| {
-                let entry = known.get(&n).or_else(|| extra.get(&n))?;
-                let (repo, url) = crate::marketplace::source_for_manifest(entry)?;
-                Some(crate::manifest::MarketplaceEntry {
-                    name: n,
-                    repo,
-                    url,
-                    pin: None,
-                })
+    let mut names: BTreeSet<String> = known.keys().cloned().collect();
+    names.extend(extra.keys().cloned());
+    let marketplaces_to_adopt: Vec<crate::manifest::MarketplaceEntry> = names
+        .iter()
+        .filter(|n| !declared_mp.contains(*n))
+        .filter_map(|n| {
+            let entry = known.get(n).or_else(|| extra.get(n))?;
+            let (repo, url) = crate::marketplace::source_for_manifest(entry)?;
+            Some(crate::manifest::MarketplaceEntry {
+                name: n.clone(),
+                repo,
+                url,
+                pin: None,
             })
-            .collect()
-    };
+        })
+        .collect();
+    // Pin-only rows already in the manifest: fill `repo`/`url` so a later
+    // fresh-machine sync can clone. Leave `pin` alone. Skip rows that already
+    // declare a source.
+    let marketplaces_to_fill: Vec<crate::manifest::MarketplaceEntry> = manifest
+        .marketplaces
+        .iter()
+        .filter(|m| m.source_spec().is_none())
+        .filter_map(|m| {
+            let entry = known.get(&m.name).or_else(|| extra.get(&m.name))?;
+            let (repo, url) = crate::marketplace::source_for_manifest(entry)?;
+            Some(crate::manifest::MarketplaceEntry {
+                name: m.name.clone(),
+                repo,
+                url,
+                pin: None,
+            })
+        })
+        .collect();
 
     let mut desired_plugins: BTreeSet<String> = BTreeSet::new();
     let mut unresolved: BTreeSet<String> = BTreeSet::new();
+    let mut pending_unqualified: Vec<&crate::manifest::SkillEntry> = Vec::new();
     let mut plugin_copies: Vec<(String, Vec<crate::harness::Harness>)> = Vec::new();
     for entry in &manifest.skills {
         let qualified = match entry.qualified() {
@@ -82,7 +99,13 @@ pub fn run(
             None => match crate::marketplace::resolve_spec(&entry.name, &known) {
                 Ok(q) => q,
                 Err(e) => {
-                    eprintln!("{} {}: {}", "✗".red(), entry.name, e);
+                    // A name-only row cannot resolve against an empty known map.
+                    // If we are about to register a marketplace, retry after clone.
+                    if !registerable.is_empty() {
+                        pending_unqualified.push(entry);
+                    } else {
+                        eprintln!("{} {}: {}", "✗".red(), entry.name, e);
+                    }
                     continue;
                 }
             },
@@ -139,7 +162,10 @@ pub fn run(
         .difference(&desired_plugins)
         .filter(|k| !unresolved.contains(*k))
         .collect();
-    let skip_plugin_diff = desired_plugins.is_empty() && !current_plugins.is_empty() && !force;
+    let skip_plugin_diff = desired_plugins.is_empty()
+        && pending_unqualified.is_empty()
+        && !current_plugins.is_empty()
+        && !force;
     if skip_plugin_diff {
         eprintln!(
             "{} skipping plugin reconcile: manifest has no [[skills]] ({} enabled); pass --force to disable extras",
@@ -288,7 +314,8 @@ pub fn run(
         && plugin_copies.is_empty()
         && to_register.is_empty()
         && unresolved.is_empty()
-        && !(adopt && !marketplaces_to_adopt.is_empty());
+        && pending_unqualified.is_empty()
+        && !(adopt && (!marketplaces_to_adopt.is_empty() || !marketplaces_to_fill.is_empty()));
     if nothing {
         println!("  (no changes — manifest matches current state)");
         return Ok(());
@@ -320,6 +347,22 @@ pub fn run(
                 "(registered but not in manifest — adding)".dimmed()
             );
         }
+        for m in &marketplaces_to_fill {
+            println!(
+                "  {} adopt   marketplace  {} {}",
+                "+".cyan(),
+                m.name,
+                "(registered but no repo or url — filling)".dimmed()
+            );
+        }
+    }
+    for entry in &pending_unqualified {
+        println!(
+            "  {} resolve plugin  {} {}",
+            "~".cyan(),
+            entry.name,
+            "(after marketplace register)".dimmed()
+        );
     }
     for q in &unresolved {
         println!(
@@ -459,6 +502,16 @@ pub fn run(
                 adopted += 1;
             }
         }
+        for m in &marketplaces_to_fill {
+            if crate::manifest::fill_marketplace_source(
+                &path,
+                &m.name,
+                m.repo.as_deref(),
+                m.url.as_deref(),
+            )? {
+                adopted += 1;
+            }
+        }
         for k in &plugins_to_disable {
             let (name, mp) = k
                 .split_once('@')
@@ -547,7 +600,52 @@ pub fn run(
     }
     let known = crate::marketplace::load_known(&crate::paths::known_marketplaces_json()?)?;
     let extra = crate::marketplace::extra_known();
+    let mut late_enables: Vec<String> = Vec::new();
+    for entry in &pending_unqualified {
+        match crate::marketplace::resolve_spec(&entry.name, &known) {
+            Ok(q) => {
+                if let Some((_, mp)) = q.rsplit_once('@') {
+                    if !crate::marketplace::is_registered(&known, &extra, mp) {
+                        unresolved.insert(q);
+                        continue;
+                    }
+                }
+                let targets = match crate::harness::resolve(
+                    &[],
+                    &manifest.defaults.harnesses,
+                    &entry.harnesses,
+                    crate::harness::default_plugin(),
+                ) {
+                    Ok(t) => t,
+                    Err(e) => {
+                        eprintln!("{} {}: {}", "✗".red(), entry.name, e);
+                        continue;
+                    }
+                };
+                if targets.contains(&crate::harness::Harness::Claude)
+                    && !current_plugins.contains(&q)
+                {
+                    late_enables.push(q.clone());
+                }
+                if targets
+                    .iter()
+                    .any(|h| h.needs_hub_copy() || h.skill_skip_reason().is_some())
+                {
+                    plugin_copies.push((q, targets));
+                }
+            }
+            Err(e) => eprintln!("{} {}: {}", "✗".red(), entry.name, e),
+        }
+    }
     for q in &desired_plugins {
+        let Some((_, mp)) = q.rsplit_once('@') else {
+            continue;
+        };
+        if !crate::marketplace::is_registered(&known, &extra, mp) {
+            unresolved.insert(q.clone());
+        }
+    }
+    for (q, _) in &plugin_copies {
         let Some((_, mp)) = q.rsplit_once('@') else {
             continue;
         };
@@ -567,6 +665,12 @@ pub fn run(
             }
             ep.insert((*k).clone(), Value::Bool(true));
         }
+        for k in &late_enables {
+            if unresolved.contains(k) {
+                continue;
+            }
+            ep.insert(k.clone(), Value::Bool(true));
+        }
         for k in &plugins_to_disable {
             ep.insert((*k).clone(), Value::Bool(false));
         }
@@ -574,6 +678,9 @@ pub fn run(
     }
 
     for (q, hs) in &plugin_copies {
+        if unresolved.contains(q) {
+            continue;
+        }
         match crate::harness::materialize_hub(q, hs, crate::harness::DEFAULT_HERMES_CATEGORY) {
             Ok(names) => {
                 if !names.is_empty() {
