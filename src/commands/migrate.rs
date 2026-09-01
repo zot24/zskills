@@ -1,5 +1,5 @@
 //! `migrate <project>` — promote a project's enabledPlugins + extraKnownMarketplaces
-//! to user scope (~/.claude/settings.json), optionally removing them from the project.
+//! + MCP servers to user scope, optionally removing them from the project.
 
 use anyhow::Result;
 use owo_colors::OwoColorize;
@@ -33,9 +33,12 @@ pub fn run(project: PathBuf, remove_from_project: bool, dry_run: bool) -> Result
         Vec::new()
     };
 
-    if project_settings_path.is_none() && project_agent_skills.is_empty() {
+    let project_mcps = crate::mcp::load_project_dir(&project);
+    let has_mcp_source = crate::mcp::project_has_mcp_sources(&project);
+
+    if project_settings_path.is_none() && project_agent_skills.is_empty() && !has_mcp_source {
         anyhow::bail!(
-            "no .claude/settings*.json or .claude/skills/ found in {}",
+            "no .claude/settings*.json, .claude/skills/, or MCP config found in {}",
             project.display()
         );
     }
@@ -103,7 +106,29 @@ pub fn run(project: PathBuf, remove_from_project: bool, dry_run: bool) -> Result
         }
     }
 
-    if promote_skills.is_empty() && promote_markets.is_empty() && promote_agent_skills.is_empty() {
+    // Plan: MCP servers. Promote the raw JSON entry verbatim (env/header
+    // values included). Skip plugin-provided names and names already at user
+    // scope — never overwrite the user's config with the project's.
+    let user_mcp_names = crate::mcp::user_server_names();
+    let mut promote_mcps: Vec<(String, Value, PathBuf)> = Vec::new();
+    for s in &project_mcps {
+        if matches!(s.source, crate::mcp::Source::FromPlugin { .. }) {
+            continue;
+        }
+        if user_mcp_names.contains(&s.name) {
+            continue;
+        }
+        let Some(raw) = crate::mcp::read_raw_from_file(&s.source_file, &s.name) else {
+            continue;
+        };
+        promote_mcps.push((s.name.clone(), raw, s.source_file.clone()));
+    }
+
+    if promote_skills.is_empty()
+        && promote_markets.is_empty()
+        && promote_agent_skills.is_empty()
+        && promote_mcps.is_empty()
+    {
         println!("  (everything in the project is already present at user scope — nothing to do)");
         if !remove_from_project {
             return Ok(());
@@ -117,6 +142,9 @@ pub fn run(project: PathBuf, remove_from_project: bool, dry_run: bool) -> Result
         }
         for (k, _) in &promote_agent_skills {
             println!("  {} promote agent skill {}", "+".green(), k);
+        }
+        for (k, _, _) in &promote_mcps {
+            println!("  {} promote mcp         {}", "+".green(), k);
         }
     }
 
@@ -137,6 +165,13 @@ pub fn run(project: PathBuf, remove_from_project: bool, dry_run: bool) -> Result
                 "  {} clear {} agent skill(s) from project .claude/skills/",
                 "-".yellow(),
                 project_agent_skills.len()
+            );
+        }
+        if !promote_mcps.is_empty() {
+            println!(
+                "  {} clear {} mcp(s) from project",
+                "-".yellow(),
+                promote_mcps.len()
             );
         }
     }
@@ -183,6 +218,12 @@ pub fn run(project: PathBuf, remove_from_project: bool, dry_run: bool) -> Result
         crate::agent_skill::save_inventory(&inv)?;
     }
 
+    // Apply: MCP servers via upsert so the user-scope target (and the
+    // managed-scope refusal) stay in write_target. Values are the raw JSON.
+    for (name, raw, _) in &promote_mcps {
+        crate::mcp::upsert(&crate::mcp::Scope::User, name, raw.clone())?;
+    }
+
     if remove_from_project {
         if let Some(p_settings) = project_settings {
             let mut p = p_settings.clone();
@@ -198,6 +239,11 @@ pub fn run(project: PathBuf, remove_from_project: bool, dry_run: bool) -> Result
             if dir.exists() {
                 std::fs::remove_dir_all(dir).ok();
             }
+        }
+        // After the settings save above, strip promoted MCP keys from their
+        // source files so a settings rewrite cannot put them back.
+        for (name, _, source_file) in &promote_mcps {
+            crate::mcp::delete_key_from_file(source_file, name)?;
         }
     }
 

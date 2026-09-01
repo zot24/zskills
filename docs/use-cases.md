@@ -278,7 +278,13 @@ You've added MCP servers ad-hoc with `claude mcp add` from different projects; n
    zskills list --paths
    ```
 
-2. **Manually transcribe each into `~/.config/zskills/skills.toml`** as `[[mcps]]` entries. Use `${VAR}` refs for any credentials — never paste literal tokens.
+2. **Adopt every configured-but-unlisted MCP into the manifest:**
+
+   ```bash
+   zskills sync --adopt
+   ```
+
+   Each server becomes a `[[mcps]]` row with its transport details intact. Env and header values are copied verbatim — eyeball `skills.toml` and replace any literal secrets with `${VAR}` references before you commit it.
 
 3. **Sync with prune** to write at user scope AND delete the duplicates from other scopes:
 
@@ -287,8 +293,6 @@ You've added MCP servers ad-hoc with `claude mcp add` from different projects; n
    ```
 
 `--prune` removes MCP entries currently in settings files but absent from the manifest. **Plugin-injected MCPs are never pruned** — zskills detects them by name match against every enabled plugin's `plugin.json` / sibling `.mcp.json` and leaves them alone. **Managed scope is never written** — IT-deployed entries are read-only.
-
-A `dump-mcps` helper to skip the manual transcription step is on the roadmap (see [issue #14](https://github.com/zot24/zskills/issues/14)).
 
 ## 16. Validate MCPs before launching Claude Code
 

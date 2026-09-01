@@ -379,7 +379,7 @@ Doctor never spawns or talks to an MCP server. Running-state diagnosis (whether 
 Walk a directory tree looking for project-scope skills.
 
 ```
-zskills scan [<path>] [--depth N] [--json]
+zskills scan [<path>] [--depth N] [--json] [--mcp]
 ```
 
 | Flag | Default | Description |
@@ -387,16 +387,18 @@ zskills scan [<path>] [--depth N] [--json]
 | `<path>` | `.` | Tree to walk |
 | `--depth N` | 6 | Maximum directory recursion depth |
 | `--json` | off | Machine-readable output |
+| `--mcp` | off | Also report each project's MCP servers (name and kind only; never env or header values). Without this flag, MCP-only projects are not listed and the JSON has no `mcps` key. |
 
-Detects two patterns:
+Detects:
 - `.claude/settings.json` or `.claude/settings.local.json` with `enabledPlugins` / `extraKnownMarketplaces` (project-scope plugin enables)
 - `.claude/skills/<name>/SKILL.md` (project-scope Agent Skills)
+- with `--mcp`: `<project>/.mcp.json` (wrapped `{"mcpServers": {…}}` or a flat top-level map) and `mcpServers` in `.claude/settings.json` / `settings.local.json`
 
 The default depth of 6 catches both patterns from a `~/Desktop/code`-style parent directory (Agent Skills are at depth 5 from the project root).
 
 ## `migrate`
 
-Promote ONE project's enabled plugins and project-scope Agent Skills to user scope.
+Promote ONE project's enabled plugins, project-scope Agent Skills, and MCP servers to user scope.
 
 ```
 zskills migrate <project> [--remove-from-project] [--dry-run]
@@ -404,7 +406,9 @@ zskills migrate <project> [--remove-from-project] [--dry-run]
 
 Reads `<project>/.claude/settings.json` (or `settings.local.json`) and `<project>/.claude/skills/<name>/`. Writes promoted plugin enables into `~/.claude/settings.json`'s `enabledPlugins` and copies Agent Skill directories into `~/.agents/skills/`.
 
-`--remove-from-project` clears `enabledPlugins`, `extraKnownMarketplaces`, and `.claude/skills/` from the project after a successful promote.
+MCP servers are promoted too. Sources are `<project>/.mcp.json` (both schemas), `<project>/.claude.local/settings.json`, and the `.claude/settings*.json` files above. Each raw JSON entry is copied verbatim into `~/.claude.json`, env and header values included. Plugin-provided servers are skipped. A name already present at user scope is left alone.
+
+`--remove-from-project` clears `enabledPlugins`, `extraKnownMarketplaces`, `.claude/skills/`, and promoted MCP keys from the project after a successful promote.
 
 ## `migrate-skill`
 
