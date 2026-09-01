@@ -3,3 +3,6 @@ Cargo.lock.bak
 .DS_Store
 *.swp
 /book
+
+# Worktrees for parallel work live here (cockpit d-0096).
+.worktrees/
