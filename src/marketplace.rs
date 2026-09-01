@@ -13,7 +13,7 @@
 use anyhow::{Context, Result};
 use serde::Deserialize;
 use serde_json::{json, Map, Value};
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 
 #[derive(Debug, Deserialize)]
 #[allow(dead_code)]
@@ -137,9 +137,10 @@ pub fn is_github_owner_repo(source: &str) -> bool {
 
 /// Parse `owner/repo` or a git URL into `(derived_name, clone_url)`.
 ///
-/// `marketplace add` uses the derived name. `sync` ignores it and uses the name
-/// declared on `[[marketplaces]]`, so `name = "zot24-skills"` can point at
-/// `repo = "zot24/skills"`.
+/// `derived_name` is the repo basename. `marketplace add` uses it only when the
+/// clone's `.claude-plugin/marketplace.json` has no usable `name`. `sync`
+/// ignores it and uses the name declared on `[[marketplaces]]`, so
+/// `name = "zot24-skills"` can point at `repo = "zot24/skills"`.
 pub fn parse_source(source: &str) -> Result<(String, String)> {
     if source.contains("://") {
         let name = source
@@ -166,6 +167,135 @@ fn source_object(source: &str, repo_url: &str) -> Value {
     }
 }
 
+/// True when `name` is a single path segment we can join onto `marketplaces_dir()`.
+///
+/// Marketplace `name` is third-party text. Reject empty, `.`, `..`, slashes,
+/// backslashes, and absolute paths so a hostile manifest cannot traverse
+/// `~/.claude`.
+pub fn is_safe_tap_name(name: &str) -> bool {
+    if name.is_empty() || name == "." || name == ".." {
+        return false;
+    }
+    if name.contains('/') || name.contains('\\') || name.contains('\0') {
+        return false;
+    }
+    let path = Path::new(name);
+    if path.is_absolute() {
+        return false;
+    }
+    let mut comps = path.components();
+    matches!(
+        (comps.next(), comps.next()),
+        (Some(Component::Normal(_)), None)
+    )
+}
+
+/// Tap key for a cloned marketplace: the manifest `name` when it is a safe
+/// path segment, otherwise `fallback` (the basename from [`parse_source`]).
+pub fn name_from_clone(clone: &Path, fallback: &str) -> String {
+    let path = clone.join(".claude-plugin").join("marketplace.json");
+    match load_manifest(&path) {
+        Ok(m) => {
+            let name = m.name.trim();
+            if is_safe_tap_name(name) {
+                name.to_string()
+            } else {
+                fallback.to_string()
+            }
+        }
+        Err(_) => fallback.to_string(),
+    }
+}
+
+fn source_label(source: &str, repo_url: &str) -> String {
+    if is_github_owner_repo(source) {
+        source.to_string()
+    } else {
+        repo_url.to_string()
+    }
+}
+
+fn entry_source_label(entry: &Value) -> Option<String> {
+    let src = entry.get("source")?;
+    match src.get("source").and_then(|v| v.as_str()) {
+        Some("github") => src.get("repo")?.as_str().map(str::to_string),
+        Some("git") => src.get("url")?.as_str().map(str::to_string),
+        _ => None,
+    }
+}
+
+fn same_recorded_source(entry: &Value, source: &str, repo_url: &str) -> bool {
+    let Some(label) = entry_source_label(entry) else {
+        return false;
+    };
+    if label == source || label == repo_url {
+        return true;
+    }
+    let existing_gh = if is_github_owner_repo(&label) {
+        Some(label)
+    } else {
+        github_from_url(&label)
+    };
+    let incoming_gh = if is_github_owner_repo(source) {
+        Some(source.to_string())
+    } else {
+        github_from_url(source).or_else(|| github_from_url(repo_url))
+    };
+    match (existing_gh, incoming_gh) {
+        (Some(a), Some(b)) => a == b,
+        _ => false,
+    }
+}
+
+fn git_urls_match(a: &str, b: &str) -> bool {
+    fn norm(s: &str) -> &str {
+        s.trim_end_matches('/')
+            .trim_end_matches(".git")
+            .trim_end_matches('/')
+    }
+    a == b || norm(a) == norm(b)
+}
+
+/// Refuse a registration that would overwrite a different repo's key or clone.
+///
+/// An idempotent re-add of the same source is allowed. Two repos that share a
+/// tap name are not: the incumbent entry and its directory stay untouched.
+pub fn refuse_conflicting_registration(name: &str, source: &str, repo_url: &str) -> Result<()> {
+    let known = load_known(&crate::paths::known_marketplaces_json()?)?;
+    refuse_conflict(&known, name, source, repo_url)
+}
+
+fn refuse_conflict(
+    known: &Map<String, Value>,
+    name: &str,
+    source: &str,
+    repo_url: &str,
+) -> Result<()> {
+    if let Some(existing) = known.get(name) {
+        if same_recorded_source(existing, source, repo_url) {
+            return Ok(());
+        }
+        let incumbent = entry_source_label(existing)
+            .unwrap_or_else(|| format!("an existing marketplace named '{name}'"));
+        let incoming = source_label(source, repo_url);
+        anyhow::bail!(
+            "marketplace '{name}' is already registered from {incumbent}, refusing to add {incoming}"
+        );
+    }
+
+    let dest = crate::paths::marketplaces_dir()?.join(name);
+    if dest.exists() {
+        if let Some(origin) = crate::git::origin_url(&dest) {
+            if !git_urls_match(&origin, repo_url) {
+                anyhow::bail!(
+                    "marketplace '{name}' already has a clone from {origin}, refusing to add {repo_url}"
+                );
+            }
+        }
+    }
+    Ok(())
+}
+
 /// Clone `source` (if needed) and write `known_marketplaces.json` plus
 /// `extraKnownMarketplaces`. Same bytes as `marketplace add`.
 ///
@@ -174,6 +304,7 @@ pub fn register(name: &str, source: &str) -> Result<PathBuf> {
     let (_, repo_url) = parse_source(source)?;
     let path = crate::paths::known_marketplaces_json()?;
     let mut known = load_known(&path)?;
+    refuse_conflict(&known, name, source, &repo_url)?;
 
     let install_location = crate::paths::marketplaces_dir()?.join(name);
     if !install_location.exists() {
@@ -695,6 +826,67 @@ mod tests {
         assert_eq!(name, "llm-wiki");
         assert_eq!(url, "file:///tmp/llm-wiki");
         assert!(parse_source("noshapes").is_err());
+    }
+
+    #[test]
+    fn is_safe_tap_name_accepts_a_single_segment() {
+        assert!(is_safe_tap_name("zot24-skills"));
+        assert!(is_safe_tap_name("cloudflare"));
+        assert!(is_safe_tap_name("skills"));
+        assert!(!is_safe_tap_name(""));
+        assert!(!is_safe_tap_name("."));
+        assert!(!is_safe_tap_name(".."));
+        assert!(!is_safe_tap_name("foo/bar"));
+        assert!(!is_safe_tap_name("foo\\bar"));
+        assert!(!is_safe_tap_name("/abs"));
+        assert!(!is_safe_tap_name("../evil"));
+        assert!(!is_safe_tap_name("foo/../x"));
+    }
+
+    #[test]
+    fn name_from_clone_uses_manifest_name_when_safe() {
+        let tmp = tempfile::tempdir().unwrap();
+        let clone = tmp.path();
+        std::fs::create_dir_all(clone.join(".claude-plugin")).unwrap();
+        std::fs::write(
+            clone.join(".claude-plugin").join("marketplace.json"),
+            r#"{"name":"zot24-skills","plugins":[]}"#,
+        )
+        .unwrap();
+        assert_eq!(name_from_clone(clone, "skills"), "zot24-skills");
+    }
+
+    #[test]
+    fn name_from_clone_falls_back_when_manifest_is_missing_unusable_or_hostile() {
+        let tmp = tempfile::tempdir().unwrap();
+        assert_eq!(name_from_clone(tmp.path(), "nomanifest"), "nomanifest");
+
+        let missing_name = tmp.path().join("missing-name");
+        std::fs::create_dir_all(missing_name.join(".claude-plugin")).unwrap();
+        std::fs::write(
+            missing_name.join(".claude-plugin").join("marketplace.json"),
+            r#"{"plugins":[]}"#,
+        )
+        .unwrap();
+        assert_eq!(name_from_clone(&missing_name, "badmanifest"), "badmanifest");
+
+        let empty = tmp.path().join("empty");
+        std::fs::create_dir_all(empty.join(".claude-plugin")).unwrap();
+        std::fs::write(
+            empty.join(".claude-plugin").join("marketplace.json"),
+            r#"{"name":"","plugins":[]}"#,
+        )
+        .unwrap();
+        assert_eq!(name_from_clone(&empty, "fallback"), "fallback");
+
+        let hostile = tmp.path().join("hostile");
+        std::fs::create_dir_all(hostile.join(".claude-plugin")).unwrap();
+        std::fs::write(
+            hostile.join(".claude-plugin").join("marketplace.json"),
+            r#"{"name":"../evil","plugins":[]}"#,
+        )
+        .unwrap();
+        assert_eq!(name_from_clone(&hostile, "fallback"), "fallback");
     }
 
     #[test]

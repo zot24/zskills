@@ -20,6 +20,23 @@ pub fn clone(url: &str, dest: &Path) -> Result<()> {
     Ok(())
 }
 
+/// `git remote get-url origin`, or `None` when `repo` is not a git clone or
+/// has no `origin`. Used to refuse reusing a marketplace directory that
+/// already holds a different repo.
+pub fn origin_url(repo: &Path) -> Option<String> {
+    let out = Command::new("git")
+        .arg("-C")
+        .arg(repo)
+        .args(["remote", "get-url", "origin"])
+        .output()
+        .ok()?;
+    if !out.status.success() {
+        return None;
+    }
+    let url = String::from_utf8_lossy(&out.stdout).trim().to_string();
+    (!url.is_empty()).then_some(url)
+}
+
 /// Pull from a git repo. Captures output; only surfaces errors. The destination
 /// must be a git working tree — call `is_git_repo` first if uncertain.
 pub fn pull(repo: &Path) -> Result<()> {

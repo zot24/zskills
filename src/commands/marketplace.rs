@@ -1,4 +1,4 @@
-use anyhow::Result;
+use anyhow::{Context, Result};
 use owo_colors::OwoColorize;
 use serde_json::Value;
 #[cfg(feature = "skills-sh")]
@@ -28,7 +28,27 @@ fn add(source: String) -> Result<()> {
     if source == REMOTE_INDEX_SKILLS_SH {
         return add_remote_index(REMOTE_INDEX_SKILLS_SH, "https://skills.sh");
     }
-    let (name, _) = crate::marketplace::parse_source(&source)?;
+    let (fallback, repo_url) = crate::marketplace::parse_source(&source)?;
+    let parent = crate::paths::marketplaces_dir()?;
+    std::fs::create_dir_all(&parent).ok();
+
+    // Clone to a staging dir first: the tap name lives in the manifest, which
+    // only exists after the clone, and the final directory must carry that name.
+    let staging_root = tempfile::Builder::new()
+        .prefix(".zskills-add-")
+        .tempdir_in(&parent)
+        .with_context(|| format!("creating staging dir under {}", parent.display()))?;
+    let staging = staging_root.path().join("src");
+    crate::git::clone(&repo_url, &staging)?;
+
+    let name = crate::marketplace::name_from_clone(&staging, &fallback);
+    let dest = parent.join(&name);
+    crate::marketplace::refuse_conflicting_registration(&name, &source, &repo_url)?;
+    if !dest.exists() {
+        std::fs::rename(&staging, &dest)
+            .with_context(|| format!("moving clone into {}", dest.display()))?;
+    }
+
     let install_location = crate::marketplace::register(&name, &source)?;
     println!("{} added marketplace {}", "✓".green(), name);
     print_add_followup(&name, &install_location);

@@ -458,7 +458,7 @@ zskills marketplace list [--json]
 zskills marketplace update [<name>]
 ```
 
-`add` clones the marketplace repo into `~/.claude/plugins/marketplaces/<name>/` and writes both `known_marketplaces.json` and `settings.json`'s `extraKnownMarketplaces`. Mirrors what `/plugin marketplace add` does inside Claude Code.
+`add` clones the marketplace repo into `~/.claude/plugins/marketplaces/<name>/` and writes both `known_marketplaces.json` and `settings.json`'s `extraKnownMarketplaces`. `<name>` is the `name` field in the clone's `.claude-plugin/marketplace.json`. If that file is missing, unparseable, or its `name` is not a single safe path segment, add falls back to the repo basename. Two repos that declare the same `name` collide: the second add is refused and the first tap is left as-is. Mirrors what `/plugin marketplace add` does inside Claude Code.
 
 Adding a marketplace does **not** install plugins and does **not** change the manifest. After a successful add, zskills reads `.claude-plugin/marketplace.json` and prints the plugins the marketplace offers, plus the next command.
 
