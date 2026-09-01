@@ -1648,6 +1648,14 @@ fn install_repo_with_no_skills_errors() {
 /// A local git repo shaped like a plugin marketplace, carrying one plugin.
 fn write_marketplace_repo(parent: &std::path::Path, mp: &str, plugin: &str) -> std::path::PathBuf {
     let repo = parent.join(mp);
+    write_marketplace_at(&repo, mp, plugin);
+    repo
+}
+
+/// Same as [`write_marketplace_repo`], but the directory name and the manifest
+/// `name` can differ — two repos can share a basename and still declare
+/// distinct taps.
+fn write_marketplace_at(repo: &std::path::Path, mp: &str, plugin: &str) {
     fs::create_dir_all(repo.join(".claude-plugin")).unwrap();
     fs::write(
         repo.join(".claude-plugin").join("marketplace.json"),
@@ -1661,8 +1669,7 @@ fn write_marketplace_repo(parent: &std::path::Path, mp: &str, plugin: &str) -> s
     .unwrap();
     fs::create_dir_all(repo.join("p")).unwrap();
     fs::write(repo.join("p").join("plugin.json"), r#"{"name":"p"}"#).unwrap();
-    git_init_and_commit(&repo);
-    repo
+    git_init_and_commit(repo);
 }
 
 /// Install a marketplace cache directly into CLAUDE_HOME, bypassing `marketplace add`,
@@ -1950,6 +1957,130 @@ fn marketplace_add_warns_when_marketplace_json_is_missing() {
             "added marketplace not-a-marketplace",
         ))
         .stdout(predicate::str::contains("marketplace.json"));
+}
+
+/// Two repos whose basenames match (`skills`) but whose manifests differ must
+/// register as two taps, keyed by `.claude-plugin/marketplace.json` → `name`.
+#[test]
+fn marketplace_add_keys_taps_by_manifest_name() {
+    let upstream = tempfile::tempdir().unwrap();
+    let a = upstream.path().join("a").join("skills");
+    let b = upstream.path().join("b").join("skills");
+    write_marketplace_at(&a, "zot24-skills", "alpha");
+    write_marketplace_at(&b, "cloudflare", "bravo");
+
+    let home = fake_home();
+    wipe_plugins(&home);
+
+    zskills(&home)
+        .args(["marketplace", "add", &file_url(&a)])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("added marketplace zot24-skills"));
+    zskills(&home)
+        .args(["marketplace", "add", &file_url(&b)])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("added marketplace cloudflare"));
+
+    let known = read_known(&home);
+    let mut keys: Vec<&str> = known
+        .as_object()
+        .unwrap()
+        .keys()
+        .map(String::as_str)
+        .collect();
+    keys.sort_unstable();
+    assert_eq!(keys, ["cloudflare", "zot24-skills"]);
+
+    let marketplaces = home.path().join("plugins").join("marketplaces");
+    assert!(marketplaces
+        .join("zot24-skills")
+        .join(".claude-plugin")
+        .join("marketplace.json")
+        .is_file());
+    assert!(marketplaces
+        .join("cloudflare")
+        .join(".claude-plugin")
+        .join("marketplace.json")
+        .is_file());
+    assert!(
+        !marketplaces.join("skills").exists(),
+        "basename must not be the tap key when the manifest names the tap"
+    );
+
+    let a_url = file_url(&a);
+    let b_url = file_url(&b);
+    assert_eq!(known["zot24-skills"]["source"]["url"], json!(a_url));
+    assert_eq!(known["cloudflare"]["source"]["url"], json!(b_url));
+    assert_eq!(
+        known["zot24-skills"]["installLocation"],
+        json!(marketplaces
+            .join("zot24-skills")
+            .to_string_lossy()
+            .to_string())
+    );
+    assert_eq!(
+        known["cloudflare"]["installLocation"],
+        json!(marketplaces
+            .join("cloudflare")
+            .to_string_lossy()
+            .to_string())
+    );
+
+    let extra = &read_settings(&home)["extraKnownMarketplaces"];
+    assert_eq!(extra["zot24-skills"]["source"]["url"], json!(a_url));
+    assert_eq!(extra["cloudflare"]["source"]["url"], json!(b_url));
+}
+
+/// Two repos that declare the same manifest `name` collide: the second add
+/// is refused, both sources are named, and the incumbent clone is left as-is.
+#[test]
+fn marketplace_add_refuses_a_second_repo_with_the_same_manifest_name() {
+    let upstream = tempfile::tempdir().unwrap();
+    let a = upstream.path().join("c").join("alpha");
+    let b = upstream.path().join("d").join("bravo");
+    write_marketplace_at(&a, "dup", "keep");
+    write_marketplace_at(&b, "dup", "drop");
+
+    let home = fake_home();
+    wipe_plugins(&home);
+
+    zskills(&home)
+        .args(["marketplace", "add", &file_url(&a)])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("added marketplace dup"));
+
+    zskills(&home)
+        .args(["marketplace", "add", &file_url(&b)])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains(file_url(&a)))
+        .stderr(predicate::str::contains(file_url(&b)))
+        .stdout(predicate::str::contains("added marketplace").not());
+
+    let known = read_known(&home);
+    let keys: Vec<&str> = known
+        .as_object()
+        .unwrap()
+        .keys()
+        .map(String::as_str)
+        .collect();
+    assert_eq!(keys, ["dup"]);
+    assert_eq!(known["dup"]["source"]["url"], json!(file_url(&a)));
+
+    let manifest = fs::read_to_string(
+        home.path()
+            .join("plugins")
+            .join("marketplaces")
+            .join("dup")
+            .join(".claude-plugin")
+            .join("marketplace.json"),
+    )
+    .unwrap();
+    assert!(manifest.contains("\"keep\""), "{manifest}");
+    assert!(!manifest.contains("\"drop\""), "{manifest}");
 }
 
 /// Empty `known_marketplaces.json` and `enabledPlugins` — a wiped machine.
