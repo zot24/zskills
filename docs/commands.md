@@ -78,7 +78,7 @@ zskills plugin install -i                           # interactive picker over ma
 
 ## `remove` / `purge`
 
-`remove` is apt-style: disable in `enabledPlugins` and drop the inventory entry, but leave bytes on disk so re-enabling is instant. `purge` does the same plus deletes the bytes from `~/.claude/plugins/cache/`.
+`remove` is apt-style: disable in `enabledPlugins`, drop the inventory entry, and drop the matching `[[skills]]` row from the manifest so `sync` does not re-enable the plugin. Bytes stay on disk so re-enabling is instant. `purge` does the same plus deletes the bytes from `~/.claude/plugins/cache/`.
 
 ```
 zskills plugin remove <name>...

@@ -1,4 +1,4 @@
-//! `remove` (apt-style: disable + drop inventory entry, keep bytes)
+//! `remove` (apt-style: disable + drop inventory + drop `[[skills]]` intent, keep bytes)
 //! `purge` (also delete bytes from ~/.claude/plugins/cache/.../<plugin>)
 
 use anyhow::Result;
@@ -56,7 +56,7 @@ pub fn run(specs: Vec<String>, interactive: bool, purge_bytes: bool) -> Result<(
 
     let mut settings = crate::settings::load(&settings_path)?;
     let mut inventory = crate::inventory::load(&inventory_path)?;
-    let mut any = false;
+    let mut removed: Vec<String> = Vec::new();
     let mut failed = 0usize;
 
     for spec in &specs {
@@ -100,7 +100,7 @@ pub fn run(specs: Vec<String>, interactive: bool, purge_bytes: bool) -> Result<(
             failed += 1;
             continue;
         }
-        any = true;
+        removed.push(qualified.clone());
 
         if purge_bytes {
             for p in &install_paths {
@@ -118,7 +118,18 @@ pub fn run(specs: Vec<String>, interactive: bool, purge_bytes: bool) -> Result<(
         }
     }
 
-    if any {
+    if !removed.is_empty() {
+        // Intent first: a later state-save failure must not leave a [[skills]]
+        // row that `sync` would re-enable.
+        if let Some(path) = crate::manifest::discover() {
+            for q in &removed {
+                let (name, mp) = match q.rsplit_once('@') {
+                    Some((n, m)) => (n, Some(m)),
+                    None => (q.as_str(), None),
+                };
+                crate::manifest::drop_skill(&path, name, mp)?;
+            }
+        }
         crate::settings::save(&settings_path, &settings)?;
         crate::inventory::save(&inventory_path, &inventory)?;
     }
