@@ -294,29 +294,55 @@ pub fn load_defaults() -> (Vec<String>, Vec<String>) {
     }
 }
 
-/// Nested `skills/<name>/SKILL.md` trees inside a marketplace plugin.
+/// Skill trees inside a marketplace plugin.
+///
+/// Two discovery paths, one output. `.claude-plugin/plugin.json` carries a
+/// `skills` array in most plugins: that array is what Claude Code reads and it
+/// is the author's curation, so when it is present we resolve every entry
+/// against the plugin root and ship exactly those — an empty array ships
+/// nothing rather than falling back. Without the array we walk the tree with
+/// the Agent Skill survey (`skills_in_dir`), which reads a child holding a
+/// `SKILL.md` as a skill and a child without one as a one-level category, so a
+/// `skills/<category>/<name>/SKILL.md` layout reaches the hub too.
+///
+/// Both paths end at the same predicate: the resolved directory must be a
+/// descendant of the plugin root. Array entries are third-party strings from a
+/// marketplace repo, and a category directory can be a symlink pointing out of
+/// the tree — one level above what `install_to_root`'s `allowed_root` guard can
+/// see.
 pub fn plugin_skill_trees(qualified: &str) -> Result<Vec<(String, PathBuf)>> {
     let root = plugin_root(qualified)?;
     let skills = root.join("skills");
+    let root_canon = root
+        .canonicalize()
+        .with_context(|| format!("canonicalizing plugin root {}", root.display()))?;
+
+    let dirs = match declared_skill_entries(&root) {
+        Some(entries) => resolve_declared_skills(qualified, &root_canon, &entries)?,
+        None => crate::agent_skill::skills_in_dir(&skills)
+            .into_iter()
+            .map(|(_, p)| p)
+            // A category that is a symlink out of the plugin is refused, and the
+            // in-tree siblings still ship.
+            .filter(|p| {
+                p.canonicalize()
+                    .is_ok_and(|c| is_inside_plugin(&c, &root_canon))
+            })
+            .collect(),
+    };
+
     let mut out = Vec::new();
-    let rd = std::fs::read_dir(&skills).with_context(|| {
-        format!(
-            "plugin {qualified} has no skills/ directory at {}",
-            root.display()
-        )
-    })?;
-    for ent in rd.flatten() {
-        let p = ent.path();
-        if !(p.is_dir() && p.join("SKILL.md").is_file()) {
-            continue;
-        }
+    for p in dirs {
         let Some(n) = p.file_name().and_then(|s| s.to_str()) else {
             continue;
         };
         crate::agent_skill::validate_skill_name(n)?;
         out.push((n.to_string(), p));
     }
-    out.sort_by(|a, b| a.0.cmp(&b.0));
+    // Same ordering rule as `skills_in_dir`: two declared paths that share a
+    // leaf name collapse to one hub dest instead of racing each other.
+    out.sort_by(|a, b| a.0.cmp(&b.0).then_with(|| a.1.cmp(&b.1)));
+    out.dedup_by(|a, b| a.0 == b.0);
     if out.is_empty() {
         anyhow::bail!(
             "plugin {qualified} has no nested skills/<name>/SKILL.md under {}",
@@ -324,6 +350,71 @@ pub fn plugin_skill_trees(qualified: &str) -> Result<Vec<(String, PathBuf)>> {
         );
     }
     Ok(out)
+}
+
+/// The `skills` array of `<root>/.claude-plugin/plugin.json`, when the file
+/// parses and the key holds an array. A missing file, unparseable JSON or a
+/// missing key all read as "not declared" and hand the caller the walker.
+fn declared_skill_entries(root: &Path) -> Option<Vec<String>> {
+    let raw = std::fs::read(root.join(".claude-plugin").join("plugin.json")).ok()?;
+    let v: Value = serde_json::from_slice(&raw).ok()?;
+    let arr = v.get("skills")?.as_array()?;
+    Some(
+        arr.iter()
+            .filter_map(|e| e.as_str().map(str::to_string))
+            .collect(),
+    )
+}
+
+/// Resolve each declared entry against the plugin root. Any entry landing
+/// outside the root aborts the whole plugin: a curated array with one hostile
+/// path is not a plugin we install part of.
+fn resolve_declared_skills(
+    qualified: &str,
+    root_canon: &Path,
+    entries: &[String],
+) -> Result<Vec<PathBuf>> {
+    let mut out = Vec::new();
+    for rel in entries {
+        // Fold `.` and `..` away before comparing, so an entry that never
+        // reaches the filesystem is still judged by where it points.
+        let lexical = lexical_join(root_canon, Path::new(rel));
+        let resolved = lexical.canonicalize().unwrap_or_else(|_| lexical.clone());
+        if !is_inside_plugin(&resolved, root_canon) {
+            anyhow::bail!(
+                "plugin {qualified} declares skills entry {rel:?}, which resolves to {} outside the plugin root {}",
+                resolved.display(),
+                root_canon.display()
+            );
+        }
+        if resolved.is_dir() {
+            out.push(resolved);
+        }
+    }
+    Ok(out)
+}
+
+/// Join `rel` onto `base` and fold `.` and `..` textually. An absolute `rel`
+/// replaces `base`, exactly as `Path::join` does.
+fn lexical_join(base: &Path, rel: &Path) -> PathBuf {
+    let mut out = PathBuf::new();
+    for c in base.join(rel).components() {
+        match c {
+            std::path::Component::CurDir => {}
+            std::path::Component::ParentDir => {
+                out.pop();
+            }
+            other => out.push(other.as_os_str()),
+        }
+    }
+    out
+}
+
+/// Component-wise containment. `Path::starts_with` compares components, so
+/// `.../1.0.0-evil` is not inside `.../1.0.0` even though the string is a
+/// prefix, and the plugin root itself is not one of its own skills.
+fn is_inside_plugin(dest: &Path, root: &Path) -> bool {
+    dest != root && dest.starts_with(root)
 }
 
 fn plugin_root(qualified: &str) -> Result<PathBuf> {
