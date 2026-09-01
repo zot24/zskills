@@ -3955,6 +3955,28 @@ fn sync_source_path_dry_run_prints_plan_line() {
 }
 
 #[test]
+fn sync_dry_run_plans_npm_agent_skill_entry() {
+    let home = fake_home();
+    wipe_plugins(&home);
+    write_manifest(
+        &home,
+        "[[agent_skills]]\nnpm = \"get-shit-done-cc\"\nclaims = [\"gsd-*\"]\n",
+    );
+
+    zskills(&home)
+        .args(["sync", "--dry-run"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("npm:get-shit-done-cc"))
+        .stdout(predicate::str::contains("no changes — manifest matches current state").not());
+
+    assert!(
+        !home.path().join("skills/.zskills.json").exists(),
+        "dry-run must not write inventory"
+    );
+}
+
+#[test]
 fn sync_rejects_path_escape() {
     let home = fake_home();
     write_manifest(
