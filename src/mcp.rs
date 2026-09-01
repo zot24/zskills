@@ -10,7 +10,7 @@
 use anyhow::Result;
 use serde::Serialize;
 use serde_json::Value;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
 #[derive(Debug, Clone, Serialize, PartialEq, Eq, PartialOrd, Ord)]
@@ -186,6 +186,105 @@ pub fn load_all() -> Result<Vec<McpServer>> {
     }
 
     Ok(out)
+}
+
+/// Load MCP servers declared in a project directory (not cwd).
+///
+/// Sources, first name wins:
+/// 1. `<project>/.claude.local/settings.json`
+/// 2. `<project>/.mcp.json` (wrapped `mcpServers` or flat map)
+/// 3. `<project>/.claude/settings.json`
+/// 4. `<project>/.claude/settings.local.json`
+///
+/// Attribution uses the same plugin index as `load_all`. Malformed entries
+/// (no `command`, no `url`) are dropped by `parse_transport`.
+pub fn load_project_dir(project: &Path) -> Vec<McpServer> {
+    let plugin_index = build_plugin_mcp_index().unwrap_or_default();
+    let attribute = |name: &str| -> Source {
+        plugin_index
+            .get(name)
+            .cloned()
+            .map(|plugin| Source::FromPlugin { plugin })
+            .unwrap_or(Source::Manual)
+    };
+
+    let mut out: Vec<McpServer> = Vec::new();
+    let mut seen: BTreeSet<String> = BTreeSet::new();
+    let mut extend = |servers: Vec<McpServer>| {
+        for s in servers {
+            if seen.insert(s.name.clone()) {
+                out.push(s);
+            }
+        }
+    };
+
+    extend(load_settings_file(
+        &project.join(".claude.local").join("settings.json"),
+        Scope::Local,
+        &attribute,
+    ));
+    extend(load_mcp_json(
+        &project.join(".mcp.json"),
+        Scope::Project,
+        &attribute,
+    ));
+    extend(load_settings_file(
+        &project.join(".claude").join("settings.json"),
+        Scope::Project,
+        &attribute,
+    ));
+    extend(load_settings_file(
+        &project.join(".claude").join("settings.local.json"),
+        Scope::Project,
+        &attribute,
+    ));
+    out
+}
+
+/// True when the project directory has an MCP config file `migrate` should
+/// treat as a source, even if every entry later fails to parse.
+pub fn project_has_mcp_sources(project: &Path) -> bool {
+    project.join(".mcp.json").is_file()
+        || project
+            .join(".claude.local")
+            .join("settings.json")
+            .is_file()
+        || project.join(".claude").join("settings.json").is_file()
+        || project
+            .join(".claude")
+            .join("settings.local.json")
+            .is_file()
+}
+
+/// Names already declared at user scope (`~/.claude.json` and
+/// `~/.claude/settings.json`). Used by `migrate` so a project copy cannot
+/// overwrite the user's config.
+pub fn user_server_names() -> BTreeSet<String> {
+    let attribute = |_: &str| Source::Manual;
+    let mut names = BTreeSet::new();
+    for path in [
+        crate::paths::claude_json().ok(),
+        crate::paths::settings_json().ok(),
+    ]
+    .into_iter()
+    .flatten()
+    {
+        for s in load_settings_file(&path, Scope::User, &attribute) {
+            names.insert(s.name);
+        }
+    }
+    names
+}
+
+/// Read the raw JSON object for `name` from a specific file, preserving env
+/// and header values. Accepts wrapped `mcpServers` and a flat top-level map.
+pub fn read_raw_from_file(path: &Path, name: &str) -> Option<Value> {
+    let val = read_json(path)?;
+    let map = val
+        .get("mcpServers")
+        .and_then(|v| v.as_object())
+        .or_else(|| val.as_object())?;
+    map.get(name).cloned()
 }
 
 /// Load servers from a file whose top-level shape is `{"mcpServers": {...}}`.
@@ -540,7 +639,7 @@ pub fn remove(scope: &Scope, name: &str) -> Result<bool> {
     Ok(deleted)
 }
 
-fn delete_key_from_file(path: &Path, name: &str) -> Result<()> {
+pub(crate) fn delete_key_from_file(path: &Path, name: &str) -> Result<()> {
     if !path.exists() {
         return Ok(());
     }

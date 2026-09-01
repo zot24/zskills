@@ -9,16 +9,60 @@ use std::path::{Path, PathBuf};
 use walkdir::WalkDir;
 
 #[derive(Debug)]
+pub struct ScanMcp {
+    pub name: String,
+    pub kind: String,
+}
+
+#[derive(Debug)]
 pub struct ProjectScan {
     pub path: PathBuf,
     pub enabled: Vec<String>,
     pub marketplaces: Vec<String>,
     /// Names of Agent Skills installed at `.claude/skills/<name>/`
     pub agent_skills: Vec<String>,
+    /// MCP servers from `.mcp.json` and `.claude/settings*.json`. Empty unless
+    /// the walk requested `--mcp`.
+    pub mcps: Vec<ScanMcp>,
+}
+
+impl ProjectScan {
+    fn new(path: PathBuf) -> Self {
+        Self {
+            path,
+            enabled: vec![],
+            marketplaces: vec![],
+            agent_skills: vec![],
+            mcps: vec![],
+        }
+    }
+}
+
+fn project_entry(
+    by_project: &mut BTreeMap<PathBuf, ProjectScan>,
+    project: PathBuf,
+) -> &mut ProjectScan {
+    by_project
+        .entry(project.clone())
+        .or_insert_with(|| ProjectScan::new(project))
+}
+
+fn merge_mcps(entry: &mut ProjectScan, servers: Vec<crate::mcp::McpServer>) {
+    for s in servers {
+        if !entry.mcps.iter().any(|m| m.name == s.name) {
+            entry.mcps.push(ScanMcp {
+                name: s.name,
+                kind: s.transport.kind().to_string(),
+            });
+        }
+    }
 }
 
 pub fn scan_path(root: &Path, max_depth: usize) -> Result<Vec<ProjectScan>> {
-    use std::collections::BTreeMap;
+    scan_path_inner(root, max_depth, false)
+}
+
+fn scan_path_inner(root: &Path, max_depth: usize, include_mcp: bool) -> Result<Vec<ProjectScan>> {
     let mut by_project: BTreeMap<PathBuf, ProjectScan> = BTreeMap::new();
 
     for entry in WalkDir::new(root)
@@ -60,20 +104,34 @@ pub fn scan_path(root: &Path, max_depth: usize) -> Result<Vec<ProjectScan>> {
                     }
                 }
 
-                if !enabled.is_empty() || !marketplaces.is_empty() {
-                    let project = parent.parent().unwrap_or(parent).to_path_buf();
-                    let entry = by_project.entry(project.clone()).or_insert(ProjectScan {
-                        path: project,
-                        enabled: vec![],
-                        marketplaces: vec![],
-                        agent_skills: vec![],
-                    });
+                let project = parent.parent().unwrap_or(parent).to_path_buf();
+                let servers = if include_mcp {
+                    crate::mcp::load_project_dir(&project)
+                } else {
+                    vec![]
+                };
+
+                if !enabled.is_empty() || !marketplaces.is_empty() || !servers.is_empty() {
+                    let entry = project_entry(&mut by_project, project);
                     entry.enabled.extend(enabled);
                     for mp in marketplaces {
                         if !entry.marketplaces.contains(&mp) {
                             entry.marketplaces.push(mp);
                         }
                     }
+                    merge_mcps(entry, servers);
+                }
+                continue;
+            }
+
+            // Match 1b: <project>/.mcp.json (wrapped or flat). Decoy `mcp.json`
+            // without the leading dot is ignored on purpose.
+            if include_mcp && name == ".mcp.json" {
+                let project = parent.to_path_buf();
+                let servers = crate::mcp::load_project_dir(&project);
+                if !servers.is_empty() {
+                    let entry = project_entry(&mut by_project, project);
+                    merge_mcps(entry, servers);
                 }
                 continue;
             }
@@ -104,12 +162,7 @@ pub fn scan_path(root: &Path, max_depth: usize) -> Result<Vec<ProjectScan>> {
                 .and_then(|p| p.parent())
                 .unwrap_or(Path::new(""))
                 .to_path_buf();
-            let entry = by_project.entry(project.clone()).or_insert(ProjectScan {
-                path: project,
-                enabled: vec![],
-                marketplaces: vec![],
-                agent_skills: vec![],
-            });
+            let entry = project_entry(&mut by_project, project);
             if !entry.agent_skills.contains(&skill_name) {
                 entry.agent_skills.push(skill_name);
             }
@@ -123,6 +176,7 @@ pub fn scan_path(root: &Path, max_depth: usize) -> Result<Vec<ProjectScan>> {
         p.marketplaces.sort();
         p.marketplaces.dedup();
         p.agent_skills.sort();
+        p.mcps.sort_by(|a, b| a.name.cmp(&b.name));
     }
     Ok(out)
 }
@@ -143,20 +197,28 @@ fn is_noise(name: &str) -> bool {
     )
 }
 
-pub fn run(path: Option<PathBuf>, depth: usize, json_out: bool) -> Result<()> {
+pub fn run(path: Option<PathBuf>, depth: usize, json_out: bool, include_mcp: bool) -> Result<()> {
     let root = path.unwrap_or_else(|| std::env::current_dir().expect("cwd"));
-    let projects = scan_path(&root, depth)?;
+    let projects = scan_path_inner(&root, depth, include_mcp)?;
 
     if json_out {
         let arr: Vec<_> = projects
             .iter()
             .map(|p| {
-                json!({
+                let mut obj = json!({
                     "path": p.path,
                     "enabled": p.enabled,
                     "marketplaces": p.marketplaces,
                     "agent_skills": p.agent_skills,
-                })
+                });
+                if include_mcp {
+                    obj["mcps"] = json!(p
+                        .mcps
+                        .iter()
+                        .map(|m| json!({ "name": m.name, "kind": m.kind }))
+                        .collect::<Vec<_>>());
+                }
+                obj
             })
             .collect();
         println!("{}", serde_json::to_string_pretty(&arr)?);
@@ -202,6 +264,9 @@ pub fn run(path: Option<PathBuf>, depth: usize, json_out: bool) -> Result<()> {
         }
         for s in &p.agent_skills {
             println!("  ◦ {}  {}", s, "(agent skill)".dimmed());
+        }
+        for m in &p.mcps {
+            println!("  mcp {} ({})", m.name, m.kind);
         }
     }
 

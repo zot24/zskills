@@ -135,6 +135,10 @@ pub enum Command {
         /// Output as JSON
         #[arg(long)]
         json: bool,
+
+        /// Also report each project's MCP servers (name + kind only; never values)
+        #[arg(long)]
+        mcp: bool,
     },
 
     /// Promote project-scope skills to user scope; optionally remove from project
@@ -489,7 +493,12 @@ impl Cli {
                 force,
             } => crate::commands::sync::run(file, dry_run, prune, adopt, force),
             Command::Doctor { fix } => crate::commands::doctor::run(fix),
-            Command::Scan { path, depth, json } => crate::commands::scan::run(path, depth, json),
+            Command::Scan {
+                path,
+                depth,
+                json,
+                mcp,
+            } => crate::commands::scan::run(path, depth, json, mcp),
             Command::Migrate {
                 path,
                 remove_from_project,

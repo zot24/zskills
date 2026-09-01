@@ -309,6 +309,135 @@ fn migrate_promotes_agent_skill_to_user_scope() {
 }
 
 #[test]
+fn scan_mcp_reports_project_mcps_without_secret_values() {
+    let (parent, claude_home) = fake_home_nested();
+    let tree = parent.path().join("tree");
+    let proj = tree.join("proj");
+    fs::create_dir_all(&proj).unwrap();
+    fs::write(
+        proj.join(".mcp.json"),
+        serde_json::to_string(&json!({
+            "mcpServers": {
+                "envsrv": {
+                    "command": "docker",
+                    "env": { "TOKEN": "sk-ENVLEAK-9911" }
+                },
+                "hdrsrv": {
+                    "type": "http",
+                    "url": "https://mcp.example.test/x",
+                    "headers": { "Authorization": "Bearer sk-HDRLEAK-9922" }
+                }
+            }
+        }))
+        .unwrap(),
+    )
+    .unwrap();
+
+    let json_out = zskills_nested(&parent, &claude_home)
+        .args(["scan", tree.to_str().unwrap(), "--mcp", "--json"])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let json_text = String::from_utf8_lossy(&json_out);
+    assert!(
+        !json_text.contains("sk-ENVLEAK-9911"),
+        "JSON must not print env values: {json_text}"
+    );
+    assert!(
+        !json_text.contains("sk-HDRLEAK-9922"),
+        "JSON must not print header values: {json_text}"
+    );
+
+    let v: serde_json::Value = serde_json::from_slice(&json_out).unwrap();
+    let arr = v.as_array().unwrap();
+    assert_eq!(arr.len(), 1);
+    let mcps = arr[0]["mcps"].as_array().unwrap();
+    let by_name: std::collections::BTreeMap<&str, &str> = mcps
+        .iter()
+        .map(|m| (m["name"].as_str().unwrap(), m["kind"].as_str().unwrap()))
+        .collect();
+    assert_eq!(by_name.get("envsrv"), Some(&"stdio"));
+    assert_eq!(by_name.get("hdrsrv"), Some(&"http"));
+
+    let human = zskills_nested(&parent, &claude_home)
+        .args(["scan", tree.to_str().unwrap(), "--mcp"])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let human_text = String::from_utf8_lossy(&human);
+    assert!(human_text.contains("envsrv"));
+    assert!(human_text.contains("hdrsrv"));
+    assert!(!human_text.contains("sk-ENVLEAK-9911"));
+    assert!(!human_text.contains("sk-HDRLEAK-9922"));
+
+    // Without --mcp an MCP-only project stays invisible and the shape has no mcps key.
+    let default_out = zskills_nested(&parent, &claude_home)
+        .args(["scan", tree.to_str().unwrap(), "--json"])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let default_v: serde_json::Value = serde_json::from_slice(&default_out).unwrap();
+    assert!(default_v.as_array().unwrap().is_empty());
+}
+
+#[test]
+fn migrate_promotes_project_mcp_to_user_scope() {
+    let (parent, claude_home) = fake_home_nested();
+    let proj = parent.path().join("tree").join("proj");
+    fs::create_dir_all(proj.join(".claude.local")).unwrap();
+    fs::write(
+        proj.join(".mcp.json"),
+        serde_json::to_string(&json!({
+            "mcpServers": {
+                "pg1": {
+                    "command": "docker",
+                    "args": ["run", "pg"],
+                    "env": { "PGPASSWORD": "sk-PROMOTE-4711" }
+                }
+            }
+        }))
+        .unwrap(),
+    )
+    .unwrap();
+    fs::write(
+        proj.join(".claude.local").join("settings.json"),
+        serde_json::to_string(&json!({
+            "mcpServers": {
+                "loc1": {
+                    "type": "http",
+                    "url": "https://mcp.example.test/loc"
+                }
+            }
+        }))
+        .unwrap(),
+    )
+    .unwrap();
+
+    zskills_nested(&parent, &claude_home)
+        .args(["migrate", proj.to_str().unwrap()])
+        .assert()
+        .success();
+
+    let claude_json = parent.path().join(".claude.json");
+    let v: serde_json::Value = serde_json::from_slice(&fs::read(&claude_json).unwrap()).unwrap();
+    assert_eq!(
+        v["mcpServers"]["pg1"]["env"]["PGPASSWORD"],
+        "sk-PROMOTE-4711"
+    );
+    assert_eq!(
+        v["mcpServers"]["loc1"]["url"],
+        "https://mcp.example.test/loc"
+    );
+    assert_eq!(v["mcpServers"]["pg1"]["command"], "docker");
+}
+
+#[test]
 fn list_reports_agent_skills_section() {
     let home = fake_home();
     let user_skills = home.path().join("skills");
