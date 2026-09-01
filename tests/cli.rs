@@ -5602,3 +5602,183 @@ fn skill_install_path_large_collection_next_steps_repeat_path() {
         "a large --path collection must install nothing"
     );
 }
+
+// ---------------------------------------------------------------------------
+// `[[agent_skills]]` plural form (#54): one stanza, one `source`, many names.
+//
+// Each of these reads what the tool *wrote or planned*, never the exit status
+// alone: the plan rows for the expansion, the origin inside the refusal, and
+// for the two writers the `skills =` line of the stanza that came back.
+// ---------------------------------------------------------------------------
+
+/// The `[[agent_skills]]` stanza of a written manifest, as raw text.
+///
+/// `fake_home` grows `[[skills]]` and `[[marketplaces]]` rows that legitimately
+/// carry `name =`, so a "no `name =`" assertion has to be scoped to this block.
+fn agent_skills_stanza(raw: &str) -> String {
+    let start = raw
+        .find("[[agent_skills]]")
+        .unwrap_or_else(|| panic!("manifest has no [[agent_skills]] stanza: {raw}"));
+    let rest = &raw[start + "[[agent_skills]]".len()..];
+    let end = rest.find("\n[").map(|i| i + 1).unwrap_or(rest.len());
+    rest[..end].to_string()
+}
+
+#[test]
+fn agent_skills_plural_skills_array_expands_to_one_row_per_name() {
+    let home = fake_home();
+    write_manifest(
+        &home,
+        "[[agent_skills]]\nsource = \"acme/skills\"\nskills = [\"alpha\", \"bravo\", \"charlie\"]\n",
+    );
+
+    let out = zskills(&home)
+        .args(["sync", "--dry-run"])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let plan = String::from_utf8(out).unwrap();
+
+    for name in ["alpha", "bravo", "charlie"] {
+        assert!(
+            plan.contains(&format!("install agent   {name}")),
+            "every name in the array must plan its own install; {name} is missing: {plan}"
+        );
+    }
+    assert!(
+        !plan.contains("all skills in repo"),
+        "a stanza that names skills is a selection, not a repo-wide install: {plan}"
+    );
+}
+
+#[test]
+fn agent_skills_name_and_skills_in_one_stanza_is_rejected() {
+    let home = fake_home();
+    write_manifest(
+        &home,
+        "[[agent_skills]]\nsource = \"acme/skills\"\nname = \"alpha\"\nskills = [\"bravo\"]\n",
+    );
+
+    let assert = zskills(&home)
+        .args(["sync", "--dry-run"])
+        .assert()
+        .failure();
+    let out = assert.get_output();
+    let err = String::from_utf8(out.stderr.clone()).unwrap();
+    let plan = String::from_utf8(out.stdout.clone()).unwrap();
+
+    assert!(
+        err.contains("acme/skills"),
+        "the refusal must name the origin of the stanza it read, so the user can \
+         find it among 45 of them: {err}"
+    );
+    assert!(
+        !plan.contains("Plan"),
+        "a manifest that will not load must print no plan: {plan}"
+    );
+
+    // The same defect from a second origin must name *that* origin, so the
+    // message is computed from the entry rather than spelled in as a constant.
+    let other = fake_home();
+    write_manifest(
+        &other,
+        "[[agent_skills]]\nsource = \"beta/tools\"\nname = \"gamma\"\nskills = [\"delta\"]\n",
+    );
+    let assert = zskills(&other)
+        .args(["sync", "--dry-run"])
+        .assert()
+        .failure();
+    let err = String::from_utf8(assert.get_output().stderr.clone()).unwrap();
+    assert!(
+        err.contains("beta/tools") && !err.contains("acme/skills"),
+        "the refusal must name the origin it read, not another one: {err}"
+    );
+}
+
+#[test]
+fn adopt_pushes_a_new_name_into_an_existing_skills_array() {
+    let home = fake_home();
+    write_disk_skill(&home, "bravo");
+    write_disk_skill(&home, "delta");
+    fs::write(
+        home.path().join("skills/.zskills.json"),
+        json!({
+            "version": 1,
+            "agent_skills": {
+                "bravo": { "source": "acme/skills", "installed_at": "@0", "head_sha": "abc" },
+                "delta": { "source": "acme/skills", "installed_at": "@0", "head_sha": "abc" }
+            }
+        })
+        .to_string(),
+    )
+    .unwrap();
+    write_manifest(
+        &home,
+        "[[agent_skills]]\nsource = \"acme/skills\"\nskills = [\"bravo\"]\n",
+    );
+
+    zskills(&home).args(["sync", "--adopt"]).assert().success();
+
+    let raw = fs::read_to_string(home.path().join("config/zskills/skills.toml")).unwrap();
+    assert_eq!(
+        raw.matches("[[agent_skills]]").count(),
+        1,
+        "adopt must widen the array that is already there, not grow a second \
+         stanza for the same source: {raw}"
+    );
+    let stanza = agent_skills_stanza(&raw);
+    assert!(
+        stanza.contains("skills = [\"bravo\", \"delta\"]"),
+        "the orphan belongs inside the existing array: {raw}"
+    );
+    assert!(
+        !stanza.contains("name ="),
+        "adopt must not set `name` beside `skills` — that stanza will not load: {raw}"
+    );
+}
+
+#[test]
+fn removing_one_name_keeps_the_rest_of_the_skills_array() {
+    let home = fake_home();
+    write_disk_skill(&home, "alpha");
+    write_disk_skill(&home, "bravo");
+    fs::write(
+        home.path().join("skills/.zskills.json"),
+        json!({
+            "version": 1,
+            "agent_skills": {
+                "alpha": { "source": "acme/skills", "installed_at": "@0", "head_sha": "abc" },
+                "bravo": { "source": "acme/skills", "installed_at": "@0", "head_sha": "abc" }
+            }
+        })
+        .to_string(),
+    )
+    .unwrap();
+    write_manifest(
+        &home,
+        "[[agent_skills]]\nsource = \"acme/skills\"\nskills = [\"alpha\", \"bravo\"]\n",
+    );
+
+    zskills(&home)
+        .args(["skill", "remove", "alpha"])
+        .assert()
+        .success();
+
+    let raw = fs::read_to_string(home.path().join("config/zskills/skills.toml")).unwrap();
+    let stanza = agent_skills_stanza(&raw);
+    assert!(
+        stanza.contains("skills = [\"bravo\"]"),
+        "remove takes one name out of the array and leaves the rest: {raw}"
+    );
+    assert!(
+        !stanza.contains("alpha"),
+        "the removed name must be gone from the array: {raw}"
+    );
+    assert!(
+        !stanza.contains("name ="),
+        "a one-name array must not collapse onto `name` — the user chose the \
+         plural form, and `name` beside `skills` will not load: {raw}"
+    );
+}
