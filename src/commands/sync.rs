@@ -194,7 +194,15 @@ pub fn run(
     // remember the source for each so we can install.
     let mut desired_named: BTreeSet<String> = BTreeSet::new();
     let mut deferred_sources: Vec<&crate::manifest::AgentSkillEntry> = Vec::new();
+    let mut npm_rows: Vec<&crate::manifest::AgentSkillEntry> = Vec::new();
     for entry in &manifest.agent_skills {
+        if entry.npm.is_some() {
+            // Apply runs npm rows unconditionally. Plan them even when
+            // claims already match inventory, or the dry-run is silent
+            // about work apply will do.
+            npm_rows.push(entry);
+            continue;
+        }
         if let Some(n) = &entry.name {
             desired_named.insert(n.clone());
         } else if entry.source.is_some() || entry.marketplace.is_some() {
@@ -390,6 +398,7 @@ pub fn run(
         && to_register.is_empty()
         && unresolved.is_empty()
         && pending_unqualified.is_empty()
+        && npm_rows.is_empty()
         && !(adopt && (!marketplaces_to_adopt.is_empty() || !marketplaces_to_fill.is_empty()));
     if nothing {
         println!("  (no changes — manifest matches current state)");
@@ -521,6 +530,33 @@ pub fn run(
             Some(p) => println!("  {} install {} ← {} ({})", "+".green(), n, label, p),
             None => println!("  {} install {} ← {}", "+".green(), n, label),
         }
+    }
+    for entry in &npm_rows {
+        let Some(pkg) = entry.npm.as_deref() else {
+            continue;
+        };
+        let tag = format!("npm:{pkg}");
+        let n = inv
+            .agent_skills
+            .iter()
+            .filter(|(name, e)| {
+                e.source == tag
+                    || entry
+                        .claims
+                        .iter()
+                        .any(|pat| crate::agent_skill::glob_match(pat, name))
+            })
+            .count();
+        println!(
+            "  {} npm:{} {}",
+            "~".cyan(),
+            pkg,
+            format!(
+                "(will run install; {n} claimed skill{} currently inventoried)",
+                if n == 1 { "" } else { "s" }
+            )
+            .dimmed()
+        );
     }
     for n in &agent_to_remove {
         if adopt {
