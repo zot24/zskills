@@ -2,6 +2,28 @@
 
 All notable changes to this project are documented here. The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html). Releases from this point forward are managed by [release-please](https://github.com/googleapis/release-please) based on [Conventional Commits](https://www.conventionalcommits.org/).
 
+## [1.4.0](https://github.com/zot24/zskills/compare/v1.3.0...v1.4.0) (2026-09-01)
+
+
+### Features
+
+* one [[agent_skills]] stanza names many skills from one source ([#79](https://github.com/zot24/zskills/issues/79)) ([cfe7d88](https://github.com/zot24/zskills/commit/cfe7d88f09aaf891fd57af3b75815121897f1656))
+* scan --mcp and migrate project MCP servers ([#76](https://github.com/zot24/zskills/issues/76)) ([11f72be](https://github.com/zot24/zskills/commit/11f72beafca9f6ad578b701552ff7e3908278cae))
+
+
+### Bug Fixes
+
+* doctor walks harness skill roots ([#74](https://github.com/zot24/zskills/issues/74)) ([a7d624b](https://github.com/zot24/zskills/commit/a7d624b46aa68ffed8883ee53cf9ced137716b2f))
+* drop [[skills]] row on plugin remove and purge ([#72](https://github.com/zot24/zskills/issues/72)) ([31dc6ef](https://github.com/zot24/zskills/commit/31dc6ef637bc9e3260f6e401a30db7b86c14a703))
+* name marketplaces from the manifest, not the repo basename ([#78](https://github.com/zot24/zskills/issues/78)) ([58a920d](https://github.com/zot24/zskills/commit/58a920dbc886added7868f1ffa705aec5770128a))
+* plan npm agent-skill rows so sync dry-run matches apply ([#75](https://github.com/zot24/zskills/issues/75)) ([5fe0b5f](https://github.com/zot24/zskills/commit/5fe0b5f7966abdd4a612e4f17afdfcf8eb827aa4))
+* show source kind on every list Agent Skill line ([#73](https://github.com/zot24/zskills/issues/73)) ([99f6182](https://github.com/zot24/zskills/commit/99f61822f83c84b2bc98aaa0a66312f41c25cd19))
+
+
+### Documentation
+
+* record Pi skill listing and upstream wiki-manager description limit ([#70](https://github.com/zot24/zskills/issues/70)) ([2a82ed8](https://github.com/zot24/zskills/commit/2a82ed8f4b1a64d08aa0adce2d214dfb90cc490f))
+
 ## [1.3.0](https://github.com/zot24/zskills/compare/v1.2.0...v1.3.0) (2026-08-30)
 
 
