@@ -2567,6 +2567,174 @@ fn doctor_fix_converges_and_does_not_count_unfixable_findings_as_failures() {
         .stdout(predicate::str::contains("still open").not());
 }
 
+fn write_named_skill(dir: &std::path::Path, name: &str, body: &str) {
+    fs::create_dir_all(dir).unwrap();
+    fs::write(
+        dir.join("SKILL.md"),
+        format!("---\nname: {name}\n---\n{body}\n"),
+    )
+    .unwrap();
+}
+
+#[test]
+fn doctor_reports_dangling_harness_symlink_with_its_target() {
+    let (parent, claude_home) = fake_home_nested();
+    let claude_skills = claude_home.join("skills");
+    fs::create_dir_all(&claude_skills).unwrap();
+    let ghost = claude_skills.join("ghostpack");
+    let target = "/nonexistent/zskills-test-dangle";
+    std::os::unix::fs::symlink(target, &ghost).unwrap();
+
+    let out = zskills_nested(&parent, &claude_home)
+        .arg("doctor")
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let s = String::from_utf8_lossy(&out);
+    assert!(
+        s.contains(&ghost.display().to_string()),
+        "dangling entry path missing from:\n{s}"
+    );
+    assert!(s.contains(target), "stored link target missing from:\n{s}");
+}
+
+#[test]
+fn doctor_reports_hub_shadow_and_names_the_newer_side() {
+    let (parent, claude_home) = fake_home_nested();
+    let hub = parent.path().join(".agents").join("skills").join("dupe");
+    let harness = claude_home.join("skills").join("dupe");
+    write_named_skill(&hub, "dupe", "hub copy");
+    write_named_skill(&harness, "dupe", "harness copy, diverged");
+
+    let older = std::time::SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(1_767_225_600);
+    let newer = std::time::SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(1_785_484_800);
+    fs::File::open(hub.join("SKILL.md"))
+        .unwrap()
+        .set_modified(older)
+        .unwrap();
+    fs::File::open(&hub).unwrap().set_modified(older).unwrap();
+    fs::File::open(harness.join("SKILL.md"))
+        .unwrap()
+        .set_modified(newer)
+        .unwrap();
+    fs::File::open(&harness)
+        .unwrap()
+        .set_modified(newer)
+        .unwrap();
+
+    let out = zskills_nested(&parent, &claude_home)
+        .arg("doctor")
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let s = String::from_utf8_lossy(&out);
+    let token = format!("newer: {}", harness.display());
+    assert!(s.contains(&token), "expected `{token}` in:\n{s}");
+}
+
+#[test]
+fn doctor_fix_clears_dangling_links_and_fossil_inventory() {
+    let (parent, claude_home) = fake_home_nested();
+    let hub_root = parent.path().join(".agents").join("skills");
+    let claude_skills = claude_home.join("skills");
+    fs::create_dir_all(&hub_root).unwrap();
+    fs::create_dir_all(&claude_skills).unwrap();
+
+    write_named_skill(&hub_root.join("goodskill"), "goodskill", "hub body");
+    write_named_skill(&claude_skills.join("mystuff"), "mystuff", "hand written");
+    write_named_skill(&hub_root.join("dupe"), "dupe", "hub copy");
+    write_named_skill(
+        &claude_skills.join("dupe"),
+        "dupe",
+        "harness copy, diverged",
+    );
+    fs::write(
+        hub_root.join(".zskills.json"),
+        r#"{"version":1,"agent_skills":{}}"#,
+    )
+    .unwrap();
+    fs::write(
+        claude_skills.join(".zskills.json"),
+        r#"{"version":1,"agent_skills":{"gsd-fossil":{"source":"source:acme/skills:skills/gsd-fossil","installed_at":"@1788143572","head_sha":"deadbeef","to":["claude"]}}}"#,
+    )
+    .unwrap();
+    std::os::unix::fs::symlink(hub_root.join("goodskill"), claude_skills.join("goodskill"))
+        .unwrap();
+    std::os::unix::fs::symlink(
+        "/nonexistent/zskills-test-fix",
+        claude_skills.join("ghostpack"),
+    )
+    .unwrap();
+
+    zskills_nested(&parent, &claude_home)
+        .args(["doctor", "--fix"])
+        .assert()
+        .success();
+
+    assert!(
+        !claude_skills.join("ghostpack").symlink_metadata().is_ok(),
+        "dangling symlink must be unlinked"
+    );
+    assert!(
+        !claude_skills.join(".zskills.json").exists(),
+        "fossil inventory must be deleted"
+    );
+    assert!(
+        claude_skills
+            .join("goodskill")
+            .symlink_metadata()
+            .unwrap()
+            .file_type()
+            .is_symlink(),
+        "resolving hub link must stay"
+    );
+    assert!(
+        claude_skills.join("mystuff").join("SKILL.md").is_file(),
+        "unmanaged harness dir must stay"
+    );
+    assert!(
+        claude_skills.join("dupe").join("SKILL.md").is_file(),
+        "shadow dir must stay"
+    );
+    assert!(
+        hub_root.join(".zskills.json").is_file(),
+        "live hub inventory must stay"
+    );
+}
+
+#[test]
+fn doctor_is_silent_on_collapsed_home_and_absent_harness_roots() {
+    let home = fake_home();
+    let known_path = home.path().join("plugins").join("known_marketplaces.json");
+    let mut known: serde_json::Value =
+        serde_json::from_slice(&fs::read(&known_path).unwrap()).unwrap();
+    known["test-mp"]["lastUpdated"] = json!("2026-08-20T00:00:00.000Z");
+    fs::write(&known_path, serde_json::to_string_pretty(&known).unwrap()).unwrap();
+
+    write_named_skill(
+        &home.path().join("skills").join("goodskill"),
+        "goodskill",
+        "body",
+    );
+    fs::write(
+        home.path().join("skills").join(".zskills.json"),
+        r#"{"version":1,"agent_skills":{"goodskill":{"source":"source:acme/skills:skills/goodskill","installed_at":"@1788143572","head_sha":"deadbeef","to":["agents"]}}}"#,
+    )
+    .unwrap();
+
+    zskills(&home)
+        .arg("doctor")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("All good"))
+        .stdout(predicate::str::contains("newer:").not())
+        .stdout(predicate::str::contains(".zskills.json").not());
+}
+
 // ---------------------------------------------------------------------------
 // Marketplace pins.
 //

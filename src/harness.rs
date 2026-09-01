@@ -161,6 +161,20 @@ impl Harness {
         }
     }
 
+    /// Skill directories this harness loads from, independent of any skill name.
+    ///
+    /// `None` when the hub is enough (Pi, Grok) or the harness is unsupported
+    /// (Kimi). Hermes returns one path per category directory that currently
+    /// exists; a missing `skills/` directory is an empty list, not an error.
+    pub fn skill_roots(self) -> Result<Option<Vec<PathBuf>>> {
+        match self {
+            Self::Pi | Self::Grok | Self::Kimi => Ok(None),
+            Self::Claude => Ok(Some(vec![crate::paths::claude_home()?.join("skills")])),
+            Self::Codex => Ok(Some(vec![crate::paths::codex_home()?.join("skills")])),
+            Self::Hermes => Ok(Some(hermes_category_roots()?)),
+        }
+    }
+
     /// True when a hub copy is required as the symlink source or as the scan root.
     pub fn needs_hub_copy(self) -> bool {
         self.uses_hub() || matches!(self, Self::Codex | Self::Hermes)
@@ -169,6 +183,32 @@ impl Harness {
 
 /// Default Hermes category. `--category` overrides this. Do not invent others.
 pub const DEFAULT_HERMES_CATEGORY: &str = "software-development";
+
+fn hermes_category_roots() -> Result<Vec<PathBuf>> {
+    let skills = crate::paths::hermes_home()?.join("skills");
+    let mut roots = Vec::new();
+    let Ok(entries) = std::fs::read_dir(&skills) else {
+        return Ok(roots);
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        let Ok(ft) = entry.file_type() else {
+            continue;
+        };
+        if !ft.is_dir() {
+            continue;
+        }
+        let Some(name) = path.file_name().and_then(|n| n.to_str()) else {
+            continue;
+        };
+        if name.starts_with('.') {
+            continue;
+        }
+        roots.push(path);
+    }
+    roots.sort();
+    Ok(roots)
+}
 
 pub fn validate_hermes_category(category: &str) -> Result<()> {
     anyhow::ensure!(!category.is_empty(), "category must not be empty");
@@ -1027,6 +1067,62 @@ mod tests {
                 .join("devops")
                 .join("demo")
         );
+    }
+
+    #[test]
+    fn skill_roots_lists_existing_hermes_categories() {
+        let _guard = crate::paths::HOME_ENV_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        std::fs::create_dir_all(
+            root.join("hermes")
+                .join("skills")
+                .join("software-development"),
+        )
+        .unwrap();
+        std::fs::create_dir_all(root.join("hermes").join("skills").join("devops")).unwrap();
+        let keys = [
+            ("CLAUDE_HOME", root.join("claude")),
+            ("CODEX_HOME", root.join("codex")),
+            ("HERMES_HOME", root.join("hermes")),
+        ];
+        // SAFETY: held under HOME_ENV_LOCK; restored before the guard drops.
+        let prev: Vec<_> = keys
+            .iter()
+            .map(|(k, v)| {
+                let old = std::env::var_os(k);
+                std::env::set_var(k, v);
+                (*k, old)
+            })
+            .collect();
+        let claude = Harness::Claude.skill_roots().unwrap().unwrap();
+        let codex = Harness::Codex.skill_roots().unwrap().unwrap();
+        let hermes = Harness::Hermes.skill_roots().unwrap().unwrap();
+        let pi = Harness::Pi.skill_roots().unwrap();
+        let grok = Harness::Grok.skill_roots().unwrap();
+        let kimi = Harness::Kimi.skill_roots().unwrap();
+        for (k, old) in prev {
+            match old {
+                Some(v) => std::env::set_var(k, v),
+                None => std::env::remove_var(k),
+            }
+        }
+        assert_eq!(claude, vec![root.join("claude").join("skills")]);
+        assert_eq!(codex, vec![root.join("codex").join("skills")]);
+        assert_eq!(
+            hermes,
+            vec![
+                root.join("hermes").join("skills").join("devops"),
+                root.join("hermes")
+                    .join("skills")
+                    .join("software-development"),
+            ]
+        );
+        assert!(pi.is_none());
+        assert!(grok.is_none());
+        assert!(kimi.is_none());
     }
 
     #[test]
