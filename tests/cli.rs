@@ -5603,6 +5603,214 @@ fn skill_install_path_large_collection_next_steps_repeat_path() {
     );
 }
 
+// ──── plugin skill discovery: plugin.json `skills` and categorised layouts ──
+
+/// Register `mp_dir` as an installed marketplace so `plugin_root` can find it.
+fn register_marketplace_at(home: &TempDir, mp: &str, mp_dir: &std::path::Path) {
+    let known_path = home.path().join("plugins").join("known_marketplaces.json");
+    let mut known: serde_json::Value =
+        serde_json::from_slice(&fs::read(&known_path).unwrap()).unwrap();
+    known[mp] = json!({
+        "source": { "source": "github", "repo": format!("o/{mp}") },
+        "installLocation": mp_dir.to_string_lossy(),
+        "autoUpdate": true,
+        "lastUpdated": "2026-08-24T00:00:00.000Z"
+    });
+    fs::write(&known_path, serde_json::to_string_pretty(&known).unwrap()).unwrap();
+}
+
+/// Write `<dir>/SKILL.md` with the front matter the survey expects.
+fn write_skill_md(dir: &std::path::Path, name: &str) {
+    fs::create_dir_all(dir).unwrap();
+    fs::write(
+        dir.join("SKILL.md"),
+        format!("---\nname: {name}\ndescription: d\n---\n"),
+    )
+    .unwrap();
+}
+
+/// Stage a marketplace plugin at `<home>/plugins/marketplaces/<mp>/skills/<plugin>`
+/// whose own tree holds a `SKILL.md` at each of `trees` (relative to the plugin
+/// root). `plugin_json` is written verbatim to `.claude-plugin/plugin.json` when
+/// given. Returns the plugin root.
+fn stage_plugin_tree(
+    home: &TempDir,
+    mp: &str,
+    plugin: &str,
+    trees: &[&str],
+    plugin_json: Option<serde_json::Value>,
+) -> std::path::PathBuf {
+    let mp_dir = home.path().join("plugins").join("marketplaces").join(mp);
+    fs::create_dir_all(mp_dir.join(".claude-plugin")).unwrap();
+    fs::write(
+        mp_dir.join(".claude-plugin").join("marketplace.json"),
+        format!(
+            r#"{{"name":"{mp}","plugins":[{{"name":"{plugin}","source":"./skills/{plugin}"}}]}}"#
+        ),
+    )
+    .unwrap();
+    let root = mp_dir.join("skills").join(plugin);
+    fs::create_dir_all(root.join("skills")).unwrap();
+    for rel in trees {
+        let dir = root.join(rel);
+        let leaf = dir.file_name().unwrap().to_str().unwrap().to_string();
+        write_skill_md(&dir, &leaf);
+    }
+    if let Some(v) = plugin_json {
+        fs::create_dir_all(root.join(".claude-plugin")).unwrap();
+        fs::write(
+            root.join(".claude-plugin").join("plugin.json"),
+            serde_json::to_string_pretty(&v).unwrap(),
+        )
+        .unwrap();
+    }
+    register_marketplace_at(home, mp, &mp_dir);
+    root
+}
+
+#[test]
+fn plugin_skill_trees_copies_declared_nested_skills_and_skips_undeclared() {
+    let home = fake_home();
+    stage_plugin_tree(
+        &home,
+        "declmp",
+        "pack",
+        &[
+            "skills/shipped/zsg53-ship",
+            "skills/shipped/zsg53-also",
+            "skills/in-progress/zsg53-wip",
+        ],
+        Some(json!({
+            "name": "pack",
+            "skills": ["./skills/shipped/zsg53-ship", "./skills/shipped/zsg53-also"],
+        })),
+    );
+
+    zskills(&home)
+        .args(["plugin", "install", "pack@declmp", "--harness", "pi"])
+        .assert()
+        .success();
+
+    let hub = home.path().join("skills");
+    assert!(
+        hub.join("zsg53-ship").join("SKILL.md").is_file(),
+        "a declared nested skill must reach the hub"
+    );
+    assert!(
+        hub.join("zsg53-also").join("SKILL.md").is_file(),
+        "every declared entry ships, not just the first or the last"
+    );
+    assert!(
+        !hub.join("zsg53-wip").exists(),
+        "a tree the author did not declare must stay off the hub"
+    );
+}
+
+#[test]
+fn plugin_skill_trees_walks_categorised_layout_when_skills_array_absent() {
+    let home = fake_home();
+    let root = stage_plugin_tree(
+        &home,
+        "fallmp",
+        "pack",
+        &["skills/engineering/zsg53-cat", "skills/deep/mid/zsg53-deep"],
+        // A plugin.json with no `skills` key reads as "not declared".
+        Some(json!({ "name": "pack" })),
+    );
+    // A helper SKILL.md inside a skill is part of that skill, not a second one.
+    write_skill_md(
+        &root.join("skills/engineering/zsg53-cat/not-a-skill"),
+        "not-a-skill",
+    );
+
+    zskills(&home)
+        .args(["plugin", "install", "pack@fallmp", "--harness", "pi"])
+        .assert()
+        .success();
+
+    let hub = home.path().join("skills");
+    assert!(
+        hub.join("zsg53-cat").join("SKILL.md").is_file(),
+        "skills/<category>/<name>/SKILL.md must reach the hub"
+    );
+    assert!(
+        hub.join("zsg53-cat")
+            .join("not-a-skill")
+            .join("SKILL.md")
+            .is_file(),
+        "the helper travels inside its own skill"
+    );
+    assert!(
+        !hub.join("not-a-skill").exists(),
+        "a helper SKILL.md is not a hub entry of its own"
+    );
+    assert!(
+        !hub.join("zsg53-deep").exists(),
+        "the walk stops at one category level"
+    );
+}
+
+#[test]
+fn plugin_skill_trees_rejects_skills_array_entry_that_escapes_the_plugin_root() {
+    // An absolute path, a `../` relative path, and a version-stamped sibling
+    // that is a string prefix of the plugin root but not a path-component one.
+    // Each seed is one legal entry plus exactly one escape: an array of several
+    // escapes is self-masking, because a bail on the first never reaches the rest.
+    let outside = tempfile::tempdir().unwrap();
+    write_skill_md(&outside.path().join("zsg53-abs"), "zsg53-abs");
+
+    let escapes = [
+        (
+            "abs",
+            outside
+                .path()
+                .join("zsg53-abs")
+                .to_string_lossy()
+                .into_owned(),
+            "zsg53-abs",
+        ),
+        ("rel", "../zsg53-rel".to_string(), "zsg53-rel"),
+        ("sib", "../pack-evil/zsg53-evil".to_string(), "zsg53-evil"),
+    ];
+
+    for (tag, entry, stolen) in escapes {
+        let home = fake_home();
+        let mp = format!("esc{tag}");
+        let root = stage_plugin_tree(
+            &home,
+            &mp,
+            "pack",
+            &["skills/zsg53-ok"],
+            Some(json!({ "name": "pack", "skills": ["./skills/zsg53-ok", entry] })),
+        );
+        // Plant the escape targets that live beside the plugin root, so the
+        // refusal is the check firing and not the tree being absent.
+        let siblings = root.parent().unwrap().to_path_buf();
+        write_skill_md(&siblings.join("zsg53-rel"), "zsg53-rel");
+        write_skill_md(&siblings.join("pack-evil").join("zsg53-evil"), "zsg53-evil");
+
+        zskills(&home)
+            .args([
+                "plugin",
+                "install",
+                &format!("pack@{mp}"),
+                "--harness",
+                "pi",
+            ])
+            .assert()
+            .failure();
+
+        let hub = home.path().join("skills");
+        assert!(
+            !hub.join(stolen).exists(),
+            "{tag}: an entry resolving outside the plugin root must not reach the hub"
+        );
+        assert!(
+            !hub.join("zsg53-ok").exists(),
+            "{tag}: one hostile entry aborts the whole curated array"
+        );
+    }
+}
 // ---------------------------------------------------------------------------
 // `[[agent_skills]]` plural form (#54): one stanza, one `source`, many names.
 //
