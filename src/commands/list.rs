@@ -250,6 +250,45 @@ fn print_empty_plugin_hint() {
     );
 }
 
+/// Kind for the human `list` source column.
+///
+/// Prefix checks run before the `contains('/')` github heuristic so a
+/// self-tagged source such as `source:owner/repo:skills/x` is not restamped.
+fn source_kind(source: &str) -> Option<&'static str> {
+    if source.starts_with("npm:") {
+        return Some("npm");
+    }
+    if source.starts_with("source:")
+        || source.starts_with("marketplace:")
+        || source.starts_with("plugin:")
+    {
+        return None;
+    }
+    if source == "local" {
+        return Some("local");
+    }
+    if source.starts_with("https://")
+        || source.starts_with("http://")
+        || source.starts_with("git://")
+        || source.starts_with("ssh://")
+        || source.starts_with("git@")
+    {
+        return Some("git");
+    }
+    if source.contains('/') {
+        return Some("github");
+    }
+    None
+}
+
+/// Prefix `github:` or `git:` when the source does not already name its kind.
+fn source_display(source: &str) -> String {
+    match source_kind(source) {
+        Some(kind @ ("github" | "git")) => format!("{kind}:{source}"),
+        _ => source.to_string(),
+    }
+}
+
 fn print_group(
     source: &str,
     names: &[String],
@@ -259,7 +298,7 @@ fn print_group(
 ) {
     let count = names.len();
     if count == 1 {
-        // Single skill from a source: "✓ <skill>  ← <source>  (<path>)"
+        // Single skill from a source: "✓ <skill>  ← <kind:source>"
         let path_suffix = if paths {
             agent_skill_path_suffix(&names[0], user_skills)
         } else {
@@ -269,16 +308,19 @@ fn print_group(
         println!(
             "  ✓ {}  {}{}{}",
             names[0],
-            format!("← {}", source).dimmed(),
+            format!("← {}", source_display(source)).dimmed(),
             loc.dimmed(),
             path_suffix
         );
         return;
     }
-    let (label, kind) = match source.split_once(':') {
-        Some(("npm", pkg)) => (pkg.to_string(), "npm"),
-        _ if source.contains('/') => (source.to_string(), "github"),
-        _ => (source.to_string(), source),
+    let (label, kind) = match source_kind(source) {
+        Some("npm") => (
+            source.strip_prefix("npm:").unwrap_or(source).to_string(),
+            "npm",
+        ),
+        Some(kind) => (source.to_string(), kind),
+        None => (source.to_string(), source),
     };
     println!(
         "  ✓ {} {}  {}",

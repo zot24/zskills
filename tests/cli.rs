@@ -501,6 +501,32 @@ fn list_groups_agent_skills_by_source() {
 }
 
 #[test]
+fn list_single_skill_source_shows_kind() {
+    let home = fake_home();
+    let user_skills = home.path().join("skills");
+    fs::create_dir_all(user_skills.join("solo")).unwrap();
+    fs::write(user_skills.join("solo").join("SKILL.md"), "# solo\n").unwrap();
+
+    let inv = json!({
+        "version": 1,
+        "agent_skills": {
+            "solo": {"source": "owner/solo-repo", "installed_at": "@0", "head_sha": "abc"}
+        }
+    });
+    fs::write(
+        user_skills.join(".zskills.json"),
+        serde_json::to_string_pretty(&inv).unwrap(),
+    )
+    .unwrap();
+
+    zskills(&home)
+        .args(["list"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("← github:owner/solo-repo"));
+}
+
+#[test]
 fn upgrade_runs_without_marketplaces_or_manifest() {
     // Smoke test: upgrade against an empty fake home should succeed and print the
     // "Upgrade complete" line.
