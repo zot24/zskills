@@ -3313,6 +3313,55 @@ fn plugin_remove_unknown_name_does_not_print_success() {
 }
 
 #[test]
+fn plugin_remove_clears_manifest_intent() {
+    let home = fake_home();
+    let dir = home.path().join("config").join("zskills");
+    fs::create_dir_all(&dir).unwrap();
+    fs::write(
+        dir.join("skills.toml"),
+        "# keep this comment\n\
+         \n\
+         [[marketplaces]]\n\
+         name = \"test-mp\"\n\
+         repo = \"owner/test-mp\"\n\
+         \n\
+         [[skills]]\n\
+         name = \"foo\"\n\
+         marketplace = \"test-mp\"\n\
+         harnesses = [\"claude\"]\n\
+         \n\
+         [[skills]]\n\
+         name = \"keepme\"\n\
+         marketplace = \"test-mp\"\n\
+         harnesses = [\"claude\"]\n",
+    )
+    .unwrap();
+
+    zskills(&home)
+        .args(["plugin", "remove", "foo"])
+        .assert()
+        .success();
+
+    let toml = fs::read_to_string(dir.join("skills.toml")).unwrap();
+    assert!(
+        !toml.contains("name = \"foo\""),
+        "plugin remove must drop the [[skills]] row so sync cannot resurrect it:\n{toml}"
+    );
+    assert!(
+        toml.contains("name = \"keepme\""),
+        "plugin remove must leave neighbouring [[skills]] rows:\n{toml}"
+    );
+    assert!(
+        toml.contains("name = \"test-mp\""),
+        "plugin remove must leave [[marketplaces]]:\n{toml}"
+    );
+    assert!(
+        toml.contains("# keep this comment"),
+        "plugin remove must preserve comments via toml_edit:\n{toml}"
+    );
+}
+
+#[test]
 fn mcp_add_and_remove_write_intent_then_runtime() {
     let (parent, claude_home) = fake_home_nested();
     let manifest_dir = parent.path().join("config").join("zskills");

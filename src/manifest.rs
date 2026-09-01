@@ -1040,6 +1040,43 @@ pub fn drop_named_agent_skill(path: &Path, name: &str) -> Result<bool> {
     Ok(true)
 }
 
+/// Drop a `[[skills]]` row whose `name` and `marketplace` match.
+///
+/// A missing `marketplace` on the row matches only when `marketplace` is `None`.
+/// Unrelated tables, comments, and formatting survive via `toml_edit`.
+pub fn drop_skill(path: &Path, name: &str, marketplace: Option<&str>) -> Result<bool> {
+    use toml_edit::{DocumentMut, Item};
+
+    if !path.exists() {
+        return Ok(false);
+    }
+    let raw = std::fs::read_to_string(path)
+        .with_context(|| format!("reading manifest {}", path.display()))?;
+    let mut doc: DocumentMut = raw
+        .parse()
+        .with_context(|| format!("parsing manifest {} as TOML", path.display()))?;
+
+    let Some(Item::ArrayOfTables(aot)) = doc.get_mut("skills") else {
+        return Ok(false);
+    };
+    let mut idx = None;
+    for (i, t) in aot.iter().enumerate() {
+        let n = t.get("name").and_then(|v| v.as_str());
+        let mp = t.get("marketplace").and_then(|v| v.as_str());
+        if n == Some(name) && mp == marketplace {
+            idx = Some(i);
+            break;
+        }
+    }
+    let Some(i) = idx else {
+        return Ok(false);
+    };
+    aot.remove(i);
+    std::fs::write(path, doc.to_string())
+        .with_context(|| format!("writing manifest {}", path.display()))?;
+    Ok(true)
+}
+
 #[cfg(test)]
 mod marketplace_pin_tests {
     use super::*;
