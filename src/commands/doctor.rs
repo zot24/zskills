@@ -169,6 +169,13 @@ pub fn run(fix: bool) -> Result<()> {
     issues += check_claude_flavored_hub();
     issues += check_agent_skill_path_and_marketplace(&known);
 
+    let harness_findings = scan_harness_skill_roots();
+    issues += harness_findings.len();
+    fixable += harness_findings.iter().filter(|f| f.fixable()).count();
+    for f in &harness_findings {
+        f.print();
+    }
+
     if issues == 0 {
         println!(
             "{} All good — disk, inventory, and settings are in sync.",
@@ -235,6 +242,12 @@ pub fn run(fix: bool) -> Result<()> {
                     fixed += 1;
                 }
                 Err(e) => println!("  {} could not re-install {}: {}", "✗".red(), name, e),
+            }
+        }
+
+        for f in &harness_findings {
+            if f.repair() {
+                fixed += 1;
             }
         }
 
@@ -660,6 +673,225 @@ fn clone_dir_for(entry: &crate::manifest::AgentSkillEntry) -> Option<std::path::
     let (_, name) = crate::agent_skill::parse_source(src).ok()?;
     let cache = crate::paths::agent_skills_cache_dir().ok()?.join(name);
     cache.is_dir().then_some(cache)
+}
+
+enum HarnessRootKind {
+    Dangling { target: std::path::PathBuf },
+    Malformed,
+    Shadow { newer: std::path::PathBuf },
+    Fossil,
+}
+
+struct HarnessRootFinding {
+    path: std::path::PathBuf,
+    kind: HarnessRootKind,
+}
+
+impl HarnessRootFinding {
+    fn fixable(&self) -> bool {
+        matches!(
+            self.kind,
+            HarnessRootKind::Dangling { .. } | HarnessRootKind::Fossil
+        )
+    }
+
+    fn print(&self) {
+        match &self.kind {
+            HarnessRootKind::Dangling { target } => {
+                println!(
+                    "{} dangling symlink {} → {}",
+                    "✗".red(),
+                    self.path.display(),
+                    target.display()
+                );
+            }
+            HarnessRootKind::Malformed => {
+                println!(
+                    "{} malformed Agent Skill {}",
+                    "✗".red(),
+                    self.path.display()
+                );
+            }
+            HarnessRootKind::Shadow { newer } => {
+                println!(
+                    "{} {} shadows the hub copy (newer: {})",
+                    "✗".red(),
+                    self.path.display(),
+                    newer.display()
+                );
+            }
+            HarnessRootKind::Fossil => {
+                println!("{} fossil inventory {}", "✗".red(), self.path.display());
+            }
+        }
+    }
+
+    fn repair(&self) -> bool {
+        match self.kind {
+            HarnessRootKind::Dangling { .. } => {
+                let Ok(meta) = std::fs::symlink_metadata(&self.path) else {
+                    return false;
+                };
+                if !meta.file_type().is_symlink() {
+                    return false;
+                }
+                if std::fs::remove_file(&self.path).is_err() {
+                    return false;
+                }
+                println!("  unlinked dangling symlink {}", self.path.display());
+                true
+            }
+            HarnessRootKind::Fossil => {
+                if self.path.file_name() != Some(std::ffi::OsStr::new(".zskills.json")) {
+                    return false;
+                }
+                let Ok(meta) = std::fs::symlink_metadata(&self.path) else {
+                    return false;
+                };
+                if meta.file_type().is_dir() {
+                    return false;
+                }
+                if std::fs::remove_file(&self.path).is_err() {
+                    return false;
+                }
+                println!("  removed fossil inventory {}", self.path.display());
+                true
+            }
+            _ => false,
+        }
+    }
+}
+
+fn scan_harness_skill_roots() -> Vec<HarnessRootFinding> {
+    let Ok(hub) = crate::paths::user_skills_dir() else {
+        return Vec::new();
+    };
+    let mut out = Vec::new();
+    for h in [
+        crate::harness::Harness::Claude,
+        crate::harness::Harness::Pi,
+        crate::harness::Harness::Hermes,
+        crate::harness::Harness::Kimi,
+        crate::harness::Harness::Grok,
+        crate::harness::Harness::Codex,
+    ] {
+        let roots = match h.skill_roots() {
+            Ok(Some(r)) => r,
+            _ => continue,
+        };
+        for root in roots {
+            if !root.is_dir() {
+                continue;
+            }
+            if root == hub {
+                continue;
+            }
+            let Ok(entries) = std::fs::read_dir(&root) else {
+                continue;
+            };
+            for entry in entries.flatten() {
+                if let Some(finding) = classify_harness_entry(&entry.path(), &hub) {
+                    out.push(finding);
+                }
+            }
+        }
+    }
+    out.sort_by(|a, b| a.path.cmp(&b.path));
+    out
+}
+
+fn classify_harness_entry(
+    path: &std::path::Path,
+    hub: &std::path::Path,
+) -> Option<HarnessRootFinding> {
+    let name = path.file_name()?;
+    if name == ".zskills.json" {
+        let meta = std::fs::symlink_metadata(path).ok()?;
+        if meta.file_type().is_dir() {
+            return None;
+        }
+        return Some(HarnessRootFinding {
+            path: path.to_path_buf(),
+            kind: HarnessRootKind::Fossil,
+        });
+    }
+    if name.to_str()?.starts_with('.') {
+        return None;
+    }
+
+    let meta = std::fs::symlink_metadata(path).ok()?;
+    if meta.file_type().is_symlink() {
+        let target = std::fs::read_link(path).ok()?;
+        if std::fs::metadata(path).is_err() {
+            return Some(HarnessRootFinding {
+                path: path.to_path_buf(),
+                kind: HarnessRootKind::Dangling { target },
+            });
+        }
+        return None;
+    }
+    if !meta.file_type().is_dir() {
+        return None;
+    }
+
+    let skill_md = path.join("SKILL.md");
+    let text = match std::fs::read_to_string(&skill_md) {
+        Ok(t) => t,
+        Err(_) => {
+            return Some(HarnessRootFinding {
+                path: path.to_path_buf(),
+                kind: HarnessRootKind::Malformed,
+            });
+        }
+    };
+    if !skill_md_has_name(&text) {
+        return Some(HarnessRootFinding {
+            path: path.to_path_buf(),
+            kind: HarnessRootKind::Malformed,
+        });
+    }
+
+    let hub_copy = hub.join(name);
+    if hub_copy == *path {
+        return None;
+    }
+    let hub_md = hub_copy.join("SKILL.md");
+    let Ok(hub_bytes) = std::fs::read(&hub_md) else {
+        return None;
+    };
+    if hub_bytes == text.as_bytes() {
+        return None;
+    }
+    let newer = if copy_mtime(path) >= copy_mtime(&hub_copy) {
+        path.to_path_buf()
+    } else {
+        hub_copy
+    };
+    Some(HarnessRootFinding {
+        path: path.to_path_buf(),
+        kind: HarnessRootKind::Shadow { newer },
+    })
+}
+
+fn skill_md_has_name(text: &str) -> bool {
+    let Some(fm) = yaml_frontmatter(text) else {
+        return false;
+    };
+    fm.lines().any(|line| {
+        line.trim_start()
+            .strip_prefix("name:")
+            .is_some_and(|v| !v.trim().trim_matches(['"', '\'']).is_empty())
+    })
+}
+
+fn copy_mtime(dir: &std::path::Path) -> std::time::SystemTime {
+    let dir_t = std::fs::metadata(dir)
+        .and_then(|m| m.modified())
+        .unwrap_or(std::time::SystemTime::UNIX_EPOCH);
+    let md_t = std::fs::metadata(dir.join("SKILL.md"))
+        .and_then(|m| m.modified())
+        .unwrap_or(std::time::SystemTime::UNIX_EPOCH);
+    dir_t.max(md_t)
 }
 
 #[cfg(test)]
