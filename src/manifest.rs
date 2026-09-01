@@ -302,6 +302,9 @@ impl McpEntry {
 ///   `"npx some-tool install"`).
 /// - `name` (optional): pick a single skill out of a multi-skill repo. For
 ///   local-only entries (no `source`/`npm`/`marketplace`), `name` is required.
+/// - `skills` (optional): the plural form of `name`. One stanza names many
+///   skills out of the same origin. An entry declares `name` or `skills`,
+///   never both.
 #[derive(Debug, Deserialize, Serialize, Clone, Default)]
 pub struct AgentSkillEntry {
     #[serde(default)]
@@ -315,6 +318,12 @@ pub struct AgentSkillEntry {
     pub install_cmd: Option<String>,
     #[serde(default)]
     pub name: Option<String>,
+    /// Plural form of `name`. Each entry expands to its own `AgentSkillEntry`
+    /// at load time, so all downstream code is unchanged. Empty (or absent)
+    /// means the row keeps whatever it meant before — for `source` alone,
+    /// every skill in the repo.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub skills: Vec<String>,
     /// Relative path inside the clone. Stored with a leading `./` stripped.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub path: Option<String>,
@@ -344,6 +353,15 @@ impl AgentSkillEntry {
         if origins > 1 {
             anyhow::bail!("agent skill: pick one of source, npm, marketplace");
         }
+        // `skills` is the plural of `name`. Carrying both leaves the row's
+        // meaning undefined, so refuse it — and say which stanza is wrong,
+        // because a manifest can hold 45 of them.
+        if self.name.is_some() && !self.skills.is_empty() {
+            anyhow::bail!(
+                "agent skill {}: declare `name` or `skills`, not both",
+                self.origin_label()
+            );
+        }
         if let Some(raw) = self.path.take() {
             let normalized = normalize_skill_path(&raw)?;
             if self.npm.is_some() {
@@ -355,6 +373,22 @@ impl AgentSkillEntry {
             self.path = Some(normalized);
         }
         Ok(())
+    }
+
+    /// How this stanza names its origin, for diagnostics. Whichever of
+    /// `source`, `marketplace` or `npm` the entry actually declared; a
+    /// local-only row has none of them.
+    pub fn origin_label(&self) -> String {
+        if let Some(src) = &self.source {
+            return src.clone();
+        }
+        if let Some(mp) = &self.marketplace {
+            return format!("marketplace:{mp}");
+        }
+        if let Some(pkg) = &self.npm {
+            return format!("npm:{pkg}");
+        }
+        "local".to_string()
     }
 
     /// Inventory `source` tag this row owns. `source` + `path` uses
@@ -498,7 +532,37 @@ pub fn load(path: &Path) -> Result<Manifest> {
     for entry in &mut m.agent_skills {
         entry.validate()?;
     }
+    expand_plural_agent_skills(&mut m.agent_skills);
     Ok(m)
+}
+
+/// Replace every entry carrying a non-empty `skills` array with one clone per
+/// name, so every consumer of `Manifest.agent_skills` sees the singular rows it
+/// has always seen. The clone carries `source`, `npm`, `marketplace`, `path`,
+/// `claims`, `harnesses` and `install_cmd` through unchanged — a plural stanza
+/// that lost its `harnesses` would silently lose its harness routing.
+///
+/// `skills = []` is not an expansion: the row keeps whatever it meant before,
+/// which for `source` alone is repo-wide. It must never expand to zero rows.
+/// This runs on the in-memory manifest only; `load` never writes.
+fn expand_plural_agent_skills(entries: &mut Vec<AgentSkillEntry>) {
+    if entries.iter().all(|e| e.skills.is_empty()) {
+        return;
+    }
+    let mut out: Vec<AgentSkillEntry> = Vec::with_capacity(entries.len());
+    for entry in entries.drain(..) {
+        if entry.skills.is_empty() {
+            out.push(entry);
+            continue;
+        }
+        for name in &entry.skills {
+            let mut one = entry.clone();
+            one.skills = Vec::new();
+            one.name = Some(name.clone());
+            out.push(one);
+        }
+    }
+    *entries = out;
 }
 
 /// Append an [[agent_skills]] entry to a manifest file, preserving existing
@@ -521,9 +585,12 @@ pub fn append_agent_skill(path: &Path, entry: &AgentSkillEntry) -> Result<bool> 
         .parse()
         .with_context(|| format!("parsing manifest {} as TOML", path.display()))?;
 
-    // Check for duplicates: (source, marketplace, path, name)
+    // Check for duplicates: (source, marketplace, path, name). While walking,
+    // remember the first stanza for the same origin that already carries a
+    // `skills` array — the new name belongs inside it, not in a new table.
+    let mut widen: Option<usize> = None;
     if let Some(Item::ArrayOfTables(existing)) = doc.get("agent_skills") {
-        for t in existing.iter() {
+        for (i, t) in existing.iter().enumerate() {
             let src = t.get("source").and_then(|v| v.as_str()).map(str::to_string);
             let mp = t
                 .get("marketplace")
@@ -531,12 +598,39 @@ pub fn append_agent_skill(path: &Path, entry: &AgentSkillEntry) -> Result<bool> 
                 .map(str::to_string);
             let path = t.get("path").and_then(|v| v.as_str()).map(str::to_string);
             let name = t.get("name").and_then(|v| v.as_str()).map(str::to_string);
-            if src == entry.source
-                && mp == entry.marketplace
-                && path == entry.path
-                && name == entry.name
-            {
+            if src != entry.source || mp != entry.marketplace || path != entry.path {
+                continue;
+            }
+            if name == entry.name {
                 return Ok(false);
+            }
+            let Some(new_name) = entry.name.as_deref() else {
+                continue;
+            };
+            if let Some(arr) = t.get("skills").and_then(|v| v.as_array()) {
+                if arr.iter().any(|v| v.as_str() == Some(new_name)) {
+                    return Ok(false);
+                }
+                if widen.is_none() {
+                    widen = Some(i);
+                }
+            }
+        }
+    }
+
+    // Widen the array in place. toml_edit keeps the surrounding comments and
+    // the array's own formatting; nothing is reflowed.
+    if let (Some(i), Some(new_name)) = (widen, entry.name.as_deref()) {
+        if let Some(Item::ArrayOfTables(aot)) = doc.get_mut("agent_skills") {
+            if let Some(arr) = aot
+                .get_mut(i)
+                .and_then(|t| t.get_mut("skills"))
+                .and_then(|v| v.as_array_mut())
+            {
+                arr.push(new_name);
+                std::fs::write(path, doc.to_string())
+                    .with_context(|| format!("writing manifest {}", path.display()))?;
+                return Ok(true);
             }
         }
     }
@@ -1008,7 +1102,15 @@ pub fn drop_mcp(path: &Path, name: &str, scope: &str) -> Result<bool> {
     Ok(true)
 }
 
-/// Drop a named `[[agent_skills]]` row. Source-only rows (no `name`) are left alone.
+/// Drop a named `[[agent_skills]]` row, or take one name out of a stanza's
+/// `skills` array. Source-only rows (no `name`, no `skills`) are left alone.
+///
+/// A plural stanza keeps its plural form: the name is removed from the array
+/// and nothing else changes. A one-name array is not collapsed back onto
+/// `name = "..."` — the user chose the plural form, and a stanza carrying both
+/// keys is the shape `AgentSkillEntry::validate` refuses to load. The whole
+/// stanza goes only when its array becomes empty, because `skills = []` reads
+/// as repo-wide.
 pub fn drop_named_agent_skill(path: &Path, name: &str) -> Result<bool> {
     use toml_edit::{DocumentMut, Item};
 
@@ -1031,10 +1133,54 @@ pub fn drop_named_agent_skill(path: &Path, name: &str) -> Result<bool> {
             break;
         }
     }
-    let Some(i) = idx else {
+    if let Some(i) = idx {
+        aot.remove(i);
+        std::fs::write(path, doc.to_string())
+            .with_context(|| format!("writing manifest {}", path.display()))?;
+        return Ok(true);
+    }
+
+    let mut hit = None;
+    for (i, t) in aot.iter().enumerate() {
+        let Some(arr) = t.get("skills").and_then(|v| v.as_array()) else {
+            continue;
+        };
+        if let Some(j) = arr.iter().position(|v| v.as_str() == Some(name)) {
+            hit = Some((i, j));
+            break;
+        }
+    }
+    let Some((i, j)) = hit else {
         return Ok(false);
     };
-    aot.remove(i);
+    let emptied = {
+        let Some(arr) = aot
+            .get_mut(i)
+            .and_then(|t| t.get_mut("skills"))
+            .and_then(|v| v.as_array_mut())
+        else {
+            return Ok(false);
+        };
+        let dropped = arr.remove(j);
+        // Removing the head leaves the next element wearing the separator that
+        // used to sit between them (`[ "bravo"]`). Hand it the head's decor so
+        // the array reads as it did before, without reflowing the rest.
+        if j == 0 {
+            if let Some(first) = arr.get_mut(0) {
+                let prefix = dropped
+                    .decor()
+                    .prefix()
+                    .and_then(|r| r.as_str())
+                    .unwrap_or("")
+                    .to_string();
+                first.decor_mut().set_prefix(prefix);
+            }
+        }
+        arr.is_empty()
+    };
+    if emptied {
+        aot.remove(i);
+    }
     std::fs::write(path, doc.to_string())
         .with_context(|| format!("writing manifest {}", path.display()))?;
     Ok(true)

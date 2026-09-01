@@ -279,6 +279,11 @@ install_cmd = "npx some-tool setup"
 # Local-only (just tracked, never refreshed from a remote)
 [[agent_skills]]
 name = "my-internal-tool"
+
+# Many skills from one source, one stanza
+[[agent_skills]]
+source = "mattpocock/skills"
+skills = ["prototype", "research", "tdd", "wayfinder"]
 ```
 
 | Field | Purpose |
@@ -289,6 +294,7 @@ name = "my-internal-tool"
 | `npm` | npm package name. `sync`/`upgrade` runs `npm install -g <pkg>`. |
 | `install_cmd` | Custom installer command — overrides the default `npm install -g`. Used for packages with their own setup CLI. |
 | `name` | Optional. For source entries, pick a single skill out of a multi-skill repo. For local-only entries, required — names the on-disk skill to track. |
+| `skills` | Optional list. The plural form of `name`: one stanza picks many skills out of the same source, marketplace or npm package, and writes `source` once instead of once per name. Every other key on the stanza (`path`, `harnesses`, `claims`, `install_cmd`) applies to every name in the list. An entry declares `name` **or** `skills`, never both — a stanza carrying both is refused when the manifest loads. An empty `skills = []` means what an absent key means: the row keeps whatever it meant before. |
 | `harnesses` | Optional list. Names which harnesses can see this Agent Skill. Empty inherits `[defaults].harnesses`, then every harness whose home exists. Set it on marketplace+path rows. The llm-wiki recipe uses `["pi", "grok"]` so Claude does not also get the OpenCode tree. |
 | `claims` | Glob patterns (e.g., `["gsd-*"]`) matched against `~/.agents/skills/`. After install, every match is tagged with this entry's source. Used for npm packages whose installer touches pre-existing directories — so the diff-after-install discovers nothing, but `claims` retroactively claims ownership. |
 

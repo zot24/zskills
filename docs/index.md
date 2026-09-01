@@ -45,6 +45,12 @@ marketplace = "cloudflare"
 [[agent_skills]]
 source = "jakubkrehel/make-interfaces-feel-better"
 
+# Many skills from one repo: `skills` is the plural of `name`, so one stanza
+# carries one `source`. An entry declares `name` or `skills`, not both.
+[[agent_skills]]
+source = "mattpocock/skills"
+skills = ["prototype", "research", "tdd", "wayfinder"]
+
 # Agent Skills from an npm package (with glob ownership)
 [[agent_skills]]
 npm = "get-shit-done-cc"
