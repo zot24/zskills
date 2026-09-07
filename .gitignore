@@ -6,3 +6,8 @@ Cargo.lock.bak
 
 # Worktrees for parallel work live here (cockpit d-0096).
 .worktrees/
+
+# Cockpit ops for this repo: card, verify recipes, ledgers (tower d-0179, d-0188).
+# Kept beside the code so the tool finds them; not tracked here, because this
+# repo is public and they are the operator's working record, not this project's.
+.tower/
