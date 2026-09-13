@@ -4,5 +4,11 @@ Cargo.lock.bak
 *.swp
 /book
 
-# Worktrees for parallel work live here (cockpit d-0096).
+# Worktrees for parallel work live here (tower d-0096).
 .worktrees/
+
+# The tower's ops folder for this repo: its card, ledgers, specs, fixtures,
+# verify recipe and proof ledger. It sits beside the code so the tool finds
+# it, the repo ignores it, and it stays on the machine that made it
+# (tower d-0210, d-0212). Nothing of it belongs in this history.
+.tower/
