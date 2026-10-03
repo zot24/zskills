@@ -4584,6 +4584,48 @@ fn sync_live_pulls_path_backed_clone_and_recopies_when_head_moved() {
 }
 
 #[test]
+fn sync_unnamed_path_settles_after_upstream_drops_a_skill() {
+    let up = tempfile::tempdir().unwrap();
+    let repo = write_nested_path_repo(up.path());
+    let home = fake_home();
+    write_manifest(
+        &home,
+        &format!(
+            "[[agent_skills]]\nsource = \"{}\"\npath = \"packages/foo/skills\"\n",
+            file_url(&repo)
+        ),
+    );
+    zskills(&home).arg("sync").assert().success();
+    assert!(home.path().join("skills/wiki-query/SKILL.md").is_file());
+
+    StdCommand::new("git")
+        .arg("-C")
+        .arg(&repo)
+        .args(["rm", "-r", "--quiet", "packages/foo/skills/wiki-query"])
+        .status()
+        .unwrap();
+    StdCommand::new("git")
+        .arg("-C")
+        .arg(&repo)
+        .args(["commit", "--quiet", "-m", "drop wiki-query"])
+        .status()
+        .unwrap();
+    zskills(&home).arg("sync").assert().success();
+
+    // The hub copy of the dropped skill keeps the old head. It must not make
+    // every later sync plan the row again.
+    zskills(&home)
+        .args(["sync", "--dry-run"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("install all").not());
+    assert!(
+        home.path().join("skills/wiki-query/SKILL.md").is_file(),
+        "sync without --prune must not delete the dropped skill"
+    );
+}
+
+#[test]
 fn sync_adopt_source_path_tag_writes_source_and_path() {
     let home = fake_home();
     let skill = home.path().join("skills/foo");
