@@ -4986,6 +4986,100 @@ harnesses = ["pi", "grok"]
 }
 
 #[test]
+fn sync_unnamed_path_restores_a_skill_dropped_from_inventory() {
+    let (home, _up, _repo) = setup_llm_wiki_home();
+    write_manifest(
+        &home,
+        &format!(
+            r#"[[marketplaces]]
+name = "llm-wiki"
+url = "{url}"
+
+[[agent_skills]]
+marketplace = "llm-wiki"
+path = "plugins/llm-wiki-opencode/skills"
+harnesses = ["pi", "grok"]
+"#,
+            url = file_url(&home.path().join("plugins/marketplaces/llm-wiki"))
+        ),
+    );
+    zskills(&home).arg("sync").assert().success();
+
+    // What an earlier prune leaves: no bytes and no inventory row for one
+    // skill, while its sibling from the same clone stays.
+    fs::remove_dir_all(home.path().join("skills/wiki-query")).unwrap();
+    let inv_path = home.path().join("skills/.zskills.json");
+    let mut inv: serde_json::Value =
+        serde_json::from_str(&fs::read_to_string(&inv_path).unwrap()).unwrap();
+    inv["agent_skills"]
+        .as_object_mut()
+        .unwrap()
+        .remove("wiki-query");
+    fs::write(&inv_path, inv.to_string()).unwrap();
+
+    zskills(&home)
+        .args(["sync", "--dry-run"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains(
+            "install all ← marketplace:llm-wiki (plugins/llm-wiki-opencode/skills)",
+        ));
+    zskills(&home).arg("sync").assert().success();
+    assert!(
+        home.path().join("skills/wiki-query/SKILL.md").is_file(),
+        "sync must restore a skill the clone still ships"
+    );
+    assert!(home.path().join("skills/wiki-manager/SKILL.md").is_file());
+}
+
+#[test]
+fn skill_remove_unlinks_harness_links_to_the_hub_only() {
+    let (home, _up, _repo) = setup_llm_wiki_home();
+    write_manifest(
+        &home,
+        &format!(
+            r#"[[marketplaces]]
+name = "llm-wiki"
+url = "{url}"
+
+[[agent_skills]]
+marketplace = "llm-wiki"
+path = "plugins/llm-wiki-opencode/skills"
+name = "wiki-query"
+harnesses = ["codex"]
+"#,
+            url = file_url(&home.path().join("plugins/marketplaces/llm-wiki"))
+        ),
+    );
+    zskills(&home).arg("sync").assert().success();
+    let codex_link = home.path().join("codex/skills/wiki-query");
+    assert_eq!(
+        fs::read_link(&codex_link).unwrap(),
+        home.path().join("skills/wiki-query")
+    );
+    // A same-name link to another target is not ours to remove.
+    let elsewhere = tempfile::tempdir().unwrap();
+    let hermes_root = home.path().join("hermes/skills/software-development");
+    fs::create_dir_all(&hermes_root).unwrap();
+    std::os::unix::fs::symlink(elsewhere.path(), hermes_root.join("wiki-query")).unwrap();
+
+    zskills(&home)
+        .args(["skill", "remove", "wiki-query"])
+        .assert()
+        .success();
+
+    assert!(!home.path().join("skills/wiki-query").exists());
+    assert!(
+        codex_link.symlink_metadata().is_err(),
+        "remove must unlink the harness link to the hub copy"
+    );
+    assert_eq!(
+        fs::read_link(hermes_root.join("wiki-query")).unwrap(),
+        elsewhere.path()
+    );
+}
+
+#[test]
 fn sync_adopt_marketplace_tag_writes_marketplace_and_path() {
     let home = fake_home();
     let skill = home.path().join("skills/wiki-manager");

@@ -1148,6 +1148,7 @@ pub fn remove(skill_name: &str) -> Result<bool> {
     }
     inv.agent_skills.remove(skill_name);
     remove_from_user_dir(skill_name)?;
+    crate::harness::unlink_hub_from_harnesses(skill_name)?;
     save_inventory(&inv)?;
     Ok(true)
 }

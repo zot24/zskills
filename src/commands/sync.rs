@@ -268,6 +268,15 @@ pub fn run(
             if inventoried_from_source.is_empty() {
                 return true;
             }
+            // The clone still ships a skill that is not on disk: a prune dropped
+            // its bytes and its inventory row, so the inventory check above
+            // cannot see it. Install it again.
+            if crate::agent_skill::names_claimed_by(std::slice::from_ref(**e))
+                .iter()
+                .any(|n| !on_disk.contains(n.as_str()))
+            {
+                return true;
+            }
             if inventoried_from_source
                 .iter()
                 .any(|(n, _)| !on_disk.contains(n.as_str()))
