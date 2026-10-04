@@ -268,10 +268,20 @@ pub fn run(
             if inventoried_from_source.is_empty() {
                 return true;
             }
-            if inventoried_from_source
+            // Names the clone ships now. Empty when the clone is missing.
+            let shipped = crate::agent_skill::names_claimed_by(std::slice::from_ref(**e));
+            // A prune drops the bytes and the inventory row, so only the clone
+            // shows that a shipped skill is missing. Install it again.
+            if shipped.iter().any(|n| !on_disk.contains(n.as_str())) {
+                return true;
+            }
+            // A skill the clone no longer ships keeps its old head on the hub and
+            // no install can change that. Judge the row by the shipped skills only.
+            let current: Vec<_> = inventoried_from_source
                 .iter()
-                .any(|(n, _)| !on_disk.contains(n.as_str()))
-            {
+                .filter(|(n, _)| shipped.is_empty() || shipped.contains(n.as_str()))
+                .collect();
+            if current.iter().any(|(n, _)| !on_disk.contains(n.as_str())) {
                 return true;
             }
             // Missing clone must still apply so the hard error fires.
@@ -280,9 +290,7 @@ pub fn run(
             }
             if e.path.is_some() || e.marketplace.is_some() {
                 if let Some(head) = crate::agent_skill::live_head(e) {
-                    return inventoried_from_source
-                        .iter()
-                        .any(|(_, ent)| ent.head_sha != head);
+                    return current.iter().any(|(_, ent)| ent.head_sha != head);
                 }
             }
             false

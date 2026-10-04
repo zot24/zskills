@@ -669,6 +669,48 @@ pub fn link_hub_to_harnesses(
     Ok(())
 }
 
+/// Remove every harness link that points at hub `<name>`. The inverse of
+/// [`link_hub_to_harnesses`]: without it, deleting the hub copy leaves a
+/// dangling link in each harness. A link to any other target and a real
+/// directory stay.
+pub fn unlink_hub_from_harnesses(name: &str) -> Result<()> {
+    crate::agent_skill::validate_skill_name(name)?;
+    let hub = crate::paths::user_skills_dir()?.join(name);
+    for h in [
+        Harness::Claude,
+        Harness::Pi,
+        Harness::Hermes,
+        Harness::Kimi,
+        Harness::Grok,
+        Harness::Codex,
+    ] {
+        let Some(roots) = h.skill_roots()? else {
+            continue;
+        };
+        for root in roots {
+            let dest = root.join(name);
+            if dest == hub {
+                continue;
+            }
+            let is_link = dest
+                .symlink_metadata()
+                .map(|m| m.file_type().is_symlink())
+                .unwrap_or(false);
+            if !is_link || std::fs::read_link(&dest).ok().as_deref() != Some(hub.as_path()) {
+                continue;
+            }
+            std::fs::remove_file(&dest).with_context(|| format!("unlinking {}", dest.display()))?;
+            println!(
+                "  {} {} → {} (link)",
+                "-".yellow(),
+                dest.display(),
+                hub.display()
+            );
+        }
+    }
+    Ok(())
+}
+
 fn symlink_hub_into(hub: &Path, dest: &Path) -> Result<()> {
     if dest == hub {
         return Ok(());
