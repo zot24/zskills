@@ -6126,3 +6126,249 @@ fn removing_one_name_keeps_the_rest_of_the_skills_array() {
          plural form, and `name` beside `skills` will not load: {raw}"
     );
 }
+
+fn write_fake_skillspector(home: &TempDir, exit_code: i32) -> std::path::PathBuf {
+    let bin = home.path().join("bin");
+    fs::create_dir_all(&bin).unwrap();
+    let count = home.path().join("scan-count");
+    let script = bin.join("skillspector");
+    let body = format!(
+        r#"#!/bin/sh
+echo x >> {count}
+out=
+prev=
+for a in "$@"; do
+  if [ "$prev" = "-o" ]; then
+    out=$a
+  fi
+  prev=$a
+done
+mkdir -p "$(dirname "$out")"
+cat > "$out" <<'END'
+{{"risk_assessment":{{"recommendation":"SAFE","score":1}},"issues":[]}}
+END
+exit {exit_code}
+"#,
+        count = count.display(),
+        exit_code = exit_code,
+    );
+    fs::write(&script, body).unwrap();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mut perm = fs::metadata(&script).unwrap().permissions();
+        perm.set_mode(0o755);
+        fs::set_permissions(&script, perm).unwrap();
+    }
+    script
+}
+
+fn scan_count(home: &TempDir) -> usize {
+    let path = home.path().join("scan-count");
+    if !path.exists() {
+        return 0;
+    }
+    fs::read_to_string(path)
+        .unwrap()
+        .lines()
+        .filter(|line| !line.is_empty())
+        .count()
+}
+
+fn skillspector_manifest(command: &str, on_missing: &str, extra: &str) -> String {
+    format!(
+        "[skillspector]\nenabled = true\ncommand = \"{command}\"\nargs = []\nfail_on = \"do_not_install\"\non_missing = \"{on_missing}\"\n{extra}"
+    )
+}
+
+fn commit_all(dir: &std::path::Path, message: &str) {
+    StdCommand::new("git")
+        .arg("-C")
+        .arg(dir)
+        .args(["add", "-A"])
+        .status()
+        .unwrap();
+    StdCommand::new("git")
+        .arg("-C")
+        .arg(dir)
+        .args(["commit", "--quiet", "-m", message])
+        .status()
+        .unwrap();
+}
+
+#[test]
+fn skillspector_pass_records_scan_and_skips_unchanged_sha() {
+    let upstream = tempfile::tempdir().unwrap();
+    write_skill(upstream.path(), "demo", "one");
+    git_init_and_commit(upstream.path());
+
+    let home = fake_home();
+    let script = write_fake_skillspector(&home, 0);
+    write_manifest(
+        &home,
+        &skillspector_manifest(&script.display().to_string(), "error", ""),
+    );
+
+    zskills(&home)
+        .args(["skill", "install", &file_url(upstream.path())])
+        .assert()
+        .success();
+    assert_eq!(scan_count(&home), 1, "first install scans once");
+    let installed = fs::read_to_string(home.path().join("skills/demo/SKILL.md")).unwrap();
+    assert!(installed.contains("demo"));
+    let inv = fs::read_to_string(home.path().join("skills/.zskills.json")).unwrap();
+    assert!(
+        inv.contains("SAFE"),
+        "inventory keeps the skillspector facts: {inv}"
+    );
+
+    zskills(&home)
+        .args(["skill", "install", &file_url(upstream.path())])
+        .assert()
+        .success();
+    assert_eq!(scan_count(&home), 1, "skip path does not spawn");
+
+    let inv_path = home.path().join("skills/.zskills.json");
+    let mut body: serde_json::Value =
+        serde_json::from_str(&fs::read_to_string(&inv_path).unwrap()).unwrap();
+    body["agent_skills"]["demo"]["head_sha"] = json!("not-the-head");
+    fs::write(&inv_path, serde_json::to_string_pretty(&body).unwrap()).unwrap();
+    zskills(&home)
+        .args(["skill", "install", &file_url(upstream.path())])
+        .assert()
+        .success();
+    assert_eq!(scan_count(&home), 1, "same bytes do not spawn on copy");
+
+    zskills(&home)
+        .args(["skill", "inspect", "demo"])
+        .assert()
+        .success();
+    assert_eq!(scan_count(&home), 1, "skill inspect reuses the stored sha");
+}
+
+#[test]
+fn skillspector_fail_leaves_the_installed_skill_in_place() {
+    let upstream = tempfile::tempdir().unwrap();
+    write_skill(upstream.path(), "demo", "one");
+    fs::write(
+        upstream.path().join("skills/demo/SKILL.md"),
+        "---\nname: demo\n---\nVERSION ONE\n",
+    )
+    .unwrap();
+    git_init_and_commit(upstream.path());
+
+    let home = fake_home();
+    let script = write_fake_skillspector(&home, 0);
+    write_manifest(
+        &home,
+        &skillspector_manifest(&script.display().to_string(), "error", ""),
+    );
+    zskills(&home)
+        .args(["skill", "install", &file_url(upstream.path())])
+        .assert()
+        .success();
+
+    write_fake_skillspector(&home, 1);
+    fs::write(
+        upstream.path().join("skills/demo/SKILL.md"),
+        "---\nname: demo\n---\nVERSION TWO\n",
+    )
+    .unwrap();
+    commit_all(upstream.path(), "reject me");
+
+    zskills(&home)
+        .args(["skill", "install", &file_url(upstream.path())])
+        .assert()
+        .failure();
+    let installed = fs::read_to_string(home.path().join("skills/demo/SKILL.md")).unwrap();
+    assert!(
+        installed.contains("VERSION ONE"),
+        "a rejected scan must not replace the hub copy: {installed}"
+    );
+    assert!(!installed.contains("VERSION TWO"));
+}
+
+#[test]
+fn skillspector_missing_binary_errors_or_warns() {
+    let upstream = tempfile::tempdir().unwrap();
+    write_skill(upstream.path(), "demo", "one");
+    git_init_and_commit(upstream.path());
+
+    let home = fake_home();
+    write_manifest(
+        &home,
+        &skillspector_manifest("/no/such/skillspector", "error", ""),
+    );
+    zskills(&home)
+        .args(["skill", "install", &file_url(upstream.path())])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("was not found"));
+    assert!(!home.path().join("skills/demo").exists());
+
+    write_manifest(
+        &home,
+        &skillspector_manifest("/no/such/skillspector", "warn", ""),
+    );
+    zskills(&home)
+        .args(["skill", "install", &file_url(upstream.path())])
+        .assert()
+        .success()
+        .stderr(predicate::str::contains("was not found"));
+    assert!(home.path().join("skills/demo/SKILL.md").exists());
+    let inv = fs::read_to_string(home.path().join("skills/.zskills.json")).unwrap();
+    assert!(
+        !inv.contains("recommendation"),
+        "warn does not record a pass: {inv}"
+    );
+}
+
+#[test]
+fn skillspector_dry_run_prints_the_scan_and_writes_nothing() {
+    let upstream = tempfile::tempdir().unwrap();
+    write_skill(upstream.path(), "demo", "one");
+    git_init_and_commit(upstream.path());
+
+    let home = fake_home();
+    let script = write_fake_skillspector(&home, 0);
+    write_manifest(
+        &home,
+        &skillspector_manifest(&script.display().to_string(), "error", ""),
+    );
+    zskills(&home)
+        .args(["skill", "install", &file_url(upstream.path()), "--dry-run"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("would inspect"));
+    assert!(!home.path().join("skills/demo").exists());
+    assert_eq!(scan_count(&home), 0);
+}
+
+#[test]
+fn doctor_reports_a_skill_installed_with_skip_inspect() {
+    let upstream = tempfile::tempdir().unwrap();
+    write_skill(upstream.path(), "demo", "one");
+    git_init_and_commit(upstream.path());
+    let url = file_url(upstream.path());
+
+    let home = fake_home();
+    let script = write_fake_skillspector(&home, 0);
+    let extra = format!("\n[[agent_skills]]\nsource = \"{url}\"\nname = \"demo\"\n");
+    write_manifest(
+        &home,
+        &skillspector_manifest(&script.display().to_string(), "error", &extra),
+    );
+    zskills(&home)
+        .args(["skill", "install", &url, "--skip-inspect"])
+        .assert()
+        .success()
+        .stderr(predicate::str::contains("--skip-inspect"));
+
+    zskills(&home)
+        .args(["doctor"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Agent Skill demo"))
+        .stdout(predicate::str::contains("no passing skillspector scan"));
+    assert_eq!(scan_count(&home), 0);
+}
