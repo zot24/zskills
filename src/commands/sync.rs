@@ -12,6 +12,7 @@ pub fn run(
     prune: bool,
     adopt: bool,
     force: bool,
+    skip_inspect: bool,
 ) -> Result<()> {
     // Warn loudly if a `./skills.toml` exists and the user didn't pass --file.
     if file.is_none() {
@@ -30,6 +31,7 @@ pub fn run(
     println!("Manifest: {}", path.display().to_string().dimmed());
 
     let manifest = crate::manifest::load(&path)?;
+    let gate = crate::inspect::Gate::from_manifest(&manifest, skip_inspect, dry_run)?;
 
     // -------- 1) Plugin reconciliation --------
     let known = crate::marketplace::load_known(&crate::paths::known_marketplaces_json()?)?;
@@ -637,6 +639,7 @@ pub fn run(
     }
 
     if dry_run {
+        crate::inspect::plan_lines(&gate, &manifest);
         println!("\n(dry-run; no changes written)");
         return Ok(());
     }
@@ -672,6 +675,7 @@ pub fn run(
                 marketplace: mp,
                 version: None,
                 harnesses: Vec::new(),
+                inspect: None,
             };
             if crate::manifest::append_skill(&path, &entry)? {
                 adopted += 1;
@@ -800,16 +804,39 @@ pub fn run(
     // register() wrote extraKnownMarketplaces. Re-read so the enable pass
     // cannot overwrite that with the pre-register snapshot.
     let mut settings = crate::settings::load(&settings_path)?;
+    let mut failures = 0usize;
+    let mut scan_blocked: BTreeSet<String> = BTreeSet::new();
     if !skip_plugin_diff {
+        let mut to_scan: Vec<String> = Vec::new();
+        for k in plugins_to_enable.iter().chain(late_enables.iter()) {
+            if unresolved.contains(k) || to_scan.iter().any(|q| q == k) {
+                continue;
+            }
+            to_scan.push(k.clone());
+        }
+        for (q, _) in &plugin_copies {
+            if unresolved.contains(q) || to_scan.iter().any(|name| name == q) {
+                continue;
+            }
+            to_scan.push(q.clone());
+        }
+        for q in &to_scan {
+            let row = crate::inspect::row_inspect_plugin(&manifest, q);
+            if let Err(e) = crate::inspect::gate_plugin(&gate, q, row) {
+                eprintln!("{} {q}: {e}", "✗".red());
+                scan_blocked.insert(q.clone());
+                failures += 1;
+            }
+        }
         let ep = crate::settings::enabled_plugins_mut(&mut settings);
         for k in &plugins_to_enable {
-            if unresolved.contains(k) {
+            if unresolved.contains(k) || scan_blocked.contains(k) {
                 continue;
             }
             ep.insert(k.clone(), Value::Bool(true));
         }
         for k in &late_enables {
-            if unresolved.contains(k) {
+            if unresolved.contains(k) || scan_blocked.contains(k) {
                 continue;
             }
             ep.insert(k.clone(), Value::Bool(true));
@@ -820,18 +847,20 @@ pub fn run(
         crate::settings::save(&settings_path, &settings)?;
     }
 
-    let mut failures = 0usize;
     let claimed = crate::agent_skill::names_claimed_by(&manifest.agent_skills);
 
     for (q, hs) in &plugin_copies {
-        if unresolved.contains(q) {
+        if unresolved.contains(q) || scan_blocked.contains(q) {
             continue;
         }
+        let row = crate::inspect::row_inspect_plugin(&manifest, q);
         match crate::harness::materialize_hub(
             q,
             hs,
             crate::harness::DEFAULT_HERMES_CATEGORY,
             &claimed,
+            &gate,
+            row,
         ) {
             Ok(names) => {
                 if !names.is_empty() {
@@ -845,6 +874,13 @@ pub fn run(
             }
             Err(e) => {
                 eprintln!("{} {q}: {e}", "✗".red());
+                if gate.wants(row) && format!("{e:#}").contains("skillspector rejected") {
+                    let settings_path = crate::paths::settings_json()?;
+                    let mut settings = crate::settings::load(&settings_path)?;
+                    crate::settings::enabled_plugins_mut(&mut settings)
+                        .insert(q.clone(), Value::Bool(false));
+                    crate::settings::save(&settings_path, &settings)?;
+                }
                 failures += 1;
             }
         }
@@ -859,8 +895,13 @@ pub fn run(
         )?;
         crate::harness::ensure_pi_hub_if_targeted(&hs)?;
         if let Some(pkg) = entry.npm.as_deref() {
-            match crate::agent_skill::install_npm(pkg, entry.install_cmd.as_deref(), &entry.claims)
-            {
+            match crate::agent_skill::install_npm(
+                pkg,
+                entry.install_cmd.as_deref(),
+                &entry.claims,
+                &gate,
+                entry.inspect,
+            ) {
                 Ok(names) => {
                     crate::harness::link_hub_to_harnesses(
                         &names,
@@ -896,8 +937,15 @@ pub fn run(
                 Some(n) => already_present_named(entry, n, &on_disk_now, &inv_now),
                 None => false,
             };
-            if already {
+            if already && !gate.wants(entry.inspect) {
                 if let Some(n) = entry.name.as_deref() {
+                    if gate.skipped() {
+                        let mut inv_clear = crate::agent_skill::load_inventory()?;
+                        if let Some(slot) = inv_clear.agent_skills.get_mut(n) {
+                            slot.inspect = None;
+                        }
+                        crate::agent_skill::save_inventory(&inv_clear)?;
+                    }
                     crate::harness::link_hub_to_harnesses(
                         &[n.to_string()],
                         &hs,
@@ -912,7 +960,12 @@ pub fn run(
                 }
                 continue;
             }
-            match crate::agent_skill::install_from(&origin, entry.name.as_deref()) {
+            match crate::agent_skill::install_from(
+                &origin,
+                entry.name.as_deref(),
+                &gate,
+                entry.inspect,
+            ) {
                 Ok(names) => {
                     crate::harness::link_hub_to_harnesses(
                         &names,
@@ -984,6 +1037,7 @@ pub fn run(
                             ),
                             head_sha: "local".to_string(),
                             to: vec!["agents".into()],
+                            inspect: None,
                         },
                     );
                     dirty = true;

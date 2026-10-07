@@ -14,7 +14,7 @@ use clap::ValueEnum;
 use owo_colors::OwoColorize;
 use serde_json::Value;
 use sha2::{Digest, Sha256};
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd, Hash, ValueEnum)]
@@ -763,6 +763,8 @@ pub fn materialize_hub(
     harnesses: &[Harness],
     category: &str,
     claimed: &BTreeSet<String>,
+    gate: &crate::inspect::Gate,
+    row: Option<bool>,
 ) -> Result<Vec<String>> {
     ensure_pi_hub_if_targeted(harnesses)?;
     let want_hub = harnesses.iter().any(|h| h.needs_hub_copy());
@@ -779,6 +781,9 @@ pub fn materialize_hub(
     let root = crate::paths::user_skills_dir()?;
     let inv = crate::agent_skill::load_inventory().ok();
     let mut copied = BTreeSet::new();
+    let mut inspect_updates: BTreeMap<String, Option<crate::agent_skill::InspectRecord>> =
+        BTreeMap::new();
+    let touch_inspect = gate.wants(row) || gate.skipped();
     for (name, src) in &trees {
         if claimed.contains(name) {
             println!(
@@ -802,7 +807,35 @@ pub fn materialize_hub(
                 continue;
             }
         }
-        crate::agent_skill::install_to_root(&root, name, src, &plugin)?;
+        let previous = inv.as_ref().and_then(|inventory| {
+            inventory
+                .plugin_scans
+                .get(&format!("{qualified}/{name}"))
+                .cloned()
+                .or_else(|| {
+                    inventory
+                        .agent_skills
+                        .get(name)
+                        .and_then(|entry| entry.inspect.clone())
+                })
+        });
+        let record = crate::inspect::publish(
+            gate,
+            row,
+            &root,
+            name,
+            src,
+            &plugin,
+            previous.as_ref(),
+            None,
+        )?;
+        if gate.dry_run() {
+            copied.insert(name.clone());
+            continue;
+        }
+        if touch_inspect {
+            inspect_updates.insert(name.clone(), record);
+        }
         copied.insert(name.clone());
         println!(
             "  {} {} → {} (hub)",
@@ -811,15 +844,19 @@ pub fn materialize_hub(
             root.join(name).display()
         );
     }
-    if !copied.is_empty() {
-        record_plugin_copies(qualified, &copied)?;
+    if !copied.is_empty() && !gate.dry_run() {
+        record_plugin_copies(qualified, &copied, &inspect_updates)?;
         let names: Vec<String> = copied.iter().cloned().collect();
         link_hub_to_harnesses(&names, harnesses, category)?;
     }
     Ok(copied.into_iter().collect())
 }
 
-fn record_plugin_copies(qualified: &str, names: &BTreeSet<String>) -> Result<()> {
+fn record_plugin_copies(
+    qualified: &str,
+    names: &BTreeSet<String>,
+    inspect_updates: &BTreeMap<String, Option<crate::agent_skill::InspectRecord>>,
+) -> Result<()> {
     let mut inv = crate::agent_skill::load_inventory()?;
     let now = crate::agent_skill::inventory_now();
     for name in names {
@@ -831,6 +868,7 @@ fn record_plugin_copies(qualified: &str, names: &BTreeSet<String>) -> Result<()>
                     installed_at: now.clone(),
                     head_sha: String::new(),
                     to: vec!["agents".into()],
+                    inspect: None,
                 });
         if !entry.source.starts_with("plugin:") {
             anyhow::bail!(
@@ -841,6 +879,13 @@ fn record_plugin_copies(qualified: &str, names: &BTreeSet<String>) -> Result<()>
         entry.source = format!("plugin:{qualified}");
         if !entry.to.iter().any(|t| t == "agents") {
             entry.to.push("agents".into());
+        }
+        if let Some(record) = inspect_updates.get(name) {
+            entry.inspect = record.clone();
+            if let Some(rec) = record {
+                inv.plugin_scans
+                    .insert(format!("{qualified}/{name}"), rec.clone());
+            }
         }
     }
     crate::agent_skill::save_inventory(&inv)

@@ -132,6 +132,7 @@ pub fn run(
                 ),
                 head_sha: "local".to_string(),
                 to: vec!["agents".into()],
+                inspect: None,
             },
         );
         crate::agent_skill::save_inventory(&inv)?;

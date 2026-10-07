@@ -5,6 +5,7 @@ mod commands;
 mod error;
 mod git;
 mod harness;
+mod inspect;
 mod interactive;
 mod inventory;
 mod lockfile;

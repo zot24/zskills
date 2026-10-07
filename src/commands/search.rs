@@ -137,6 +137,8 @@ fn install_from_hits(hits: &[Hit]) -> Result<()> {
                 None,
                 Vec::new(),
                 crate::harness::DEFAULT_HERMES_CATEGORY.to_string(),
+                false,
+                false,
             )?;
             // search -i always produces name@marketplace (plugin path).
         }

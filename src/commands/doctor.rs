@@ -176,6 +176,29 @@ pub fn run(fix: bool) -> Result<()> {
         f.print();
     }
 
+    match crate::inspect::missing_passes() {
+        Ok(gaps) if !gaps.is_empty() => {
+            issues += gaps.len();
+            println!(
+                "{} {} entry(ies) with inspect on have no passing skillspector scan:",
+                "✗".red(),
+                gaps.len()
+            );
+            for name in &gaps {
+                println!("  - {name}");
+            }
+            println!(
+                "  {}",
+                "run `zskills skill inspect` or install again. `--fix` does not scan.".dimmed()
+            );
+        }
+        Ok(_) => {}
+        Err(e) => {
+            issues += 1;
+            println!("{} skillspector check: {e:#}", "✗".red());
+        }
+    }
+
     if issues == 0 {
         println!(
             "{} All good — disk, inventory, and settings are in sync.",
