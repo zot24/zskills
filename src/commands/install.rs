@@ -272,7 +272,11 @@ fn install_chosen(
 ) -> Result<Vec<String>> {
     let mut installed_names = Vec::new();
     for name in chosen {
-        let installed = crate::agent_skill::install_from(origin, Some(name), gate, None)?;
+        let outcome = crate::agent_skill::install_from(origin, Some(name), gate, None)?;
+        if !outcome.failures.is_empty() {
+            anyhow::bail!("{}", outcome.failures.join("\n"));
+        }
+        let installed = outcome.installed;
         if !gate.dry_run() {
             crate::harness::link_hub_to_harnesses(&installed, hs, category)?;
             for n in &installed {

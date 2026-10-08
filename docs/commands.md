@@ -331,6 +331,8 @@ inspect = true
 
 `[defaults] inspect` and per-entry `inspect` on `[[skills]]` and `[[agent_skills]]` use the same rule: the row wins when it is set, then the default, then scan.
 
+One rejected Agent Skill does not stop the rest of its row. zskills leaves that Agent Skill in place, scans and copies every other skill in the row, creates harness links for each skill that passed, prints each rejected name, and exits non-zero when the command finishes.
+
 A plugin with no Agent Skill trees is not a scan failure. zskills records that fact and continues. `zskills scan` is a different command. It walks a project tree. It does not run skillspector.
 
 ### llm-wiki for Claude, Pi, and Grok

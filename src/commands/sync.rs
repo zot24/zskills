@@ -966,14 +966,22 @@ pub fn run(
                 &gate,
                 entry.inspect,
             ) {
-                Ok(names) => {
-                    crate::harness::link_hub_to_harnesses(
-                        &names,
-                        &hs,
-                        crate::harness::DEFAULT_HERMES_CATEGORY,
-                    )?;
-                    for n in &names {
-                        println!("  installed agent skill {}", n.bold());
+                Ok(outcome) => {
+                    if !outcome.installed.is_empty() {
+                        crate::harness::link_hub_to_harnesses(
+                            &outcome.installed,
+                            &hs,
+                            crate::harness::DEFAULT_HERMES_CATEGORY,
+                        )?;
+                        for n in &outcome.installed {
+                            println!("  installed agent skill {}", n.bold());
+                        }
+                    }
+                    if !outcome.failures.is_empty() {
+                        for msg in &outcome.failures {
+                            eprintln!("{} {}: {}", "✗".red(), origin_plan_label(entry), msg);
+                        }
+                        failures += outcome.failures.len();
                     }
                 }
                 Err(e) => {

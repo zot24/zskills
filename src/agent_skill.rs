@@ -1059,7 +1059,11 @@ pub fn installed_on_disk() -> Result<Vec<String>> {
 /// Thin wrapper around [`install_from`].
 pub fn install(source: &str, name: Option<&str>) -> Result<Vec<String>> {
     let gate = crate::inspect::Gate::load(false, false)?;
-    install_from(&SkillOrigin::git(source, None), name, &gate, None)
+    let outcome = install_from(&SkillOrigin::git(source, None), name, &gate, None)?;
+    if !outcome.failures.is_empty() {
+        anyhow::bail!("{}", outcome.failures.join("\n"));
+    }
+    Ok(outcome.installed)
 }
 
 struct ResolvedOrigin {
@@ -1189,6 +1193,15 @@ fn is_same_marketplace_plugin(origin: &SkillOrigin, inv_source: &str) -> bool {
         .is_some_and(|(_, mp)| mp == name)
 }
 
+/// Names copied or already current, plus per-skill scan failures.
+///
+/// One rejected Agent Skill does not drop the rest of the row. The caller
+/// links `installed` and exits non-zero when `failures` is not empty.
+pub struct InstallOutcome {
+    pub installed: Vec<String>,
+    pub failures: Vec<String>,
+}
+
 /// Install (or refresh) an Agent Skill from `origin`. If `name` is given, only
 /// that skill is installed; otherwise every skill the origin yields.
 pub fn install_from(
@@ -1196,7 +1209,7 @@ pub fn install_from(
     name: Option<&str>,
     gate: &crate::inspect::Gate,
     row_inspect: Option<bool>,
-) -> Result<Vec<String>> {
+) -> Result<InstallOutcome> {
     let resolved = resolve_origin(origin)?;
     let chosen: Vec<_> = match name {
         Some(n) => resolved
@@ -1240,6 +1253,7 @@ pub fn install_from(
         planned.push((skill_name, src_dir, action));
     }
     let mut installed_names = Vec::new();
+    let mut failures = Vec::new();
     for (skill_name, src_dir, action) in planned {
         let sparse_cache = (src_dir == &resolved.clone).then_some(resolved.clone.as_path());
         let previous = inv
@@ -1290,7 +1304,8 @@ pub fn install_from(
                                 entry.inspect = Some(record);
                             }
                             save_inventory(&inv)?;
-                            anyhow::bail!("{skill_name}: {message} (report: {report})");
+                            failures.push(format!("{skill_name}: {message} (report: {report})"));
+                            continue;
                         }
                     }
                 }
@@ -1306,7 +1321,7 @@ pub fn install_from(
             }
             DestAction::Copy => {}
         }
-        let record = crate::inspect::publish(
+        let record = match crate::inspect::publish(
             gate,
             row_inspect,
             &hub,
@@ -1315,7 +1330,13 @@ pub fn install_from(
             &resolved.clone,
             previous.as_ref(),
             sparse_cache,
-        )?;
+        ) {
+            Ok(record) => record,
+            Err(err) => {
+                failures.push(err.to_string());
+                continue;
+            }
+        };
         if gate.dry_run() {
             installed_names.push(skill_name.clone());
             continue;
@@ -1338,7 +1359,10 @@ pub fn install_from(
         save_inventory(&inv)?;
         installed_names.push(skill_name.clone());
     }
-    Ok(installed_names)
+    Ok(InstallOutcome {
+        installed: installed_names,
+        failures,
+    })
 }
 
 pub fn remove(skill_name: &str) -> Result<bool> {

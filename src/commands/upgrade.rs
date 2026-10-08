@@ -118,11 +118,23 @@ pub fn run(filter: Vec<String>, dry_run: bool, skip_inspect: bool) -> Result<()>
 
                 let mut failures = 0;
                 for name in &owned {
-                    if let Err(e) =
-                        crate::agent_skill::install_from(&origin, Some(name), &gate, entry.inspect)
-                    {
-                        eprintln!("\n  {} {}: {}", "✗".red(), name, e);
-                        failures += 1;
+                    match crate::agent_skill::install_from(
+                        &origin,
+                        Some(name),
+                        &gate,
+                        entry.inspect,
+                    ) {
+                        Ok(outcome) if outcome.failures.is_empty() => {}
+                        Ok(outcome) => {
+                            for msg in &outcome.failures {
+                                eprintln!("\n  {} {name}: {msg}", "✗".red());
+                            }
+                            failures += 1;
+                        }
+                        Err(e) => {
+                            eprintln!("\n  {} {name}: {e}", "✗".red());
+                            failures += 1;
+                        }
                     }
                 }
                 if failures == 0 {
