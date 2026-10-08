@@ -14,7 +14,8 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use crate::agent_skill::InspectRecord;
-use crate::manifest::{AgentSkillEntry, Manifest};
+use crate::manifest::{AgentSkillEntry, InspectOverride, Manifest};
+use std::collections::HashMap;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FailOn {
@@ -39,6 +40,8 @@ pub struct Gate {
     skip: bool,
     dry_run: bool,
     default_inspect: Option<bool>,
+    /// Reviewed overrides from `[[agent_skills]]` rows, keyed by exact skill name.
+    overrides: HashMap<String, InspectOverride>,
 }
 
 impl Gate {
@@ -53,6 +56,7 @@ impl Gate {
             skip: false,
             dry_run: false,
             default_inspect: None,
+            overrides: HashMap::new(),
         }
     }
 
@@ -88,7 +92,25 @@ impl Gate {
             skip,
             dry_run,
             default_inspect: manifest.defaults.inspect,
+            overrides: manifest
+                .agent_skills
+                .iter()
+                .flat_map(|entry| entry.inspect_override.iter())
+                .map(|ov| (ov.skill.trim().to_string(), ov.clone()))
+                .collect(),
         })
+    }
+
+    /// The reviewed override for this exact Agent Skill name, if the manifest has one.
+    pub fn override_for(&self, skill: &str) -> Option<&InspectOverride> {
+        self.overrides.get(skill)
+    }
+
+    /// ` (inspect_override: <reason>)` for plan lines, or empty.
+    fn override_suffix(&self, skill: &str) -> String {
+        self.override_for(skill)
+            .map(|ov| format!(" (inspect_override: {})", ov.reason.trim()))
+            .unwrap_or_default()
     }
 
     pub fn dry_run(&self) -> bool {
@@ -142,7 +164,12 @@ pub fn publish(
 ) -> Result<Option<InspectRecord>> {
     if gate.dry_run {
         if gate.wants(row) {
-            println!("  {} would inspect {}", "·".dimmed(), skill_name);
+            println!(
+                "  {} would inspect {}{}",
+                "·".dimmed(),
+                skill_name,
+                gate.override_suffix(skill_name)
+            );
         }
         println!("  {} would install {}", "·".dimmed(), skill_name);
         return Ok(None);
@@ -189,11 +216,29 @@ pub fn scan_dir(
 }
 
 /// Scan a tree that is already the bytes under consideration. Does not publish.
+/// An Agent Skill with a reviewed `inspect_override` is still scanned. A rejection
+/// is printed as a warning and the record carries the override reason.
 pub fn scan_staged(
     gate: &Gate,
     skill_name: &str,
     staged: &Path,
     previous: Option<&InspectRecord>,
+) -> Result<ScanOutput> {
+    scan_with_override(
+        gate,
+        skill_name,
+        staged,
+        previous,
+        gate.override_for(skill_name),
+    )
+}
+
+fn scan_with_override(
+    gate: &Gate,
+    skill_name: &str,
+    staged: &Path,
+    previous: Option<&InspectRecord>,
+    reviewed: Option<&InspectOverride>,
 ) -> Result<ScanOutput> {
     let sha = tree_sha(staged)?;
     if let Some(prev) = previous {
@@ -219,7 +264,7 @@ pub fn scan_staged(
     }
     let report = report_path(skill_name)?;
     let output = run_scanner(gate, staged, &report)?;
-    let record = InspectRecord {
+    let mut record = InspectRecord {
         sha,
         recommendation: output.recommendation,
         exit_code: output.exit_code,
@@ -228,18 +273,34 @@ pub fn scan_staged(
         scanned_at: crate::agent_skill::inventory_now(),
         report: report.display().to_string(),
         no_skill: false,
+        override_reason: String::new(),
     };
     if record.passes(gate.fail_on) {
-        Ok(ScanOutput::Accepted(record))
-    } else {
-        let message = format!(
-            "skillspector rejected the Agent Skill (recommendation {}, exit {}, {} issue(s), max severity {})",
-            empty_as(&record.recommendation, "none"),
-            record.exit_code,
-            record.issue_count,
-            empty_as(&record.max_severity, "none")
-        );
-        Ok(ScanOutput::Rejected { record, message })
+        return Ok(ScanOutput::Accepted(record));
+    }
+    let message = format!(
+        "skillspector rejected the Agent Skill (recommendation {}, exit {}, {} issue(s), max severity {})",
+        empty_as(&record.recommendation, "none"),
+        record.exit_code,
+        record.issue_count,
+        empty_as(&record.max_severity, "none")
+    );
+    match reviewed {
+        Some(ov) => {
+            eprintln!(
+                "{} {skill_name}: {message}. Installed under inspect_override: {}{}. Report: {}",
+                "!".yellow(),
+                ov.reason.trim(),
+                ov.approval(),
+                record.report
+            );
+            for line in &output.findings {
+                eprintln!("    {line}");
+            }
+            record.override_reason = ov.reason.trim().to_string();
+            Ok(ScanOutput::Accepted(record))
+        }
+        None => Ok(ScanOutput::Rejected { record, message }),
     }
 }
 
@@ -272,6 +333,7 @@ pub fn gate_plugin(gate: &Gate, qualified: &str, row: Option<bool>) -> Result<()
                 scanned_at: crate::agent_skill::inventory_now(),
                 report: String::new(),
                 no_skill: true,
+                override_reason: String::new(),
             },
         );
         crate::agent_skill::save_inventory(&inv)?;
@@ -284,7 +346,7 @@ pub fn gate_plugin(gate: &Gate, qualified: &str, row: Option<bool>) -> Result<()
         let stage = tempfile::tempdir().context("creating the skillspector stage")?;
         stage_into(stage.path(), name, src, src, None)?;
         let staged = stage.path().join(name);
-        match scan_staged(gate, name, &staged, previous.as_ref())? {
+        match scan_with_override(gate, name, &staged, previous.as_ref(), None)? {
             ScanOutput::Accepted(record) => {
                 inv.plugin_scans.insert(key, record);
             }
@@ -308,7 +370,17 @@ pub fn plan_lines(gate: &Gate, manifest: &Manifest) {
         if !gate.wants(entry.inspect) {
             continue;
         }
-        println!("  {} would inspect {}", "·".dimmed(), agent_label(entry));
+        let suffix = entry
+            .name
+            .as_deref()
+            .map(|name| gate.override_suffix(name))
+            .unwrap_or_default();
+        println!(
+            "  {} would inspect {}{}",
+            "·".dimmed(),
+            agent_label(entry),
+            suffix
+        );
     }
     for entry in &manifest.skills {
         if !gate.wants(entry.inspect) {
@@ -452,7 +524,8 @@ fn hub_passes(gate: &Gate, name: &str, entry: Option<&crate::agent_skill::Entry>
     let Some(record) = entry.and_then(|entry| entry.inspect.as_ref()) else {
         return false;
     };
-    if !record.passes(gate.fail_on) {
+    let reviewed = !record.override_reason.is_empty() && gate.override_for(name).is_some();
+    if !record.passes(gate.fail_on) && !reviewed {
         return false;
     }
     let Ok(hub) = crate::paths::user_skills_dir() else {
@@ -555,6 +628,8 @@ struct ScannerOutput {
     recommendation: String,
     issue_count: u32,
     max_severity: String,
+    /// One line per issue, for the override warning.
+    findings: Vec<String>,
 }
 
 fn run_scanner(gate: &Gate, staged: &Path, report: &Path) -> Result<ScannerOutput> {
@@ -602,7 +677,55 @@ fn run_scanner(gate: &Gate, staged: &Path, report: &Path) -> Result<ScannerOutpu
         recommendation,
         issue_count,
         max_severity: report_max_severity(&body),
+        findings: report_findings(&body),
     })
+}
+
+/// `HIGH TM1 Tool Misuse: git push --force (playbooks/x.md:6)` per issue.
+fn report_findings(body: &Value) -> Vec<String> {
+    let Some(issues) = body.get("issues").and_then(|value| value.as_array()) else {
+        return Vec::new();
+    };
+    let text = |issue: &Value, key: &str| {
+        issue
+            .get(key)
+            .and_then(|value| value.as_str())
+            .map(str::trim)
+            .unwrap_or("")
+            .to_string()
+    };
+    issues
+        .iter()
+        .map(|issue| {
+            let mut line = [
+                text(issue, "severity").to_ascii_uppercase(),
+                text(issue, "id"),
+                text(issue, "category"),
+            ]
+            .into_iter()
+            .filter(|part| !part.is_empty())
+            .collect::<Vec<_>>()
+            .join(" ");
+            let finding = text(issue, "finding");
+            if !finding.is_empty() {
+                line.push_str(": ");
+                line.push_str(&finding);
+            }
+            if let Some(file) = issue
+                .pointer("/location/file")
+                .and_then(|value| value.as_str())
+            {
+                match issue
+                    .pointer("/location/start_line")
+                    .and_then(|value| value.as_u64())
+                {
+                    Some(n) => line.push_str(&format!(" ({file}:{n})")),
+                    None => line.push_str(&format!(" ({file})")),
+                }
+            }
+            line
+        })
+        .collect()
 }
 
 /// `risk_assessment.max_issue_severity` when present. Otherwise the highest
@@ -748,6 +871,7 @@ mod tests {
             scanned_at: "@0".into(),
             report: "r".into(),
             no_skill: false,
+            override_reason: String::new(),
         };
         assert!(caution.passes(FailOn::DoNotInstall));
         assert!(!caution.passes(FailOn::Caution));
@@ -777,6 +901,7 @@ mod tests {
             scanned_at: "@0".into(),
             report: "r".into(),
             no_skill: false,
+            override_reason: String::new(),
         };
         assert!(!critical.passes(FailOn::DoNotInstall));
         assert!(!critical.passes(FailOn::Caution));
@@ -829,6 +954,7 @@ mod tests {
             skip: false,
             dry_run: false,
             default_inspect: None,
+            overrides: HashMap::new(),
         };
         let previous = InspectRecord {
             sha,
@@ -839,6 +965,7 @@ mod tests {
             scanned_at: "@1".into(),
             report: "old".into(),
             no_skill: false,
+            override_reason: String::new(),
         };
         match scan_staged(&gate, "demo", &skill, Some(&previous)).unwrap() {
             ScanOutput::Accepted(record) => assert_eq!(record.report, "old"),
@@ -847,5 +974,93 @@ mod tests {
             }
         }
         assert!(!count.exists(), "scanner must not run");
+    }
+
+    fn rejecting_gate(dir: &Path) -> Gate {
+        let script = dir.join("fake-skillspector");
+        fs::write(
+            &script,
+            "#!/bin/sh\nout=\nprev=\nfor a in \"$@\"; do\n  if [ \"$prev\" = \"-o\" ]; then out=$a; fi\n  prev=$a\ndone\nmkdir -p \"$(dirname \"$out\")\"\necho '{\"risk_assessment\":{\"recommendation\":\"DO_NOT_INSTALL\"},\"issues\":[{\"id\":\"TM1\",\"severity\":\"HIGH\"}]}' > \"$out\"\nexit 1\n",
+        )
+        .unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mut perm = fs::metadata(&script).unwrap().permissions();
+            perm.set_mode(0o755);
+            fs::set_permissions(&script, perm).unwrap();
+        }
+        Gate {
+            enabled: true,
+            command: script.display().to_string(),
+            args: Vec::new(),
+            fail_on: FailOn::DoNotInstall,
+            on_missing: OnMissing::Error,
+            skip: false,
+            dry_run: false,
+            default_inspect: None,
+            overrides: HashMap::new(),
+        }
+    }
+
+    #[test]
+    fn override_accepts_only_its_own_skill_and_records_the_reason() {
+        let _guard = crate::paths::HOME_ENV_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let dir = tempfile::tempdir().unwrap();
+        // SAFETY: held under HOME_ENV_LOCK; restored before the guard drops.
+        let prev = std::env::var_os("AGENTS_HOME");
+        std::env::set_var("AGENTS_HOME", dir.path().join("agents"));
+        let mut gate = rejecting_gate(dir.path());
+        gate.overrides.insert(
+            "demo".into(),
+            InspectOverride {
+                skill: "demo".into(),
+                reason: "reviewed".into(),
+                approved_by: Some("IRL".into()),
+                approved_on: None,
+            },
+        );
+        for name in ["demo", "other"] {
+            let skill = dir.path().join("src").join(name);
+            fs::create_dir_all(&skill).unwrap();
+            fs::write(skill.join("SKILL.md"), format!("---\nname: {name}\n---\n")).unwrap();
+        }
+        match scan_staged(&gate, "demo", &dir.path().join("src/demo"), None).unwrap() {
+            ScanOutput::Accepted(record) => {
+                assert_eq!(record.override_reason, "reviewed");
+                assert_eq!(record.exit_code, 1, "the real verdict is kept");
+                assert!(!record.passes(FailOn::DoNotInstall));
+            }
+            _ => panic!("the reviewed skill is accepted"),
+        }
+        assert!(matches!(
+            scan_staged(&gate, "other", &dir.path().join("src/other"), None).unwrap(),
+            ScanOutput::Rejected { .. }
+        ));
+        assert!(
+            matches!(
+                scan_with_override(&gate, "demo", &dir.path().join("src/demo"), None, None)
+                    .unwrap(),
+                ScanOutput::Rejected { .. }
+            ),
+            "plugin trees never use an Agent Skill override"
+        );
+        match prev {
+            Some(v) => std::env::set_var("AGENTS_HOME", v),
+            None => std::env::remove_var("AGENTS_HOME"),
+        }
+    }
+
+    #[test]
+    fn report_findings_names_severity_id_and_location() {
+        let lines = report_findings(&serde_json::json!({"issues":[
+            {"id":"TM1","category":"Tool Misuse","severity":"high","finding":"git push --force",
+             "location":{"file":"a.md","start_line":6}},
+            {"id":"SC2"}
+        ]}));
+        assert_eq!(lines[0], "HIGH TM1 Tool Misuse: git push --force (a.md:6)");
+        assert_eq!(lines[1], "SC2");
     }
 }
