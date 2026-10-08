@@ -681,6 +681,17 @@ fn run_scanner(gate: &Gate, staged: &Path, report: &Path) -> Result<ScannerOutpu
     })
 }
 
+/// Collapse whitespace to single spaces and cut at `max` chars, so one finding
+/// stays on one warning line.
+fn one_line(raw: &str, max: usize) -> String {
+    let flat = raw.split_whitespace().collect::<Vec<_>>().join(" ");
+    if flat.chars().count() <= max {
+        return flat;
+    }
+    let cut: String = flat.chars().take(max).collect();
+    format!("{cut}...")
+}
+
 /// `HIGH TM1 Tool Misuse: git push --force (playbooks/x.md:6)` per issue.
 fn report_findings(body: &Value) -> Vec<String> {
     let Some(issues) = body.get("issues").and_then(|value| value.as_array()) else {
@@ -706,7 +717,7 @@ fn report_findings(body: &Value) -> Vec<String> {
             .filter(|part| !part.is_empty())
             .collect::<Vec<_>>()
             .join(" ");
-            let finding = text(issue, "finding");
+            let finding = one_line(&text(issue, "finding"), 160);
             if !finding.is_empty() {
                 line.push_str(": ");
                 line.push_str(&finding);
@@ -1058,9 +1069,12 @@ mod tests {
         let lines = report_findings(&serde_json::json!({"issues":[
             {"id":"TM1","category":"Tool Misuse","severity":"high","finding":"git push --force",
              "location":{"file":"a.md","start_line":6}},
-            {"id":"SC2"}
+            {"id":"SC2"},
+            {"id":"RA2","finding":"line one\n2. line two"}
         ]}));
         assert_eq!(lines[0], "HIGH TM1 Tool Misuse: git push --force (a.md:6)");
         assert_eq!(lines[1], "SC2");
+        assert_eq!(lines[2], "RA2: line one 2. line two");
+        assert_eq!(one_line(&"x".repeat(200), 160).len(), 163);
     }
 }
