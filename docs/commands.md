@@ -325,9 +325,9 @@ on_missing = "error"         # or "warn"
 inspect = true
 ```
 
-`command` defaults to `skillspector`. zskills runs `command scan <staged> --no-llm` plus `args`, then `-f json -o <report>`. The report is stored under `~/.agents/skills/.zskills-reports/<name>.json`. Inventory records the content sha, recommendation, exit code, issue count, time, and report path.
+`command` defaults to `skillspector`. zskills runs `command scan <staged> --no-llm` plus `args`, then `-f json -o <report>`. The report is stored under `~/.agents/skills/.zskills-reports/<name>.json`. Inventory records the content sha, recommendation, exit code, issue count, max severity, time, and report path.
 
-`fail_on = "do_not_install"` rejects a non-zero skillspector exit. Exit 0 passes, including recommendation `CAUTION`. `fail_on = "caution"` also rejects `CAUTION`. `fail_on = "findings"` also rejects a report whose `issues` array is not empty. `on_missing = "error"` fails the install when `command` is not on `PATH`. `on_missing = "warn"` prints a warning and continues. It does not record a pass.
+`fail_on = "do_not_install"` rejects a non-zero skillspector exit. Exit 0 passes, including recommendation `CAUTION`. `fail_on = "caution"` also rejects `CAUTION`. `fail_on = "findings"` also rejects a report whose `issues` array is not empty. Every `fail_on` value also rejects max severity `CRITICAL`, including when the exit code is 0. The rejection line prints that severity. `max_severity` comes from `risk_assessment.max_issue_severity`. When that field is absent, zskills uses the highest `issues[].severity`. The order is `LOW`, `MEDIUM`, `HIGH`, `CRITICAL`. `on_missing = "error"` fails the install when `command` is not on `PATH`. `on_missing = "warn"` prints a warning and continues. It does not record a pass.
 
 `[defaults] inspect` and per-entry `inspect` on `[[skills]]` and `[[agent_skills]]` use the same rule: the row wins when it is set, then the default, then scan.
 

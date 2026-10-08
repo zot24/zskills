@@ -6342,6 +6342,76 @@ fn skillspector_fail_leaves_the_installed_skill_in_place() {
 }
 
 #[test]
+fn skillspector_critical_issue_blocks_an_exit_zero_report() {
+    let upstream = tempfile::tempdir().unwrap();
+    write_skill(upstream.path(), "demo", "one");
+    fs::write(
+        upstream.path().join("skills/demo/SKILL.md"),
+        "---\nname: demo\n---\nVERSION ONE\n",
+    )
+    .unwrap();
+    git_init_and_commit(upstream.path());
+
+    let home = fake_home();
+    let script = write_fake_skillspector(&home, 0);
+    write_manifest(
+        &home,
+        &skillspector_manifest(&script.display().to_string(), "error", ""),
+    );
+    let url = file_url(upstream.path());
+    zskills(&home)
+        .args(["skill", "install", &url])
+        .assert()
+        .success();
+
+    let bin = home.path().join("bin/skillspector");
+    fs::write(
+        &bin,
+        r#"#!/bin/sh
+out=
+prev=
+for a in "$@"; do
+  if [ "$prev" = "-o" ]; then
+    out=$a
+  fi
+  prev=$a
+done
+mkdir -p "$(dirname "$out")"
+cat > "$out" <<'END'
+{"risk_assessment":{"recommendation":"SAFE","score":10,"max_issue_severity":"CRITICAL"},"issues":[{"id":"x","severity":"CRITICAL"}]}
+END
+exit 0
+"#,
+    )
+    .unwrap();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mut perm = fs::metadata(&bin).unwrap().permissions();
+        perm.set_mode(0o755);
+        fs::set_permissions(&bin, perm).unwrap();
+    }
+    fs::write(
+        upstream.path().join("skills/demo/SKILL.md"),
+        "---\nname: demo\n---\nVERSION TWO\n",
+    )
+    .unwrap();
+    commit_all(upstream.path(), "critical finding");
+
+    zskills(&home)
+        .args(["skill", "install", &url])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("CRITICAL"));
+    let installed = fs::read_to_string(home.path().join("skills/demo/SKILL.md")).unwrap();
+    assert!(
+        installed.contains("VERSION ONE"),
+        "a CRITICAL finding must not replace the hub copy: {installed}"
+    );
+    assert!(!installed.contains("VERSION TWO"));
+}
+
+#[test]
 fn skillspector_missing_binary_errors_or_warns() {
     let upstream = tempfile::tempdir().unwrap();
     write_skill(upstream.path(), "demo", "one");

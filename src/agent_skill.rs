@@ -39,6 +39,10 @@ pub struct InspectRecord {
     pub exit_code: i32,
     #[serde(default)]
     pub issue_count: u32,
+    /// Highest issue severity from the report. Empty on inventories written
+    /// before this field existed. `CRITICAL` fails every `fail_on`.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub max_severity: String,
     pub scanned_at: String,
     #[serde(default)]
     pub report: String,
@@ -54,6 +58,9 @@ impl InspectRecord {
     pub fn passes(&self, fail_on: crate::inspect::FailOn) -> bool {
         if self.no_skill {
             return true;
+        }
+        if self.max_severity.eq_ignore_ascii_case("CRITICAL") {
+            return false;
         }
         if self.exit_code != 0 {
             return false;

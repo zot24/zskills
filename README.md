@@ -191,7 +191,7 @@ zskills sync --dry-run     # preview, including planned skillspector scans
 zskills skill inspect      # rescan installed Agent Skills when the gate is on
 ```
 
-`[skillspector] enabled = true` scans a staged copy on `skill install`, `skill upgrade`, `plugin install`, and `sync`. zskills copies into `~/.agents/skills/` only after the scan passes. `--skip-inspect` skips that scan and records no pass. Full fields: [Commands → skillspector](docs/commands.md#skillspector).
+`[skillspector] enabled = true` scans a staged copy on `skill install`, `skill upgrade`, `plugin install`, and `sync`. zskills copies into `~/.agents/skills/` only after the scan passes. Every `fail_on` value rejects max severity `CRITICAL`, including when skillspector exits 0. `--skip-inspect` skips that scan and records no pass. Full fields: [Commands → skillspector](docs/commands.md#skillspector).
 
 `zskills sync` is idempotent. Run it anywhere — same machine, new machine — and the result matches the manifest. Plugins flip via `enabledPlugins`. Agent Skills get `git clone`d and copied into `~/.claude/skills/<name>/`. Run it on every fresh checkout.
 

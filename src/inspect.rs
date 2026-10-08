@@ -224,6 +224,7 @@ pub fn scan_staged(
         recommendation: output.recommendation,
         exit_code: output.exit_code,
         issue_count: output.issue_count,
+        max_severity: output.max_severity,
         scanned_at: crate::agent_skill::inventory_now(),
         report: report.display().to_string(),
         no_skill: false,
@@ -232,10 +233,11 @@ pub fn scan_staged(
         Ok(ScanOutput::Accepted(record))
     } else {
         let message = format!(
-            "skillspector rejected the Agent Skill (recommendation {}, exit {}, {} issue(s))",
+            "skillspector rejected the Agent Skill (recommendation {}, exit {}, {} issue(s), max severity {})",
             empty_as(&record.recommendation, "none"),
             record.exit_code,
-            record.issue_count
+            record.issue_count,
+            empty_as(&record.max_severity, "none")
         );
         Ok(ScanOutput::Rejected { record, message })
     }
@@ -266,6 +268,7 @@ pub fn gate_plugin(gate: &Gate, qualified: &str, row: Option<bool>) -> Result<()
                 recommendation: String::new(),
                 exit_code: 0,
                 issue_count: 0,
+                max_severity: String::new(),
                 scanned_at: crate::agent_skill::inventory_now(),
                 report: String::new(),
                 no_skill: true,
@@ -551,6 +554,7 @@ struct ScannerOutput {
     exit_code: i32,
     recommendation: String,
     issue_count: u32,
+    max_severity: String,
 }
 
 fn run_scanner(gate: &Gate, staged: &Path, report: &Path) -> Result<ScannerOutput> {
@@ -597,7 +601,48 @@ fn run_scanner(gate: &Gate, staged: &Path, report: &Path) -> Result<ScannerOutpu
         exit_code,
         recommendation,
         issue_count,
+        max_severity: report_max_severity(&body),
     })
+}
+
+/// `risk_assessment.max_issue_severity` when present. Otherwise the highest
+/// `issues[].severity`. Rank matches skillspector: LOW, MEDIUM, HIGH, CRITICAL.
+fn report_max_severity(body: &Value) -> String {
+    if let Some(label) = body
+        .pointer("/risk_assessment/max_issue_severity")
+        .and_then(|value| value.as_str())
+        .map(str::trim)
+        .filter(|label| !label.is_empty())
+    {
+        return label.to_ascii_uppercase();
+    }
+    let mut worst = 0u8;
+    let mut label = String::new();
+    let Some(issues) = body.get("issues").and_then(|value| value.as_array()) else {
+        return label;
+    };
+    for issue in issues {
+        let raw = issue
+            .get("severity")
+            .and_then(|value| value.as_str())
+            .unwrap_or("");
+        let rank = severity_rank(raw);
+        if rank > worst {
+            worst = rank;
+            label = raw.trim().to_ascii_uppercase();
+        }
+    }
+    label
+}
+
+fn severity_rank(raw: &str) -> u8 {
+    match raw.trim().to_ascii_uppercase().as_str() {
+        "LOW" => 1,
+        "MEDIUM" => 2,
+        "HIGH" => 3,
+        "CRITICAL" => 4,
+        _ => 0,
+    }
 }
 
 fn command_exists(command: &str) -> bool {
@@ -699,6 +744,7 @@ mod tests {
             recommendation: "CAUTION".into(),
             exit_code: 0,
             issue_count: 0,
+            max_severity: String::new(),
             scanned_at: "@0".into(),
             report: "r".into(),
             no_skill: false,
@@ -718,6 +764,39 @@ mod tests {
             ..caution
         };
         assert!(!blocked.passes(FailOn::DoNotInstall));
+    }
+
+    #[test]
+    fn critical_fails_every_fail_on_even_when_exit_is_zero() {
+        let critical = InspectRecord {
+            sha: "abc".into(),
+            recommendation: "SAFE".into(),
+            exit_code: 0,
+            issue_count: 1,
+            max_severity: "CRITICAL".into(),
+            scanned_at: "@0".into(),
+            report: "r".into(),
+            no_skill: false,
+        };
+        assert!(!critical.passes(FailOn::DoNotInstall));
+        assert!(!critical.passes(FailOn::Caution));
+        assert!(!critical.passes(FailOn::Findings));
+        let high = InspectRecord {
+            max_severity: "HIGH".into(),
+            issue_count: 0,
+            ..critical
+        };
+        assert!(high.passes(FailOn::DoNotInstall));
+        assert!(high.passes(FailOn::Caution));
+        let from_issues = report_max_severity(
+            &serde_json::json!({"issues":[{"severity":"low"},{"severity":"CRITICAL"}]}),
+        );
+        assert_eq!(from_issues, "CRITICAL");
+        let from_field = report_max_severity(&serde_json::json!({
+            "risk_assessment": {"max_issue_severity": "high"},
+            "issues": [{"severity": "CRITICAL"}]
+        }));
+        assert_eq!(from_field, "HIGH");
     }
 
     #[test]
@@ -756,6 +835,7 @@ mod tests {
             recommendation: "SAFE".into(),
             exit_code: 0,
             issue_count: 0,
+            max_severity: String::new(),
             scanned_at: "@1".into(),
             report: "old".into(),
             no_skill: false,
