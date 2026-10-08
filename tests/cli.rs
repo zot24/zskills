@@ -6551,3 +6551,194 @@ fn skillspector_row_continues_after_one_rejection() {
         "a rejected new skill is not recorded as installed: {inv}"
     );
 }
+
+/// Fake skillspector that rejects every staged dir whose name is in `reject`.
+/// A rejection writes one HIGH finding so the override warning has a finding to print.
+fn write_rejecting_skillspector_many(home: &TempDir, reject: &[&str]) -> std::path::PathBuf {
+    let bin = home.path().join("bin");
+    fs::create_dir_all(&bin).unwrap();
+    let count = home.path().join("scan-count");
+    let script = bin.join("skillspector");
+    let pattern = reject
+        .iter()
+        .map(|name| format!("*/{name}"))
+        .collect::<Vec<_>>()
+        .join("|");
+    let body = format!(
+        r#"#!/bin/sh
+echo "$2" >> {count}
+out=
+prev=
+for a in "$@"; do
+  if [ "$prev" = "-o" ]; then
+    out=$a
+  fi
+  prev=$a
+done
+mkdir -p "$(dirname "$out")"
+target=
+prev=
+for a in "$@"; do
+  if [ "$prev" = scan ]; then
+    target=$a
+    break
+  fi
+  prev=$a
+done
+case "$target" in
+  {pattern})
+    cat > "$out" <<END
+{{"risk_assessment":{{"recommendation":"DO_NOT_INSTALL","score":70,"max_issue_severity":"HIGH"}},"issues":[{{"id":"TM1","category":"Tool Misuse","severity":"HIGH","finding":"git push --force","location":{{"file":"SKILL.md","start_line":3}}}}]}}
+END
+    exit 1
+    ;;
+esac
+cat > "$out" <<END
+{{"risk_assessment":{{"recommendation":"SAFE","score":1}},"issues":[]}}
+END
+exit 0
+"#,
+        count = count.display(),
+        pattern = pattern,
+    );
+    fs::write(&script, body).unwrap();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mut perm = fs::metadata(&script).unwrap().permissions();
+        perm.set_mode(0o755);
+        fs::set_permissions(&script, perm).unwrap();
+    }
+    script
+}
+
+#[test]
+fn skillspector_override_installs_only_the_named_skill_with_a_warning() {
+    let upstream = tempfile::tempdir().unwrap();
+    for name in ["good", "bad", "worse"] {
+        write_skill(upstream.path(), name, name);
+    }
+    git_init_and_commit(upstream.path());
+    let url = file_url(upstream.path());
+
+    let home = fake_home();
+    let script = write_rejecting_skillspector_many(&home, &["bad", "worse"]);
+    let extra = format!(
+        "\n[defaults]\nharnesses = [\"codex\"]\ninspect = true\n\n[[agent_skills]]\nsource = \"{url}\"\nskills = [\"good\", \"bad\", \"worse\"]\ninspect_override = {{ skill = \"bad\", reason = \"reviewed: force-push text is a prohibition\", approved_by = \"IRL\", approved_on = \"2026-10-08\" }}\n"
+    );
+    write_manifest(
+        &home,
+        &skillspector_manifest(&script.display().to_string(), "error", &extra),
+    );
+
+    zskills(&home)
+        .args(["sync"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("inspect_override"))
+        .stderr(predicate::str::contains(
+            "reviewed: force-push text is a prohibition",
+        ))
+        .stderr(predicate::str::contains("approved by IRL on 2026-10-08"))
+        .stderr(predicate::str::contains("TM1"))
+        .stderr(predicate::str::contains("git push --force"))
+        .stderr(predicate::str::contains("SKILL.md:3"))
+        .stderr(predicate::str::contains("worse: skillspector rejected"));
+
+    assert!(home.path().join("skills/good/SKILL.md").is_file());
+    assert!(
+        home.path().join("skills/bad/SKILL.md").is_file(),
+        "the overridden Agent Skill is installed"
+    );
+    assert!(
+        !home.path().join("skills/worse").exists(),
+        "the override does not cover another skill in the row"
+    );
+    assert_eq!(
+        scan_count(&home),
+        3,
+        "the overridden skill is still scanned"
+    );
+    let link = home.path().join("codex/skills/bad");
+    assert!(link
+        .symlink_metadata()
+        .map(|meta| meta.file_type().is_symlink())
+        .unwrap_or(false));
+    assert!(!home.path().join("codex/skills/worse").exists());
+
+    let inv = fs::read_to_string(home.path().join("skills/.zskills.json")).unwrap();
+    assert!(
+        inv.contains("reviewed: force-push text is a prohibition"),
+        "inventory records the override reason: {inv}"
+    );
+    assert!(!inv.contains("\"worse\""), "{inv}");
+}
+
+#[test]
+fn skillspector_override_rescans_an_unchanged_skill_every_time() {
+    let upstream = tempfile::tempdir().unwrap();
+    write_skill(upstream.path(), "bad", "bad");
+    git_init_and_commit(upstream.path());
+    let url = file_url(upstream.path());
+
+    let home = fake_home();
+    let script = write_rejecting_skillspector_many(&home, &["bad"]);
+    let extra = format!(
+        "\n[defaults]\ninspect = true\n\n[[agent_skills]]\nsource = \"{url}\"\nname = \"bad\"\ninspect_override = {{ skill = \"bad\", reason = \"reviewed\" }}\n"
+    );
+    write_manifest(
+        &home,
+        &skillspector_manifest(&script.display().to_string(), "error", &extra),
+    );
+
+    zskills(&home)
+        .args(["sync"])
+        .assert()
+        .success()
+        .stderr(predicate::str::contains("inspect_override"));
+    assert_eq!(scan_count(&home), 1);
+
+    zskills(&home)
+        .args(["sync"])
+        .assert()
+        .success()
+        .stderr(predicate::str::contains("inspect_override"))
+        .stderr(predicate::str::contains("TM1"));
+    assert_eq!(
+        scan_count(&home),
+        2,
+        "an overridden skill never reuses a stored scan silently"
+    );
+
+    zskills(&home)
+        .args(["doctor"])
+        .assert()
+        .stdout(predicate::str::contains("Agent Skill bad").not());
+}
+
+#[test]
+fn skillspector_override_dry_run_names_the_override() {
+    let upstream = tempfile::tempdir().unwrap();
+    write_skill(upstream.path(), "bad", "bad");
+    git_init_and_commit(upstream.path());
+    let url = file_url(upstream.path());
+
+    let home = fake_home();
+    let script = write_rejecting_skillspector_many(&home, &["bad"]);
+    let extra = format!(
+        "\n[defaults]\ninspect = true\n\n[[agent_skills]]\nsource = \"{url}\"\nname = \"bad\"\ninspect_override = {{ skill = \"bad\", reason = \"reviewed\" }}\n"
+    );
+    write_manifest(
+        &home,
+        &skillspector_manifest(&script.display().to_string(), "error", &extra),
+    );
+
+    zskills(&home)
+        .args(["sync", "--dry-run"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains(
+            "would inspect bad (inspect_override: reviewed)",
+        ));
+    assert_eq!(scan_count(&home), 0);
+}
