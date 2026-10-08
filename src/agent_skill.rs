@@ -21,6 +21,58 @@ pub struct Inventory {
     pub version: u32,
     #[serde(default)]
     pub agent_skills: BTreeMap<String, Entry>,
+    /// Skillspector results for plugin trees that may never be copied to the hub.
+    /// Key is `name@marketplace` when the plugin has no Agent Skill trees, or
+    /// `name@marketplace/<skill>` for each scanned tree.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub plugin_scans: BTreeMap<String, InspectRecord>,
+}
+
+/// One skillspector result. `passes` re-judges the stored facts under the
+/// current `fail_on`, so a later stricter policy does not keep a stale pass.
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
+pub struct InspectRecord {
+    pub sha: String,
+    #[serde(default)]
+    pub recommendation: String,
+    #[serde(default)]
+    pub exit_code: i32,
+    #[serde(default)]
+    pub issue_count: u32,
+    /// Highest issue severity from the report. Empty on inventories written
+    /// before this field existed. `CRITICAL` fails every `fail_on`.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub max_severity: String,
+    pub scanned_at: String,
+    #[serde(default)]
+    pub report: String,
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub no_skill: bool,
+}
+
+fn is_false(value: &bool) -> bool {
+    !*value
+}
+
+impl InspectRecord {
+    pub fn passes(&self, fail_on: crate::inspect::FailOn) -> bool {
+        if self.no_skill {
+            return true;
+        }
+        if self.max_severity.eq_ignore_ascii_case("CRITICAL") {
+            return false;
+        }
+        if self.exit_code != 0 {
+            return false;
+        }
+        match fail_on {
+            crate::inspect::FailOn::DoNotInstall => true,
+            crate::inspect::FailOn::Caution => self.recommendation == "SAFE",
+            crate::inspect::FailOn::Findings => {
+                self.issue_count == 0 && self.recommendation != "DO_NOT_INSTALL"
+            }
+        }
+    }
 }
 
 #[derive(Debug, Deserialize, Serialize, Clone)]
@@ -32,6 +84,8 @@ pub struct Entry {
     /// Empty means today's default: `agents` only.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub to: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub inspect: Option<InspectRecord>,
 }
 
 /// Where an Agent Skill tree is copied from.
@@ -85,12 +139,14 @@ pub fn load_inventory() -> Result<Inventory> {
         return Ok(Inventory {
             version: 1,
             agent_skills: BTreeMap::new(),
+            plugin_scans: BTreeMap::new(),
         });
     }
     let bytes = std::fs::read(&path)?;
     Ok(serde_json::from_slice(&bytes).unwrap_or(Inventory {
         version: 1,
         agent_skills: BTreeMap::new(),
+        plugin_scans: BTreeMap::new(),
     }))
 }
 
@@ -684,15 +740,39 @@ pub fn install_npm(
     package: &str,
     install_cmd: Option<&str>,
     claims: &[String],
+    gate: &crate::inspect::Gate,
+    row_inspect: Option<bool>,
 ) -> Result<Vec<String>> {
     if which::which("npm").is_err() && install_cmd.is_none() {
         anyhow::bail!("npm not found on PATH. Install Node.js, or set install_cmd for this entry.");
     }
 
+    if gate.dry_run() {
+        if gate.wants(row_inspect) {
+            println!("  {} would inspect {}", "·".dimmed(), package);
+        }
+        println!("  {} would install {}", "·".dimmed(), package);
+        return Ok(Vec::new());
+    }
+
+    let hub = crate::paths::user_skills_dir()?;
     let before: std::collections::BTreeSet<String> = installed_on_disk()
         .unwrap_or_default()
         .into_iter()
         .collect();
+
+    let backup = if gate.wants(row_inspect) {
+        let dir = tempfile::tempdir().context("creating the npm skill snapshot")?;
+        for name in &before {
+            let src = hub.join(name);
+            if src.is_dir() {
+                install_to_root(dir.path(), name, &src, &hub)?;
+            }
+        }
+        Some(dir)
+    } else {
+        None
+    };
 
     run_install_command(package, install_cmd)?;
 
@@ -714,6 +794,12 @@ pub fn install_npm(
     let mut owned: std::collections::BTreeSet<String> =
         after.difference(&before).cloned().collect();
 
+    let mut inv = load_inventory()?;
+    for (name, entry) in &inv.agent_skills {
+        if entry.source == source_tag && after.contains(name) {
+            owned.insert(name.clone());
+        }
+    }
     for pattern in claims {
         for name in &after {
             if glob_match(pattern, name) {
@@ -722,10 +808,34 @@ pub fn install_npm(
         }
     }
 
-    let mut inv = load_inventory()?;
-    for (name, entry) in &inv.agent_skills {
-        if entry.source == source_tag && after.contains(name) {
-            owned.insert(name.clone());
+    let mut records: BTreeMap<String, Option<InspectRecord>> = BTreeMap::new();
+    if gate.wants(row_inspect) {
+        for n in &owned {
+            let dir = hub.join(n);
+            let previous = inv
+                .agent_skills
+                .get(n)
+                .and_then(|entry| entry.inspect.clone());
+            match crate::inspect::scan_dir(gate, n, &dir, &hub, previous.as_ref()) {
+                Ok(crate::inspect::ScanOutput::Accepted(record)) => {
+                    records.insert(n.clone(), Some(record));
+                }
+                Ok(crate::inspect::ScanOutput::SkippedMissing) => {
+                    records.insert(n.clone(), None);
+                }
+                Ok(crate::inspect::ScanOutput::Rejected { message, .. }) => {
+                    if let Some(dir) = backup.as_ref() {
+                        restore_npm_hub(&hub, dir.path(), &before, &after)?;
+                    }
+                    anyhow::bail!("{n}: {message}");
+                }
+                Err(err) => {
+                    if let Some(dir) = backup.as_ref() {
+                        restore_npm_hub(&hub, dir.path(), &before, &after)?;
+                    }
+                    return Err(err);
+                }
+            }
         }
     }
 
@@ -740,6 +850,13 @@ pub fn install_npm(
     }
 
     for n in &owned {
+        let inspect = if gate.wants(row_inspect) || gate.skipped() {
+            records.get(n).cloned().flatten()
+        } else {
+            inv.agent_skills
+                .get(n)
+                .and_then(|entry| entry.inspect.clone())
+        };
         inv.agent_skills.insert(
             n.clone(),
             Entry {
@@ -747,6 +864,7 @@ pub fn install_npm(
                 installed_at: now.clone(),
                 head_sha: pkg_version.clone(),
                 to: vec!["agents".into()],
+                inspect,
             },
         );
     }
@@ -757,13 +875,36 @@ pub fn install_npm(
     Ok(out)
 }
 
+fn restore_npm_hub(
+    hub: &Path,
+    backup: &Path,
+    before: &BTreeSet<String>,
+    after: &BTreeSet<String>,
+) -> Result<()> {
+    for name in after.difference(before) {
+        let dest = hub.join(name);
+        if dest.exists() {
+            std::fs::remove_dir_all(&dest)?;
+        }
+    }
+    for name in before {
+        let src = backup.join(name);
+        if src.is_dir() {
+            install_to_root(hub, name, &src, backup)?;
+        }
+    }
+    Ok(())
+}
+
 /// Re-run install (idempotent; same logic). Re-claims `claims` patterns each time.
 pub fn upgrade_npm(
     package: &str,
     install_cmd: Option<&str>,
     claims: &[String],
+    gate: &crate::inspect::Gate,
+    row_inspect: Option<bool>,
 ) -> Result<Vec<String>> {
-    install_npm(package, install_cmd, claims)
+    install_npm(package, install_cmd, claims, gate, row_inspect)
 }
 
 /// Minimal glob: `*` matches any sequence within a name (no `/`). Enough for `gsd-*` etc.
@@ -924,7 +1065,12 @@ pub fn installed_on_disk() -> Result<Vec<String>> {
 /// Install (or refresh) an Agent Skill from a git source with no `path`.
 /// Thin wrapper around [`install_from`].
 pub fn install(source: &str, name: Option<&str>) -> Result<Vec<String>> {
-    install_from(&SkillOrigin::git(source, None), name)
+    let gate = crate::inspect::Gate::load(false, false)?;
+    let outcome = install_from(&SkillOrigin::git(source, None), name, &gate, None)?;
+    if !outcome.failures.is_empty() {
+        anyhow::bail!("{}", outcome.failures.join("\n"));
+    }
+    Ok(outcome.installed)
 }
 
 struct ResolvedOrigin {
@@ -1054,9 +1200,23 @@ fn is_same_marketplace_plugin(origin: &SkillOrigin, inv_source: &str) -> bool {
         .is_some_and(|(_, mp)| mp == name)
 }
 
+/// Names copied or already current, plus per-skill scan failures.
+///
+/// One rejected Agent Skill does not drop the rest of the row. The caller
+/// links `installed` and exits non-zero when `failures` is not empty.
+pub struct InstallOutcome {
+    pub installed: Vec<String>,
+    pub failures: Vec<String>,
+}
+
 /// Install (or refresh) an Agent Skill from `origin`. If `name` is given, only
 /// that skill is installed; otherwise every skill the origin yields.
-pub fn install_from(origin: &SkillOrigin, name: Option<&str>) -> Result<Vec<String>> {
+pub fn install_from(
+    origin: &SkillOrigin,
+    name: Option<&str>,
+    gate: &crate::inspect::Gate,
+    row_inspect: Option<bool>,
+) -> Result<InstallOutcome> {
     let resolved = resolve_origin(origin)?;
     let chosen: Vec<_> = match name {
         Some(n) => resolved
@@ -1100,9 +1260,62 @@ pub fn install_from(origin: &SkillOrigin, name: Option<&str>) -> Result<Vec<Stri
         planned.push((skill_name, src_dir, action));
     }
     let mut installed_names = Vec::new();
+    let mut failures = Vec::new();
     for (skill_name, src_dir, action) in planned {
+        let sparse_cache = (src_dir == &resolved.clone).then_some(resolved.clone.as_path());
+        let previous = inv
+            .agent_skills
+            .get(skill_name)
+            .and_then(|entry| entry.inspect.clone());
         match action {
             DestAction::Skip => {
+                if gate.dry_run() {
+                    if gate.wants(row_inspect) {
+                        println!("  {} would inspect {}", "·".dimmed(), skill_name);
+                    }
+                    installed_names.push(skill_name.clone());
+                    continue;
+                }
+                if gate.skipped() {
+                    if let Some(entry) = inv.agent_skills.get_mut(skill_name) {
+                        entry.inspect = None;
+                    }
+                    save_inventory(&inv)?;
+                    installed_names.push(skill_name.clone());
+                    continue;
+                }
+                if gate.wants(row_inspect) {
+                    let dest = hub.join(skill_name.as_str());
+                    match crate::inspect::scan_dir(
+                        gate,
+                        skill_name,
+                        &dest,
+                        &hub,
+                        previous.as_ref(),
+                    )? {
+                        crate::inspect::ScanOutput::Accepted(record) => {
+                            if let Some(entry) = inv.agent_skills.get_mut(skill_name) {
+                                entry.inspect = Some(record);
+                            }
+                            save_inventory(&inv)?;
+                        }
+                        crate::inspect::ScanOutput::SkippedMissing => {
+                            if let Some(entry) = inv.agent_skills.get_mut(skill_name) {
+                                entry.inspect = None;
+                            }
+                            save_inventory(&inv)?;
+                        }
+                        crate::inspect::ScanOutput::Rejected { record, message } => {
+                            let report = record.report.clone();
+                            if let Some(entry) = inv.agent_skills.get_mut(skill_name) {
+                                entry.inspect = Some(record);
+                            }
+                            save_inventory(&inv)?;
+                            failures.push(format!("{skill_name}: {message} (report: {report})"));
+                            continue;
+                        }
+                    }
+                }
                 installed_names.push(skill_name.clone());
                 continue;
             }
@@ -1115,13 +1328,31 @@ pub fn install_from(origin: &SkillOrigin, name: Option<&str>) -> Result<Vec<Stri
             }
             DestAction::Copy => {}
         }
-        if src_dir == &resolved.clone {
-            // Root-level SKILL.md in a larger project — materialize sparsely
-            // instead of copying the whole source tree.
-            install_root_skill_sparse_to(&hub, skill_name, &resolved.clone)?;
-        } else {
-            install_to_root(&hub, skill_name, src_dir, &resolved.clone)?;
+        let record = match crate::inspect::publish(
+            gate,
+            row_inspect,
+            &hub,
+            skill_name,
+            src_dir,
+            &resolved.clone,
+            previous.as_ref(),
+            sparse_cache,
+        ) {
+            Ok(record) => record,
+            Err(err) => {
+                failures.push(err.to_string());
+                continue;
+            }
+        };
+        if gate.dry_run() {
+            installed_names.push(skill_name.clone());
+            continue;
         }
+        let inspect = if gate.wants(row_inspect) || gate.skipped() {
+            record
+        } else {
+            previous
+        };
         inv.agent_skills.insert(
             skill_name.clone(),
             Entry {
@@ -1129,12 +1360,16 @@ pub fn install_from(origin: &SkillOrigin, name: Option<&str>) -> Result<Vec<Stri
                 installed_at: installed_at.clone(),
                 head_sha: resolved.head_sha.clone(),
                 to: vec!["agents".into()],
+                inspect,
             },
         );
+        save_inventory(&inv)?;
         installed_names.push(skill_name.clone());
     }
-    save_inventory(&inv)?;
-    Ok(installed_names)
+    Ok(InstallOutcome {
+        installed: installed_names,
+        failures,
+    })
 }
 
 pub fn remove(skill_name: &str) -> Result<bool> {

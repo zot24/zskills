@@ -7,7 +7,8 @@
 use anyhow::Result;
 use owo_colors::OwoColorize;
 
-pub fn run(filter: Vec<String>) -> Result<()> {
+pub fn run(filter: Vec<String>, dry_run: bool, skip_inspect: bool) -> Result<()> {
+    let gate = crate::inspect::Gate::load(skip_inspect, dry_run)?;
     let manifest_path = crate::manifest::discover();
 
     // ── Marketplaces ────────────────────────────────────────────────────
@@ -36,6 +37,7 @@ pub fn run(filter: Vec<String>) -> Result<()> {
         Some(p) => crate::manifest::load(p)?,
         None => crate::manifest::Manifest::default(),
     };
+    let mut skill_failures = 0usize;
     if !manifest.agent_skills.is_empty() {
         println!("\n{}", "Agent Skills".bold());
         for entry in &manifest.agent_skills {
@@ -61,6 +63,8 @@ pub fn run(filter: Vec<String>) -> Result<()> {
                     pkg,
                     entry.install_cmd.as_deref(),
                     &entry.claims,
+                    &gate,
+                    entry.inspect,
                 ) {
                     Ok(owned) => {
                         println!(
@@ -69,7 +73,10 @@ pub fn run(filter: Vec<String>) -> Result<()> {
                             format!("({} skills owned)", owned.len()).dimmed()
                         );
                     }
-                    Err(e) => println!("{} ({})", "fail".red(), e),
+                    Err(e) => {
+                        println!("{} ({})", "fail".red(), e);
+                        skill_failures += 1;
+                    }
                 }
                 continue;
             }
@@ -111,9 +118,23 @@ pub fn run(filter: Vec<String>) -> Result<()> {
 
                 let mut failures = 0;
                 for name in &owned {
-                    if let Err(e) = crate::agent_skill::install_from(&origin, Some(name)) {
-                        eprintln!("\n  {} {}: {}", "✗".red(), name, e);
-                        failures += 1;
+                    match crate::agent_skill::install_from(
+                        &origin,
+                        Some(name),
+                        &gate,
+                        entry.inspect,
+                    ) {
+                        Ok(outcome) if outcome.failures.is_empty() => {}
+                        Ok(outcome) => {
+                            for msg in &outcome.failures {
+                                eprintln!("\n  {} {name}: {msg}", "✗".red());
+                            }
+                            failures += 1;
+                        }
+                        Err(e) => {
+                            eprintln!("\n  {} {name}: {e}", "✗".red());
+                            failures += 1;
+                        }
                     }
                 }
                 if failures == 0 {
@@ -123,6 +144,7 @@ pub fn run(filter: Vec<String>) -> Result<()> {
                         "{}",
                         format!("{} of {} failed", failures, owned.len()).red()
                     );
+                    skill_failures += failures;
                 }
                 continue;
             }
@@ -139,6 +161,9 @@ pub fn run(filter: Vec<String>) -> Result<()> {
         }
     }
 
+    if skill_failures > 0 {
+        anyhow::bail!("{skill_failures} Agent Skill upgrade(s) failed");
+    }
     println!(
         "\n{} Upgrade complete. Restart Claude Code to pick up new plugin bytes.",
         "✓".green()

@@ -64,6 +64,8 @@ zskills plugin install -i                           # interactive picker over ma
 | `--skill <name>` | none | For repo specs only: install exactly one skill by name (the manifest `name` field) — the non-interactive counterpart to `-i` for multi-skill repos. Bypasses the >5-skill size policy (the selection is explicit) and conflicts with `--all`. |
 | `--path <rel>` | none | For repo specs only: relative path inside the clone to a directory of Agent Skills. Replaces the default walk of `.agents/skills` and `skills/`. Sparse-intent like `--skill` / `-i`: do not redirect a marketplace root. Writes `[[agent_skills]]` with `marketplace` or `source`. Ban `..`, absolute form, `\`, `:`. |
 | `--harness <list>` | `[defaults].harnesses`, or Claude only | Comma-separated harness names. One-shot override. Not `--to`. |
+| `--dry-run` | off | Print the install plan, including `would inspect` lines. Do not write the hub, `enabledPlugins`, or the manifest. |
+| `--skip-inspect` | off | Do not run skillspector. Print a warning. Do not record a passing scan. |
 
 **Repo-path count behavior**:
 
@@ -106,21 +108,26 @@ zskills plugin disable <name>...
 Agent Skills live in `~/.agents/skills/`. The group writes `[[agent_skills]]`, not `[[skills]]`.
 
 ```
-zskills skill install <owner/repo> [--path REL] [--skill NAME | --all | -i]
+zskills skill install <owner/repo> [--path REL] [--skill NAME | --all | -i] [--dry-run] [--skip-inspect]
 zskills skill remove <name> [--force] [--file path]
-zskills skill upgrade [<name>...]
+zskills skill upgrade [<name>...] [--dry-run] [--skip-inspect]
+zskills skill inspect [<name>...]
 ```
 
 `--path REL` installs Agent Skills that do not live at `.agents/skills` or `skills/`. Example: `zskills skill install nvk/llm-wiki --path plugins/llm-wiki-opencode/skills --skill wiki-manager`. That command does not redirect to `marketplace add`. After install, the manifest row uses `marketplace` when the spec matches a registered marketplace, else `source`.
 
 `skill remove` deletes bytes. It is not `plugin remove`. `--force` is required when inventory `source` starts with `plugin:`, or when a source-only `[[agent_skills]]` row owns the name. A `marketplace:` hub copy of the same name removes without `--force` and without disabling the plugin.
 
+`skill inspect` scans Agent Skills that are already on the hub. With no names, it scans every installed Agent Skill whose resolved `inspect` flag is on. It writes the scan record on pass and on fail. It does not delete the Agent Skill. A failed scan exits non-zero. The gate must be enabled.
+
+`skill install`, `skill upgrade`, `plugin install`, and `sync` stage the bytes, run skillspector on that stage, and copy into place only when the scan passes. A failed scan leaves the existing install in place and exits non-zero. An unchanged content sha does not spawn skillspector again. `--dry-run` prints `would inspect` and does not write. `--skip-inspect` skips the scan and does not record a pass.
+
 ## `sync` (headline command)
 
 Apply a declarative `skills.toml` manifest. Diffs intent against current state, then atomically writes the necessary settings.json and inventory changes.
 
 ```
-zskills sync [--file <path>] [--dry-run] [--prune | --adopt]
+zskills sync [--file <path>] [--dry-run] [--prune | --adopt] [--skip-inspect]
 ```
 
 | Flag | Default | Description |
@@ -129,6 +136,7 @@ zskills sync [--file <path>] [--dry-run] [--prune | --adopt]
 | `--dry-run` | off | Print the plan; do not write |
 | `--prune` | off | Allow destructive removals. Without `--prune`, agent skills present on disk but absent from the manifest are reported as `skip` and left untouched. With `--prune`, their bytes are deleted from `~/.agents/skills/`. |
 | `--adopt` | off | Inverse of `--prune`. Append every orphan (installed agent skill, enabled plugin, configured MCP that isn't yet in the manifest) to `skills.toml` and exit. Useful for capturing a hand-curated environment into your manifest in one shot. Mutually exclusive with `--prune`. |
+| `--skip-inspect` | off | Do not run skillspector. Print a warning. Do not record a passing scan. |
 
 What sync does:
 1. For each `[[marketplaces]]` entry with `repo` or `url` that is not yet registered: clone the source and write `known_marketplaces.json` plus `extraKnownMarketplaces` (same as `marketplace add`). This runs **before** plugin resolve, so a fresh machine can recreate the clone. Unqualified `[[skills]]` names (`name` only) are resolved against the map **after** that clone, so they can match a marketplace that did not exist at plan time.
@@ -157,8 +165,10 @@ If a `./skills.toml` exists in CWD when you run `sync` without `--file`, zskills
 The one command for refreshing everything zskills manages — marketplaces, git agent skills, and npm agent skills.
 
 ```
-zskills skill upgrade [<name>...]
+zskills skill upgrade [<name>...] [--dry-run] [--skip-inspect]
 ```
+
+A skillspector rejection during `skill upgrade` exits non-zero. Marketplace refresh errors stay on the terminal and do not by themselves fail the command. `--dry-run` prints the plan and does not write.
 
 | Source kind | What `upgrade` does |
 |---|---|
@@ -297,6 +307,33 @@ skills = ["prototype", "research", "tdd", "wayfinder"]
 | `skills` | Optional list. The plural form of `name`: one stanza picks many skills out of the same source, marketplace or npm package, and writes `source` once instead of once per name. Every other key on the stanza (`path`, `harnesses`, `claims`, `install_cmd`) applies to every name in the list. An entry declares `name` **or** `skills`, never both — a stanza carrying both is refused when the manifest loads. An empty `skills = []` means what an absent key means: the row keeps whatever it meant before. |
 | `harnesses` | Optional list. Names which harnesses can see this Agent Skill. Empty inherits `[defaults].harnesses`, then every harness whose home exists. Set it on marketplace+path rows. The llm-wiki recipe uses `["pi", "grok"]` so Claude does not also get the OpenCode tree. |
 | `claims` | Glob patterns (e.g., `["gsd-*"]`) matched against `~/.agents/skills/`. After install, every match is tagged with this entry's source. Used for npm packages whose installer touches pre-existing directories — so the diff-after-install discovers nothing, but `claims` retroactively claims ownership. |
+| `inspect` | Optional bool. `true` scans this row when `[skillspector] enabled = true`. `false` opts the row out. Absent inherits `[defaults] inspect`, then scans. |
+
+### `[skillspector]`
+
+Optional. Absent, or `enabled = false`, means install, upgrade, plugin install, and sync do not scan.
+
+```toml
+[skillspector]
+enabled = true
+command = "skillspector"
+args = []
+fail_on = "do_not_install"   # or "caution" or "findings"
+on_missing = "error"         # or "warn"
+
+[defaults]
+inspect = true
+```
+
+`command` defaults to `skillspector`. zskills runs `command scan <staged> --no-llm` plus `args`, then `-f json -o <report>`. The report is stored under `~/.agents/skills/.zskills-reports/<name>.json`. Inventory records the content sha, recommendation, exit code, issue count, max severity, time, and report path.
+
+`fail_on = "do_not_install"` rejects a non-zero skillspector exit. Exit 0 passes, including recommendation `CAUTION`. `fail_on = "caution"` also rejects `CAUTION`. `fail_on = "findings"` also rejects a report whose `issues` array is not empty. Every `fail_on` value also rejects max severity `CRITICAL`, including when the exit code is 0. The rejection line prints that severity. `max_severity` comes from `risk_assessment.max_issue_severity`. When that field is absent, zskills uses the highest `issues[].severity`. The order is `LOW`, `MEDIUM`, `HIGH`, `CRITICAL`. `on_missing = "error"` fails the install when `command` is not on `PATH`. `on_missing = "warn"` prints a warning and continues. It does not record a pass.
+
+`[defaults] inspect` and per-entry `inspect` on `[[skills]]` and `[[agent_skills]]` use the same rule: the row wins when it is set, then the default, then scan.
+
+One rejected Agent Skill does not stop the rest of its row. zskills leaves that Agent Skill in place, scans and copies every other skill in the row, creates harness links for each skill that passed, prints each rejected name, and exits non-zero when the command finishes.
+
+A plugin with no Agent Skill trees is not a scan failure. zskills records that fact and continues. `zskills scan` is a different command. It walks a project tree. It does not run skillspector.
 
 ### llm-wiki for Claude, Pi, and Grok
 
@@ -377,6 +414,8 @@ zskills doctor [--fix]
 ```
 
 With `--fix`, dangling plugin/inventory references are removed. **`--fix` is a no-op for MCP issues** — none of them are auto-fixable (we won't install a missing binary or invent an env var), so doctor's job there is purely to surface what's broken. `--fix` never deletes installed bytes — that's what `purge` is for.
+
+When `[skillspector] enabled = true`, doctor also lists each `inspect = true` Agent Skill or plugin that has no passing scan for the current `fail_on`, or whose stored content sha does not match the installed bytes. This finding does not change the exit code. `--fix` does not scan. Run `zskills skill inspect` or install again.
 
 Doctor never spawns or talks to an MCP server. Running-state diagnosis (whether a server is actually connected, last error, latency) is Claude Code's job — replicating it here would risk divergent diagnoses. If you need that, run the server directly or check Claude Code's own logs.
 

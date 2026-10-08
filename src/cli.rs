@@ -114,6 +114,10 @@ pub enum Command {
         /// state still holds many (the silent mass-disable guard).
         #[arg(long)]
         force: bool,
+
+        /// Do not run skillspector. No passing scan is recorded.
+        #[arg(long)]
+        skip_inspect: bool,
     },
 
     /// Reconcile disk ↔ inventory ↔ settings; report orphans + mismatches
@@ -234,6 +238,12 @@ pub enum PluginCmd {
         /// Hermes skills category. Default: software-development.
         #[arg(long, default_value = "software-development", value_name = "CATEGORY")]
         category: String,
+        /// Show the install plan, including skillspector scans, without writing
+        #[arg(long)]
+        dry_run: bool,
+        /// Do not run skillspector. No passing scan is recorded.
+        #[arg(long)]
+        skip_inspect: bool,
         skills: Vec<String>,
     },
     /// Drop enabledPlugins + inventory; keep bytes
@@ -296,6 +306,17 @@ pub enum AgentSkillCmd {
             help = "owner/repo, https://, git@ or file:// URL"
         )]
         skills: Vec<String>,
+        /// Show the install plan, including skillspector scans, without writing
+        #[arg(long)]
+        dry_run: bool,
+        /// Do not run skillspector. No passing scan is recorded.
+        #[arg(long)]
+        skip_inspect: bool,
+    },
+    /// Scan installed Agent Skills with skillspector
+    Inspect {
+        /// Agent Skill names. Empty scans every installed Agent Skill whose inspect flag is on.
+        names: Vec<String>,
     },
     /// Delete bytes + inventory for an Agent Skill
     Remove {
@@ -307,7 +328,15 @@ pub enum AgentSkillCmd {
         names: Vec<String>,
     },
     /// Refresh git/npm Agent Skills (and marketplace caches)
-    Upgrade { names: Vec<String> },
+    Upgrade {
+        /// Show the upgrade plan, including skillspector scans, without writing
+        #[arg(long)]
+        dry_run: bool,
+        /// Do not run skillspector. No passing scan is recorded.
+        #[arg(long)]
+        skip_inspect: bool,
+        names: Vec<String>,
+    },
     /// Ensure the Agent Skill hub path is listed once in Pi's settings.json
     RegisterPiHub,
     /// Hidden. `skill migrate` is not a verb. Point at `migrate-skill`.
@@ -396,6 +425,8 @@ impl Cli {
                     interactive,
                     harness,
                     category,
+                    dry_run,
+                    skip_inspect,
                 } => {
                     if skills
                         .iter()
@@ -413,6 +444,8 @@ impl Cli {
                         None,
                         harness,
                         category,
+                        dry_run,
+                        skip_inspect,
                     )
                 }
                 PluginCmd::Remove {
@@ -432,6 +465,8 @@ impl Cli {
                     path,
                     harness,
                     category,
+                    dry_run,
+                    skip_inspect,
                 } => crate::commands::agent_skills::install(
                     skills,
                     interactive,
@@ -440,11 +475,18 @@ impl Cli {
                     path,
                     harness,
                     category,
+                    dry_run,
+                    skip_inspect,
                 ),
                 AgentSkillCmd::Remove { names, force, file } => {
                     crate::commands::agent_skills::remove(names, force, file)
                 }
-                AgentSkillCmd::Upgrade { names } => crate::commands::agent_skills::upgrade(names),
+                AgentSkillCmd::Upgrade {
+                    names,
+                    dry_run,
+                    skip_inspect,
+                } => crate::commands::agent_skills::upgrade(names, dry_run, skip_inspect),
+                AgentSkillCmd::Inspect { names } => crate::inspect::inspect_installed(names),
                 AgentSkillCmd::RegisterPiHub => crate::commands::agent_skills::register_pi_hub(),
                 AgentSkillCmd::Migrate { rest } => {
                     crate::commands::stub::run("skill-migrate", &rest)
@@ -491,7 +533,8 @@ impl Cli {
                 prune,
                 adopt,
                 force,
-            } => crate::commands::sync::run(file, dry_run, prune, adopt, force),
+                skip_inspect,
+            } => crate::commands::sync::run(file, dry_run, prune, adopt, force, skip_inspect),
             Command::Doctor { fix } => crate::commands::doctor::run(fix),
             Command::Scan {
                 path,

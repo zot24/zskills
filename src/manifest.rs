@@ -46,6 +46,50 @@ pub struct Manifest {
     /// only, Agent Skill → hub only, MCP → Claude json only).
     #[serde(default)]
     pub defaults: Defaults,
+
+    /// Optional skillspector gate. Absent means the gate is off.
+    #[serde(default)]
+    pub skillspector: Skillspector,
+}
+
+/// `[skillspector]` in skills.toml. `fail_on` and `on_missing` are parsed at
+/// the gate, not here.
+#[derive(Debug, Deserialize, Serialize, Clone)]
+pub struct Skillspector {
+    #[serde(default)]
+    pub enabled: bool,
+    #[serde(default = "default_skillspector_command")]
+    pub command: String,
+    #[serde(default)]
+    pub args: Vec<String>,
+    #[serde(default = "default_fail_on")]
+    pub fail_on: String,
+    #[serde(default = "default_on_missing")]
+    pub on_missing: String,
+}
+
+fn default_skillspector_command() -> String {
+    "skillspector".to_string()
+}
+
+fn default_fail_on() -> String {
+    "do_not_install".to_string()
+}
+
+fn default_on_missing() -> String {
+    "error".to_string()
+}
+
+impl Default for Skillspector {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            command: default_skillspector_command(),
+            args: Vec::new(),
+            fail_on: default_fail_on(),
+            on_missing: default_on_missing(),
+        }
+    }
 }
 
 /// `[defaults]` in skills.toml.
@@ -55,6 +99,9 @@ pub struct Defaults {
     pub harnesses: Vec<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub mcp_harnesses: Vec<String>,
+    /// `None` means "scan when the gate is enabled". `Some(false)` opts out.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub inspect: Option<bool>,
 }
 
 impl Manifest {
@@ -134,6 +181,9 @@ pub struct SkillEntry {
     /// or Claude only when `[defaults]` is missing.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub harnesses: Vec<String>,
+    /// `None` inherits `[defaults] inspect`. `Some(false)` opts this plugin out.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub inspect: Option<bool>,
 }
 
 impl SkillEntry {
@@ -336,6 +386,9 @@ pub struct AgentSkillEntry {
     /// Harnesses this Agent Skill should be visible to. Empty = inherit `[defaults].harnesses`.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub harnesses: Vec<String>,
+    /// `None` inherits `[defaults] inspect`. `Some(false)` opts this row out.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub inspect: Option<bool>,
 }
 
 impl AgentSkillEntry {

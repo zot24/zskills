@@ -4,6 +4,7 @@ use anyhow::Result;
 use owo_colors::OwoColorize;
 use std::path::PathBuf;
 
+#[allow(clippy::too_many_arguments)]
 pub fn install(
     specs: Vec<String>,
     interactive: bool,
@@ -12,6 +13,8 @@ pub fn install(
     path: Option<String>,
     harness: Vec<crate::harness::Harness>,
     category: String,
+    dry_run: bool,
+    skip_inspect: bool,
 ) -> Result<()> {
     if specs
         .iter()
@@ -21,11 +24,21 @@ pub fn install(
             "skill install takes owner/repo or a git URL; use `zskills plugin install` for name@marketplace"
         );
     }
-    crate::commands::install::run(specs, interactive, all, skill, path, harness, category)
+    crate::commands::install::run(
+        specs,
+        interactive,
+        all,
+        skill,
+        path,
+        harness,
+        category,
+        dry_run,
+        skip_inspect,
+    )
 }
 
-pub fn upgrade(names: Vec<String>) -> Result<()> {
-    crate::commands::upgrade::run(names)
+pub fn upgrade(names: Vec<String>, dry_run: bool, skip_inspect: bool) -> Result<()> {
+    crate::commands::upgrade::run(names, dry_run, skip_inspect)
 }
 
 pub fn register_pi_hub() -> Result<()> {

@@ -18,6 +18,7 @@ use anyhow::Result;
 use owo_colors::OwoColorize;
 use serde_json::Value;
 
+#[allow(clippy::too_many_arguments)]
 pub fn run(
     specs: Vec<String>,
     interactive: bool,
@@ -26,9 +27,12 @@ pub fn run(
     path: Option<String>,
     harness: Vec<crate::harness::Harness>,
     category: String,
+    dry_run: bool,
+    skip_inspect: bool,
 ) -> Result<()> {
+    let gate = crate::inspect::Gate::load(skip_inspect, dry_run)?;
     if interactive && specs.is_empty() {
-        return run_interactive_browse_marketplaces(harness, category);
+        return run_interactive_browse_marketplaces(harness, category, dry_run, skip_inspect);
     }
 
     if specs.is_empty() {
@@ -57,6 +61,7 @@ pub fn run(
             path.as_deref(),
             &harness,
             &category,
+            &gate,
         ) {
             eprintln!("{} {}: {}", "✗".red(), spec, e);
             failures += 1;
@@ -64,7 +69,7 @@ pub fn run(
     }
 
     if !plugin_specs.is_empty() {
-        failures += install_plugin_specs(plugin_specs, &harness, &category)?;
+        failures += install_plugin_specs(plugin_specs, &harness, &category, &gate)?;
     }
 
     // Printing an error and exiting 0 makes every failure invisible to `set -e`,
@@ -88,6 +93,7 @@ pub(crate) fn is_repo_spec(spec: &str) -> bool {
     spec.contains("://") || spec.starts_with("git@") || spec.contains('/')
 }
 
+#[allow(clippy::too_many_arguments)]
 fn install_from_repo(
     spec: &str,
     interactive: bool,
@@ -96,6 +102,7 @@ fn install_from_repo(
     path: Option<&str>,
     harness: &[crate::harness::Harness],
     category: &str,
+    gate: &crate::inspect::Gate,
 ) -> Result<()> {
     let (defaults, _) = crate::harness::load_defaults();
     let hs = crate::harness::resolve(harness, &defaults, &[], crate::harness::default_skill())?;
@@ -187,8 +194,10 @@ fn install_from_repo(
                 .collect::<Vec<_>>()
                 .join(", ")
         );
-        let installed = install_chosen(spec, &origin, &[name.to_string()], &hs, category)?;
-        append_path_manifest(&origin, &installed, true, harness)?;
+        let installed = install_chosen(spec, &origin, &[name.to_string()], &hs, category, gate)?;
+        if !gate.dry_run() {
+            append_path_manifest(&origin, &installed, true, harness)?;
+        }
         return Ok(());
     }
 
@@ -221,10 +230,12 @@ fn install_from_repo(
         return Ok(());
     }
 
-    let installed = install_chosen(spec, &origin, &chosen, &hs, category)?;
+    let installed = install_chosen(spec, &origin, &chosen, &hs, category, gate)?;
     // `--skill` / `-i` name the rows they picked. `--path` without those is
     // "every Agent Skill under this path" — one unnamed row, not `skills = []`.
-    append_path_manifest(&origin, &installed, interactive, harness)?;
+    if !gate.dry_run() {
+        append_path_manifest(&origin, &installed, interactive, harness)?;
+    }
     Ok(())
 }
 
@@ -257,24 +268,27 @@ fn install_chosen(
     chosen: &[String],
     hs: &[crate::harness::Harness],
     category: &str,
+    gate: &crate::inspect::Gate,
 ) -> Result<Vec<String>> {
     let mut installed_names = Vec::new();
     for name in chosen {
-        match crate::agent_skill::install_from(origin, Some(name)) {
-            Ok(installed) => {
-                crate::harness::link_hub_to_harnesses(&installed, hs, category)?;
-                for n in &installed {
-                    println!(
-                        "{} {} {}",
-                        "+".green(),
-                        n,
-                        format!("[from {}]", spec).dimmed()
-                    );
-                }
-                installed_names.extend(installed);
-            }
-            Err(e) => eprintln!("{} {}: {}", "✗".red(), name, e),
+        let outcome = crate::agent_skill::install_from(origin, Some(name), gate, None)?;
+        if !outcome.failures.is_empty() {
+            anyhow::bail!("{}", outcome.failures.join("\n"));
         }
+        let installed = outcome.installed;
+        if !gate.dry_run() {
+            crate::harness::link_hub_to_harnesses(&installed, hs, category)?;
+            for n in &installed {
+                println!(
+                    "{} {} {}",
+                    "+".green(),
+                    n,
+                    format!("[from {}]", spec).dimmed()
+                );
+            }
+        }
+        installed_names.extend(installed);
     }
     Ok(installed_names)
 }
@@ -395,6 +409,7 @@ fn install_plugin_specs(
     specs: Vec<String>,
     harness: &[crate::harness::Harness],
     category: &str,
+    gate: &crate::inspect::Gate,
 ) -> Result<usize> {
     let known = crate::marketplace::load_known(&crate::paths::known_marketplaces_json()?)?;
     if known.is_empty() {
@@ -411,6 +426,7 @@ fn install_plugin_specs(
     let want_claude = targets.contains(&crate::harness::Harness::Claude);
     let want_hub = targets.iter().any(|h| h.needs_hub_copy());
 
+    let manifest = crate::manifest::discover().and_then(|p| crate::manifest::load(&p).ok());
     let settings_path = crate::paths::settings_json()?;
     let mut settings = crate::settings::load(&settings_path)?;
     let mut resolved: Vec<String> = Vec::new();
@@ -420,6 +436,21 @@ fn install_plugin_specs(
     for spec in &specs {
         match crate::marketplace::resolve_spec(spec, &known) {
             Ok(qualified) => {
+                let row = manifest
+                    .as_ref()
+                    .and_then(|m| crate::inspect::row_inspect_plugin(m, &qualified));
+                if let Err(e) = crate::inspect::gate_plugin(gate, &qualified, row) {
+                    eprintln!("{} {qualified}: {e}", "✗".red());
+                    failures += 1;
+                    continue;
+                }
+                if gate.dry_run() {
+                    if want_claude {
+                        println!("  {} would enable {}", "·".dimmed(), qualified);
+                    }
+                    resolved.push(qualified);
+                    continue;
+                }
                 if want_claude {
                     let ep = crate::settings::enabled_plugins_mut(&mut settings);
                     ep.insert(qualified.clone(), Value::Bool(true));
@@ -447,6 +478,10 @@ fn install_plugin_specs(
         }
     }
 
+    if gate.dry_run() {
+        return Ok(failures);
+    }
+
     if !resolved.is_empty() && want_claude {
         // Record intent first, so it survives even if the fetch below fails.
         crate::settings::save(&settings_path, &settings)?;
@@ -456,6 +491,21 @@ fn install_plugin_specs(
             settings_path.display()
         );
         failures += resolved.len() - materialize_plugins(&resolved)?;
+        let mut still_ok = Vec::new();
+        for q in &resolved {
+            let row = manifest
+                .as_ref()
+                .and_then(|m| crate::inspect::row_inspect_plugin(m, q));
+            match crate::inspect::gate_plugin(gate, q, row) {
+                Ok(()) => still_ok.push(q.clone()),
+                Err(e) => {
+                    eprintln!("{} {q}: {e}", "✗".red());
+                    set_plugin_enabled(q, false)?;
+                    failures += 1;
+                }
+            }
+        }
+        resolved = still_ok;
     } else if skill_count > 0 {
         println!(
             "\nInstalled {} agent skill(s) into {}.",
@@ -469,7 +519,10 @@ fn install_plugin_specs(
             .map(|m| crate::agent_skill::names_claimed_by(&m.agent_skills))
             .unwrap_or_default();
         for q in &resolved {
-            match crate::harness::materialize_hub(q, &targets, category, &claimed) {
+            let row = manifest
+                .as_ref()
+                .and_then(|m| crate::inspect::row_inspect_plugin(m, q));
+            match crate::harness::materialize_hub(q, &targets, category, &claimed, gate, row) {
                 Ok(names) if !names.is_empty() => {
                     println!(
                         "  {} copied {} nested skill(s) from {} into the Agent Skill hub",
@@ -481,12 +534,26 @@ fn install_plugin_specs(
                 Ok(_) => {}
                 Err(e) => {
                     eprintln!("{} {q}: {e}", "✗".red());
+                    if want_claude
+                        && gate.wants(row)
+                        && format!("{e:#}").contains("skillspector rejected")
+                    {
+                        set_plugin_enabled(q, false)?;
+                    }
                     failures += 1;
                 }
             }
         }
     }
     Ok(failures)
+}
+
+fn set_plugin_enabled(qualified: &str, enabled: bool) -> Result<()> {
+    let settings_path = crate::paths::settings_json()?;
+    let mut settings = crate::settings::load(&settings_path)?;
+    crate::settings::enabled_plugins_mut(&mut settings)
+        .insert(qualified.to_string(), Value::Bool(enabled));
+    crate::settings::save(&settings_path, &settings)
 }
 
 /// Fetch the bytes for plugins we just enabled, and report honestly which ones landed.
@@ -555,6 +622,8 @@ pub(crate) fn materialize_plugins(qualified: &[String]) -> Result<usize> {
 fn run_interactive_browse_marketplaces(
     harness: Vec<crate::harness::Harness>,
     category: String,
+    dry_run: bool,
+    skip_inspect: bool,
 ) -> Result<()> {
     use crate::interactive::Item;
 
@@ -606,6 +675,8 @@ fn run_interactive_browse_marketplaces(
             None,
             harness,
             category,
+            dry_run,
+            skip_inspect,
         )?,
     }
     Ok(())
