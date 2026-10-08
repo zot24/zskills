@@ -6163,6 +6163,59 @@ exit {exit_code}
     script
 }
 
+fn write_rejecting_skillspector(home: &TempDir, reject_name: &str) -> std::path::PathBuf {
+    let bin = home.path().join("bin");
+    fs::create_dir_all(&bin).unwrap();
+    let count = home.path().join("scan-count");
+    let script = bin.join("skillspector");
+    let body = format!(
+        r#"#!/bin/sh
+echo x >> {count}
+out=
+prev=
+for a in "$@"; do
+  if [ "$prev" = "-o" ]; then
+    out=$a
+  fi
+  prev=$a
+done
+mkdir -p "$(dirname "$out")"
+target=
+prev=
+for a in "$@"; do
+  if [ "$prev" = scan ]; then
+    target=$a
+    break
+  fi
+  prev=$a
+done
+case "$target" in
+  */{reject})
+    cat > "$out" <<'END'
+{{"risk_assessment":{{"recommendation":"DO_NOT_INSTALL","score":90}},"issues":[{{"id":"x"}}]}}
+END
+    exit 1
+    ;;
+esac
+cat > "$out" <<'END'
+{{"risk_assessment":{{"recommendation":"SAFE","score":1}},"issues":[]}}
+END
+exit 0
+"#,
+        count = count.display(),
+        reject = reject_name,
+    );
+    fs::write(&script, body).unwrap();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mut perm = fs::metadata(&script).unwrap().permissions();
+        perm.set_mode(0o755);
+        fs::set_permissions(&script, perm).unwrap();
+    }
+    script
+}
+
 fn scan_count(home: &TempDir) -> usize {
     let path = home.path().join("scan-count");
     if !path.exists() {
@@ -6371,4 +6424,60 @@ fn doctor_reports_a_skill_installed_with_skip_inspect() {
         .stdout(predicate::str::contains("Agent Skill demo"))
         .stdout(predicate::str::contains("no passing skillspector scan"));
     assert_eq!(scan_count(&home), 0);
+}
+
+#[test]
+fn skillspector_row_continues_after_one_rejection() {
+    let upstream = tempfile::tempdir().unwrap();
+    for name in ["alpha", "bad", "zeta"] {
+        write_skill(upstream.path(), name, name);
+    }
+    git_init_and_commit(upstream.path());
+    let url = file_url(upstream.path());
+
+    let home = fake_home();
+    let script = write_rejecting_skillspector(&home, "bad");
+    let extra = format!(
+        "\n[defaults]\nharnesses = [\"claude\", \"codex\"]\ninspect = true\n\n[[agent_skills]]\nsource = \"{url}\"\n"
+    );
+    write_manifest(
+        &home,
+        &skillspector_manifest(&script.display().to_string(), "error", &extra),
+    );
+
+    zskills(&home)
+        .args(["sync"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("skillspector rejected"))
+        .stderr(predicate::str::contains("bad"))
+        .stdout(predicate::str::contains("codex/skills/alpha"))
+        .stdout(predicate::str::contains("codex/skills/zeta"))
+        .stdout(predicate::str::contains("installed agent skill"));
+
+    assert!(home.path().join("skills/alpha/SKILL.md").is_file());
+    assert!(home.path().join("skills/zeta/SKILL.md").is_file());
+    assert!(
+        !home.path().join("skills/bad").exists(),
+        "the rejected Agent Skill is not copied"
+    );
+    assert_eq!(scan_count(&home), 3, "every skill in the row is scanned");
+
+    for name in ["alpha", "zeta"] {
+        let link = home.path().join("codex/skills").join(name);
+        let linked = link
+            .symlink_metadata()
+            .map(|meta| meta.file_type().is_symlink())
+            .unwrap_or(false);
+        assert!(linked, "passed skill {name} gets a codex link");
+    }
+    assert!(!home.path().join("codex/skills/bad").exists());
+
+    let inv = fs::read_to_string(home.path().join("skills/.zskills.json")).unwrap();
+    assert!(inv.contains("\"alpha\""));
+    assert!(inv.contains("\"zeta\""));
+    assert!(
+        !inv.contains("\"bad\""),
+        "a rejected new skill is not recorded as installed: {inv}"
+    );
 }
