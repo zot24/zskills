@@ -308,6 +308,7 @@ skills = ["prototype", "research", "tdd", "wayfinder"]
 | `harnesses` | Optional list. Names which harnesses can see this Agent Skill. Empty inherits `[defaults].harnesses`, then every harness whose home exists. Set it on marketplace+path rows. The llm-wiki recipe uses `["pi", "grok"]` so Claude does not also get the OpenCode tree. |
 | `claims` | Glob patterns (e.g., `["gsd-*"]`) matched against `~/.agents/skills/`. After install, every match is tagged with this entry's source. Used for npm packages whose installer touches pre-existing directories — so the diff-after-install discovers nothing, but `claims` retroactively claims ownership. |
 | `inspect` | Optional bool. `true` scans this row when `[skillspector] enabled = true`. `false` opts the row out. Absent inherits `[defaults] inspect`, then scans. |
+| `inspect_override` | Optional. One inline table or an array of inline tables. Each table names one exact skill of this row (`skill`) and a `reason`. `approved_by` and `approved_on` are optional. See [Reviewed overrides](#reviewed-overrides). |
 
 ### `[skillspector]`
 
@@ -332,6 +333,29 @@ inspect = true
 `[defaults] inspect` and per-entry `inspect` on `[[skills]]` and `[[agent_skills]]` use the same rule: the row wins when it is set, then the default, then scan.
 
 One rejected Agent Skill does not stop the rest of its row. zskills leaves that Agent Skill in place, scans and copies every other skill in the row, creates harness links for each skill that passed, prints each rejected name, and exits non-zero when the command finishes.
+
+#### Reviewed overrides
+
+A reviewed override lets one named Agent Skill install when skillspector rejects it. Put it on the `[[agent_skills]]` row that installs the skill:
+
+```toml
+[[agent_skills]]
+marketplace = "cursor-plugins"
+path = "pstack/skills"
+skills = ["architect", "poteto-mode", "why"]
+inspect_override = { skill = "poteto-mode", reason = "Findings reviewed: force-push text is a prohibition.", approved_by = "IRL", approved_on = "2026-10-08" }
+```
+
+- `skill` is one exact skill name. A glob or a row-wide form is refused. When the row sets `name` or `skills`, `skill` must be one of those names.
+- `reason` is required. A blank reason is refused when the manifest loads.
+- Use an array of tables for more than one skill: `inspect_override = [{ skill = "a", reason = "..." }, { skill = "b", reason = "..." }]`.
+- The override covers only the skill it names. The other skills in the row use the normal gate.
+- One skill can have one override in the manifest. A second one is refused.
+- An override on a row with `inspect = false` is refused, because there is no scan to override.
+
+zskills still scans the overridden skill on every install, upgrade, and `sync`. It does not reuse a stored scan for that skill. When the scan does not pass, zskills prints a warning with the verdict, the reason, the approval, the report path, and one line for each finding. Then it installs the skill. The inventory keeps the real verdict and adds `override_reason`. `doctor` accepts that record while the override stays in the manifest. Remove the override and the next install rejects the skill again.
+
+Overrides apply to Agent Skills only. A plugin's skill trees use the normal gate.
 
 A plugin with no Agent Skill trees is not a scan failure. zskills records that fact and continues. `zskills scan` is a different command. It walks a project tree. It does not run skillspector.
 

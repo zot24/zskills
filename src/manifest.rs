@@ -389,6 +389,76 @@ pub struct AgentSkillEntry {
     /// `None` inherits `[defaults] inspect`. `Some(false)` opts this row out.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub inspect: Option<bool>,
+    /// Reviewed exceptions to the skillspector gate. Each one names one exact
+    /// skill of this row and carries a reason. The skill is still scanned, and a
+    /// rejection is printed as a warning instead of blocking the install.
+    /// Accepts one inline table or an array of them.
+    #[serde(
+        default,
+        deserialize_with = "one_or_many_overrides",
+        skip_serializing_if = "Vec::is_empty"
+    )]
+    pub inspect_override: Vec<InspectOverride>,
+}
+
+/// A reviewed exception to the skillspector gate for one named Agent Skill.
+#[derive(Debug, Deserialize, Serialize, Clone, Default, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct InspectOverride {
+    /// Exact skill name. No glob, no row-wide form.
+    #[serde(default)]
+    pub skill: String,
+    /// Why a human accepted the findings. Required and not blank.
+    #[serde(default)]
+    pub reason: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub approved_by: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub approved_on: Option<String>,
+}
+
+impl InspectOverride {
+    /// `(approved by IRL on 2026-10-08)`, or the half that is set, or empty.
+    pub fn approval(&self) -> String {
+        let by = self
+            .approved_by
+            .as_deref()
+            .map(str::trim)
+            .filter(|v| !v.is_empty());
+        let on = self
+            .approved_on
+            .as_deref()
+            .map(str::trim)
+            .filter(|v| !v.is_empty());
+        match (by, on) {
+            (Some(by), Some(on)) => format!(" (approved by {by} on {on})"),
+            (Some(by), None) => format!(" (approved by {by})"),
+            (None, Some(on)) => format!(" (approved on {on})"),
+            (None, None) => String::new(),
+        }
+    }
+}
+
+/// `inspect_override = { ... }` or `inspect_override = [{ ... }, ...]`.
+/// Each table goes through `InspectOverride`, so an unknown key is an error.
+fn one_or_many_overrides<'de, D>(
+    deserializer: D,
+) -> std::result::Result<Vec<InspectOverride>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    use serde::de::Error;
+    let value = toml::Value::deserialize(deserializer)?;
+    match value {
+        toml::Value::Array(items) => items
+            .into_iter()
+            .map(|item| item.try_into::<InspectOverride>().map_err(D::Error::custom))
+            .collect(),
+        other => other
+            .try_into::<InspectOverride>()
+            .map(|one| vec![one])
+            .map_err(D::Error::custom),
+    }
 }
 
 impl AgentSkillEntry {
@@ -415,6 +485,7 @@ impl AgentSkillEntry {
                 self.origin_label()
             );
         }
+        self.validate_overrides()?;
         if let Some(raw) = self.path.take() {
             let normalized = normalize_skill_path(&raw)?;
             if self.npm.is_some() {
@@ -424,6 +495,49 @@ impl AgentSkillEntry {
                 anyhow::bail!("path requires source or marketplace");
             }
             self.path = Some(normalized);
+        }
+        Ok(())
+    }
+
+    /// Every override names one exact skill of this row, once, with a reason.
+    fn validate_overrides(&self) -> Result<()> {
+        let label = self.origin_label();
+        let listed: Vec<&str> = match &self.name {
+            Some(name) => vec![name.as_str()],
+            None => self.skills.iter().map(String::as_str).collect(),
+        };
+        let mut seen = std::collections::HashSet::new();
+        for ov in &self.inspect_override {
+            let skill = ov.skill.trim();
+            if skill.is_empty() {
+                anyhow::bail!(
+                    "agent skill {label}: inspect_override names no skill. Set skill = \"<exact skill name>\"."
+                );
+            }
+            if ov.reason.trim().is_empty() {
+                anyhow::bail!("agent skill {label}: inspect_override for `{skill}` needs a reason");
+            }
+            if !seen.insert(skill.to_string()) {
+                anyhow::bail!("agent skill {label}: more than one inspect_override for `{skill}`");
+            }
+            if !listed.is_empty() && !listed.contains(&skill) {
+                anyhow::bail!(
+                    "agent skill {label}: inspect_override names `{skill}`, which is not in this row. Use a name from `name` or `skills`."
+                );
+            }
+            if !skill
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.'))
+            {
+                anyhow::bail!(
+                    "agent skill {label}: inspect_override skill `{skill}` must be one exact skill name"
+                );
+            }
+            if self.inspect == Some(false) {
+                anyhow::bail!(
+                    "agent skill {label}: inspect_override for `{skill}` has no effect with inspect = false"
+                );
+            }
         }
         Ok(())
     }
@@ -586,6 +700,18 @@ pub fn load(path: &Path) -> Result<Manifest> {
         entry.validate()?;
     }
     expand_plural_agent_skills(&mut m.agent_skills);
+    let mut overridden = std::collections::HashSet::new();
+    for entry in &m.agent_skills {
+        for ov in &entry.inspect_override {
+            if !overridden.insert(ov.skill.trim().to_string()) {
+                anyhow::bail!(
+                    "more than one inspect_override for `{}` in {}",
+                    ov.skill.trim(),
+                    path.display()
+                );
+            }
+        }
+    }
     Ok(m)
 }
 
@@ -612,6 +738,7 @@ fn expand_plural_agent_skills(entries: &mut Vec<AgentSkillEntry>) {
             let mut one = entry.clone();
             one.skills = Vec::new();
             one.name = Some(name.clone());
+            one.inspect_override.retain(|ov| ov.skill.trim() == name);
             out.push(one);
         }
     }
@@ -1530,5 +1657,136 @@ mod agent_skill_path_tests {
         let e = agent_skill_from_inventory_tag("foo", "owner/repo");
         assert_eq!(e.source.as_deref(), Some("owner/repo"));
         assert!(e.path.is_none());
+    }
+}
+
+#[cfg(test)]
+mod inspect_override_tests {
+    use super::*;
+
+    fn load_str(toml_src: &str) -> Result<Manifest> {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("skills.toml");
+        std::fs::write(&path, toml_src).unwrap();
+        load(&path)
+    }
+
+    #[test]
+    fn table_form_names_one_skill() {
+        let m = load_str(
+            "[[agent_skills]]\nsource = \"o/r\"\nskills = [\"good\", \"bad\"]\ninspect_override = { skill = \"bad\", reason = \"reviewed\", approved_by = \"IRL\", approved_on = \"2026-10-08\" }\n",
+        )
+        .unwrap();
+        assert_eq!(m.agent_skills.len(), 2);
+        let bad = m
+            .agent_skills
+            .iter()
+            .find(|e| e.name.as_deref() == Some("bad"))
+            .unwrap();
+        assert_eq!(bad.inspect_override.len(), 1);
+        assert_eq!(bad.inspect_override[0].skill, "bad");
+        assert_eq!(bad.inspect_override[0].reason, "reviewed");
+        assert_eq!(bad.inspect_override[0].approved_by.as_deref(), Some("IRL"));
+        assert_eq!(
+            bad.inspect_override[0].approved_on.as_deref(),
+            Some("2026-10-08")
+        );
+        let good = m
+            .agent_skills
+            .iter()
+            .find(|e| e.name.as_deref() == Some("good"))
+            .unwrap();
+        assert!(
+            good.inspect_override.is_empty(),
+            "an override never covers other skills in the row"
+        );
+    }
+
+    #[test]
+    fn array_form_names_many_skills() {
+        let m = load_str(
+            "[[agent_skills]]\nsource = \"o/r\"\nskills = [\"a\", \"b\", \"c\"]\ninspect_override = [{ skill = \"a\", reason = \"r1\" }, { skill = \"c\", reason = \"r2\" }]\n",
+        )
+        .unwrap();
+        let by = |n: &str| {
+            m.agent_skills
+                .iter()
+                .find(|e| e.name.as_deref() == Some(n))
+                .unwrap()
+                .inspect_override
+                .clone()
+        };
+        assert_eq!(by("a").len(), 1);
+        assert!(by("b").is_empty());
+        assert_eq!(by("c")[0].reason, "r2");
+    }
+
+    #[test]
+    fn reason_is_required() {
+        let err = load_str(
+            "[[agent_skills]]\nsource = \"o/r\"\nname = \"bad\"\ninspect_override = { skill = \"bad\", reason = \"  \" }\n",
+        )
+        .unwrap_err();
+        assert!(format!("{err:#}").contains("needs a reason"), "{err:#}");
+        let err = load_str(
+            "[[agent_skills]]\nsource = \"o/r\"\nname = \"bad\"\ninspect_override = { skill = \"bad\" }\n",
+        )
+        .unwrap_err();
+        assert!(format!("{err:#}").contains("reason"), "{err:#}");
+    }
+
+    #[test]
+    fn skill_is_required_and_exact() {
+        let err = load_str(
+            "[[agent_skills]]\nsource = \"o/r\"\nname = \"bad\"\ninspect_override = { skill = \"\", reason = \"r\" }\n",
+        )
+        .unwrap_err();
+        assert!(format!("{err:#}").contains("names no skill"), "{err:#}");
+        let err = load_str(
+            "[[agent_skills]]\nsource = \"o/r\"\nname = \"bad\"\ninspect_override = { skill = \"*\", reason = \"r\" }\n",
+        )
+        .unwrap_err();
+        assert!(format!("{err:#}").contains("not in this row"), "{err:#}");
+    }
+
+    #[test]
+    fn skill_outside_the_row_is_refused() {
+        let err = load_str(
+            "[[agent_skills]]\nsource = \"o/r\"\nskills = [\"a\", \"b\"]\ninspect_override = { skill = \"zzz\", reason = \"r\" }\n",
+        )
+        .unwrap_err();
+        assert!(format!("{err:#}").contains("not in this row"), "{err:#}");
+    }
+
+    #[test]
+    fn duplicate_override_is_refused() {
+        let err = load_str(
+            "[[agent_skills]]\nsource = \"o/r\"\nskills = [\"a\"]\ninspect_override = [{ skill = \"a\", reason = \"r\" }, { skill = \"a\", reason = \"r\" }]\n",
+        )
+        .unwrap_err();
+        assert!(format!("{err:#}").contains("more than one"), "{err:#}");
+        let err = load_str(
+            "[[agent_skills]]\nsource = \"o/r\"\nname = \"a\"\ninspect_override = { skill = \"a\", reason = \"r\" }\n\n[[agent_skills]]\nsource = \"o/s\"\nname = \"a\"\ninspect_override = { skill = \"a\", reason = \"r\" }\n",
+        )
+        .unwrap_err();
+        assert!(format!("{err:#}").contains("more than one"), "{err:#}");
+    }
+
+    #[test]
+    fn override_on_an_opted_out_row_is_refused() {
+        let err = load_str(
+            "[[agent_skills]]\nsource = \"o/r\"\nname = \"a\"\ninspect = false\ninspect_override = { skill = \"a\", reason = \"r\" }\n",
+        )
+        .unwrap_err();
+        assert!(format!("{err:#}").contains("inspect = false"), "{err:#}");
+    }
+
+    #[test]
+    fn unknown_override_key_is_refused() {
+        let err = load_str(
+            "[[agent_skills]]\nsource = \"o/r\"\nname = \"a\"\ninspect_override = { skill = \"a\", reason = \"r\", skills = [\"b\"] }\n",
+        )
+        .unwrap_err();
+        assert!(format!("{err:#}").contains("unknown field"), "{err:#}");
     }
 }

@@ -48,6 +48,10 @@ pub struct InspectRecord {
     pub report: String,
     #[serde(default, skip_serializing_if = "is_false")]
     pub no_skill: bool,
+    /// Set when the scan did not pass and a reviewed `inspect_override`
+    /// installed the skill anyway. Holds the override reason.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub override_reason: String,
 }
 
 fn is_false(value: &bool) -> bool {
