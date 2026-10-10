@@ -2,6 +2,20 @@
 
 All notable changes to this project are documented here. The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html). Releases from this point forward are managed by [release-please](https://github.com/googleapis/release-please) based on [Conventional Commits](https://www.conventionalcommits.org/).
 
+## [1.5.0](https://github.com/zot24/zskills/compare/v1.4.0...v1.5.0) (2026-10-09)
+
+
+### Features
+
+* add a reviewed inspect_override for one named Agent Skill ([#89](https://github.com/zot24/zskills/issues/89)) ([fbd48ad](https://github.com/zot24/zskills/commit/fbd48ada27379d0dd69241cb45bba1c55b7dee55)), closes [#88](https://github.com/zot24/zskills/issues/88)
+* scan staged skill bytes before they replace an install ([#87](https://github.com/zot24/zskills/issues/87)) ([d3f43b5](https://github.com/zot24/zskills/commit/d3f43b55a65c67814c46063ca82354618e9640ce))
+
+
+### Bug Fixes
+
+* honour plugin.json skills and categorised plugin layouts ([#80](https://github.com/zot24/zskills/issues/80)) ([c0406db](https://github.com/zot24/zskills/commit/c0406db58162badeabd87a1f313ea1c6f1d2094c))
+* restore pruned Agent Skills on sync and unlink harness links on remove ([#86](https://github.com/zot24/zskills/issues/86)) ([b1952bf](https://github.com/zot24/zskills/commit/b1952bf926afd5beb59095f3b22a6ada88afa049))
+
 ## [1.4.0](https://github.com/zot24/zskills/compare/v1.3.0...v1.4.0) (2026-09-01)
 
 
